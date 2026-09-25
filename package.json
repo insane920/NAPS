@@ -1,0 +1,91 @@
+{
+  "name": "naps-cad",
+  "private": true,
+  "version": "1.0.0",
+  "description": "NAPS — Numerical, Analytical, PWL, Simulation",
+  "author": "NAPS",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port=3000 --host=0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview",
+    "electron:start": "install-electron && vite build && electron .",
+    "dist:win": "install-electron && npm run lint && npm run test && npm run build && electron-builder --win nsis portable --x64",
+    "test": "tsx scripts/check-project.ts && tsx scripts/check-math.ts",
+    "test:browser": "node scripts/check-browser.cjs",
+    "test:all": "npm run test && npm run test:browser",
+    "lint": "tsc --noEmit",
+    "dist:dir": "install-electron && npm run lint && npm run build && electron-builder --win --dir --x64"
+  },
+  "build": {
+    "appId": "com.naps.cad",
+    "productName": "NAPS",
+    "asar": true,
+    "compression": "maximum",
+    "npmRebuild": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "index.js",
+      "electron/preload.cjs",
+      "package.json",
+      "!node_modules${/*}"
+    ],
+    "extraMetadata": {
+      "main": "index.js"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "portable": {
+      "artifactName": "NAPS-Portable-${version}-x64.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "NAPS",
+      "artifactName": "NAPS-Setup-${version}-x64.exe",
+      "installerLanguages": [
+        "ru_RU",
+        "en_US"
+      ],
+      "displayLanguageSelector": false,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "electronDist": "node_modules/electron/dist"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.1.14",
+    "@vitejs/plugin-react": "^5.0.4",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "vite": "^6.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "autoprefixer": "^10.4.21",
+    "electron": "^44.4.3",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.25.0",
+    "playwright-core": "^1.63.0",
+    "tailwindcss": "^4.1.14",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.3"
+  }
+}

@@ -53,9 +53,81 @@ interface SchematicEditorProps {
 }
 
 const GRID_SIZE = 20;
-type EditorShortcut = 'rotate' | 'add';
-const DEFAULT_SHORTCUTS: Record<EditorShortcut, string> = { rotate: 'KeyR', add: 'KeyA' };
-const SHORTCUT_LABELS: Record<EditorShortcut, string> = { rotate: 'Поворот', add: 'Добавить элемент' };
+type EditorShortcut = string;
+const COMPONENT_SHORTCUT_CODES: Partial<Record<ComponentType, string>> = {
+  R: 'Digit1', C: 'KeyC', L: 'KeyL', TR3: 'KeyT', DIODE: 'KeyD', THYRISTOR: 'KeyY',
+  SWITCH: 'KeyS', OPAMP: 'KeyO', COMPARATOR: 'KeyG', V_DC: 'Digit2', V_AC: 'Digit3',
+  V_PULSE: 'KeyP', I_DC: 'Digit4', NOT: 'KeyN', AND: 'KeyA', OR: 'KeyU', XOR: 'KeyX',
+  RS_FF: 'KeyQ', D_FF: 'KeyF', JK_FF: 'KeyJ', GND: 'Digit0',
+};
+const SHORTCUT_ACTIONS: EditorShortcut[] = [
+  'rotate', 'add',
+  ...COMPONENT_CATALOG.filter(item => terminalGroupForType(item.type)).map(item => `component:${item.type}`),
+  'component:GND',
+];
+const DEFAULT_SHORTCUTS: Record<EditorShortcut, string> = Object.fromEntries([
+  ['rotate', 'KeyR'], ['add', 'KeyA'],
+  ...SHORTCUT_ACTIONS.filter(action => action.startsWith('component:')).map(action => {
+    const type = action.slice('component:'.length) as ComponentType;
+    return [action, `Shift+${COMPONENT_SHORTCUT_CODES[type] ?? 'Digit0'}`];
+  }),
+]) as Record<EditorShortcut, string>;
+
+function shortcutFromEvent(event: Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'>): string {
+  return [event.ctrlKey ? 'Ctrl' : '', event.altKey ? 'Alt' : '', event.shiftKey ? 'Shift' : '', event.metaKey ? 'Meta' : '', event.code]
+    .filter(Boolean).join('+');
+}
+
+function shortcutMatches(event: KeyboardEvent, shortcut: string, allowExtraShift = false): boolean {
+  if (!shortcut) return false;
+  const parts = shortcut.split('+');
+  const code = parts.pop();
+  const modifiers = new Set(parts);
+  return event.code === code &&
+    event.ctrlKey === modifiers.has('Ctrl') &&
+    event.altKey === modifiers.has('Alt') &&
+    (event.shiftKey === modifiers.has('Shift') || (allowExtraShift && event.shiftKey && !modifiers.has('Shift'))) &&
+    event.metaKey === modifiers.has('Meta');
+}
+
+function shortcutWithShift(shortcut: string): string | null {
+  if (!shortcut) return null;
+  const parts = shortcut.split('+');
+  const code = parts.pop()!;
+  if (parts.includes('Shift')) return null;
+  return [...['Ctrl', 'Alt', 'Shift', 'Meta'].filter(modifier => parts.includes(modifier) || modifier === 'Shift'), code].join('+');
+}
+
+function shortcutBindingsConflict(actionA: string, shortcutA: string, actionB: string, shortcutB: string): boolean {
+  if (shortcutA === shortcutB) return true;
+  return (actionA === 'rotate' && shortcutWithShift(shortcutA) === shortcutB) ||
+    (actionB === 'rotate' && shortcutWithShift(shortcutB) === shortcutA);
+}
+
+function shortcutLabel(shortcut: string): string {
+  if (!shortcut) return 'Не задано';
+  return shortcut.split('+').map(part => part.startsWith('Key') ? part.slice(3) : part.startsWith('Digit') ? part.slice(5) : part).join(' + ');
+}
+
+function shortcutActionLabel(action: EditorShortcut): string {
+  if (action === 'rotate') return 'Повернуть выбранный элемент';
+  if (action === 'add') return 'Открыть библиотеку';
+  const type = action.slice('component:'.length) as ComponentType;
+  const item = COMPONENT_CATALOG.find(component => component.type === type);
+  return type === 'GND' ? 'Земля (GND)' : `${item?.name ?? type} (${item?.code ?? type})`;
+}
+
+function loadEditorShortcuts(): Record<EditorShortcut, string> {
+  try {
+    const saved = JSON.parse(localStorage.getItem('naps_editor_shortcuts') || '{}') as Record<string, unknown>;
+    return Object.fromEntries(SHORTCUT_ACTIONS.map(action => [
+      action,
+      typeof saved[action] === 'string' ? saved[action] as string : DEFAULT_SHORTCUTS[action],
+    ]));
+  } catch {
+    return { ...DEFAULT_SHORTCUTS };
+  }
+}
 
 export interface Point {
   x: number;
@@ -492,10 +564,8 @@ export function SchematicEditor({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [shortcutSettingsOpen, setShortcutSettingsOpen] = useState(false);
   const [recordingShortcut, setRecordingShortcut] = useState<EditorShortcut | null>(null);
-  const [editorShortcuts, setEditorShortcuts] = useState<Record<EditorShortcut, string>>(() => {
-    try { return { ...DEFAULT_SHORTCUTS, ...JSON.parse(localStorage.getItem('naps_editor_shortcuts') || '{}') }; }
-    catch { return DEFAULT_SHORTCUTS; }
-  });
+  const [shortcutMessage, setShortcutMessage] = useState('Нажмите сочетание и затем щёлкните по схеме, чтобы разместить элемент.');
+  const [editorShortcuts, setEditorShortcuts] = useState<Record<EditorShortcut, string>>(loadEditorShortcuts);
   useEffect(() => { localStorage.setItem('naps_editor_shortcuts', JSON.stringify(editorShortcuts)); }, [editorShortcuts]);
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [copiedElement, setCopiedElement] = useState<CircuitElement | null>(null);
@@ -656,7 +726,7 @@ export function SchematicEditor({
     [pan, zoom]
   );
 
-  // Клавиатурные сокращения по руководству (стр. 4: R, F, V, ESC, Delete)
+  // Горячие клавиши редактора и быстрый выбор элемента из библиотеки.
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (shortcutSettingsOpen) return;
@@ -664,10 +734,35 @@ export function SchematicEditor({
         if (e.key === 'Escape') setIsPaletteOpen(false);
         return;
       }
-      if (!shortcutsEnabled || e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      if (!shortcutsEnabled || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement || (e.target instanceof HTMLElement && e.target.isContentEditable)) {
         return;
       }
+
+      const matchedAction = SHORTCUT_ACTIONS.find(action => shortcutMatches(e, editorShortcuts[action], action === 'rotate'));
+      if (matchedAction) {
+        e.preventDefault();
+        if (matchedAction === 'add') {
+          setIsPaletteOpen(true);
+          return;
+        }
+        if (matchedAction === 'rotate') {
+          if (selectedId) onElementsChange(elements.map(el => el.id === selectedId
+            ? { ...el, rotation: ((el.rotation || 0) + (e.shiftKey ? 45 : 90)) % 360 }
+            : el));
+          return;
+        }
+        const type = matchedAction.slice('component:'.length) as ComponentType;
+        setActiveTool('select');
+        setWiringFrom(null); wiringFromRef.current = null;
+        setWiringCursor(null); setWiringWaypoints([]);
+        if (type !== 'GND') {
+          const group = terminalGroupForType(type);
+          if (group) setQuickTypes(current => ({ ...current, [group]: type }));
+        }
+        setPendingComponentType(type);
+        return;
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
 
       if (e.key === 'Escape') {
         setWiringFrom(null);
@@ -677,16 +772,6 @@ export function SchematicEditor({
         setPendingComponentType(null);
         setSelectedId(null);
         setSelectedWireId(null);
-      } else if (e.code === editorShortcuts.add) {
-        e.preventDefault(); setIsPaletteOpen(true);
-      } else if (e.code === editorShortcuts.rotate && selectedId) {
-        // Поворот по R (стр. 4)
-        e.preventDefault();
-        onElementsChange(
-          elements.map((el) =>
-            el.id === selectedId ? { ...el, rotation: ((el.rotation || 0) + (e.shiftKey ? 45 : 90)) % 360 } : el
-          )
-        );
       } else if ((e.key === 'f' || e.key === 'а' || e.key === 'F') && selectedId) {
         // Отразить слева направо (стр. 4)
         e.preventDefault();
@@ -1739,23 +1824,35 @@ export function SchematicEditor({
         )}
 
         {shortcutSettingsOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50" onClick={e => { if (e.target === e.currentTarget) { setShortcutSettingsOpen(false); setRecordingShortcut(null); } }}>
-          <div role="dialog" aria-modal="true" aria-label="Горячие клавиши" className="w-80 rounded-xl bg-white p-4 shadow-2xl">
-            <div className="mb-3 flex items-center justify-between"><strong>Горячие клавиши</strong><button type="button" onClick={() => { setShortcutSettingsOpen(false); setRecordingShortcut(null); }} aria-label="Закрыть">×</button></div>
-            {(Object.keys(DEFAULT_SHORTCUTS) as EditorShortcut[]).map(action => <div key={action} className="flex items-center justify-between gap-3 border-t border-slate-100 py-2 text-sm"><span>{SHORTCUT_LABELS[action]}</span><button type="button" onClick={() => setRecordingShortcut(action)} onKeyDown={e => {
-              if (recordingShortcut !== action) return;
-              e.preventDefault(); e.stopPropagation();
-              if (e.code === 'Escape') { setRecordingShortcut(null); return; }
-              if (e.ctrlKey || e.metaKey || e.altKey || ['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight'].includes(e.code)) return;
-              const previous = editorShortcuts[action];
-              setEditorShortcuts(current => {
-                const updated = { ...current, [action]: e.code };
-                const conflict = (Object.keys(updated) as EditorShortcut[]).find(key => key !== action && current[key] === e.code);
-                if (conflict) updated[conflict] = previous;
-                return updated;
-              });
-              setRecordingShortcut(null);
-            }} className="min-w-20 rounded border border-slate-300 px-2 py-1 text-center font-mono text-xs hover:bg-blue-50">{recordingShortcut === action ? 'Нажмите…' : editorShortcuts[action].replace(/^Key/, '')}</button></div>)}
-            <div className="mt-3 flex justify-between"><button type="button" onClick={() => setEditorShortcuts(DEFAULT_SHORTCUTS)} className="text-xs text-blue-700">Сбросить</button><span className="text-xs text-slate-500">Shift + поворот: 45°</span></div>
+          <div role="dialog" aria-modal="true" aria-label="Горячие клавиши" className="flex max-h-[85vh] w-[min(46rem,calc(100vw-2rem))] flex-col rounded-xl bg-white p-5 shadow-2xl">
+            <div className="mb-2 flex items-center justify-between"><strong className="text-lg">Горячие клавиши</strong><button type="button" onClick={() => { setShortcutSettingsOpen(false); setRecordingShortcut(null); }} aria-label="Закрыть">×</button></div>
+            <p className="mb-3 text-xs text-slate-600">Для размещения нажмите сочетание, затем укажите точку на схеме. Можно использовать Ctrl, Alt и Shift. Настройки сохраняются на этом компьютере.</p>
+            <div className="min-h-0 flex-1 overflow-y-auto rounded border border-slate-200 px-3">
+              {SHORTCUT_ACTIONS.map(action => <div key={action} className="flex min-h-11 items-center justify-between gap-3 border-b border-slate-100 py-1.5 text-sm last:border-0">
+                <span className="min-w-0 truncate">{shortcutActionLabel(action)}</span>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <button type="button" aria-label={`Назначить: ${shortcutActionLabel(action)}`} onClick={() => { setShortcutMessage('Нажмите клавишу или сочетание. Esc отменяет назначение.'); setRecordingShortcut(action); }} onKeyDown={e => {
+                    if (recordingShortcut !== action) return;
+                    e.preventDefault(); e.stopPropagation();
+                    if (e.code === 'Escape') { setRecordingShortcut(null); setShortcutMessage('Назначение отменено.'); return; }
+                    if (['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(e.code)) return;
+                    const combo = shortcutFromEvent(e);
+                    const reserved = ['Delete', 'Backspace', 'F9', 'Tab', 'Enter'].includes(e.code) || ['Ctrl+KeyZ', 'Ctrl+KeyY', 'Ctrl+KeyS', 'Ctrl+KeyO', 'Meta+KeyZ', 'Meta+KeyY', 'Meta+KeyS', 'Meta+KeyO'].includes(combo);
+                    if (reserved) { setShortcutMessage('Это сочетание уже используется командой редактора или окна. Выберите другое.'); return; }
+                    const conflict = SHORTCUT_ACTIONS.find(key => key !== action && shortcutBindingsConflict(action, combo, key, editorShortcuts[key]));
+                    if (conflict) { setShortcutMessage(`Уже назначено: ${shortcutActionLabel(conflict)}. Снимите старое назначение или выберите другую клавишу.`); return; }
+                    setEditorShortcuts(current => ({ ...current, [action]: combo }));
+                    setRecordingShortcut(null);
+                    setShortcutMessage(`Назначено: ${shortcutActionLabel(action)} — ${shortcutLabel(combo)}.`);
+                  }} className={`min-w-32 rounded border px-2 py-1 text-center font-mono text-xs ${recordingShortcut === action ? 'border-blue-500 bg-blue-50 text-blue-800' : 'border-slate-300 hover:bg-blue-50'}`}>
+                    {recordingShortcut === action ? 'Нажмите…' : shortcutLabel(editorShortcuts[action])}
+                  </button>
+                  <button type="button" aria-label={`Снять назначение: ${shortcutActionLabel(action)}`} title="Снять назначение" disabled={!editorShortcuts[action]} onClick={() => { setEditorShortcuts(current => ({ ...current, [action]: '' })); setRecordingShortcut(null); setShortcutMessage(`Назначение снято: ${shortcutActionLabel(action)}.`); }} className="h-7 w-7 rounded text-slate-500 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-30">×</button>
+                </div>
+              </div>)}
+            </div>
+            <div role="status" className="mt-2 min-h-5 text-xs text-slate-600">{shortcutMessage}</div>
+            <div className="mt-3 flex items-center justify-between border-t border-slate-200 pt-3"><button type="button" onClick={() => { setEditorShortcuts({ ...DEFAULT_SHORTCUTS }); setRecordingShortcut(null); setShortcutMessage('Восстановлены назначения по умолчанию.'); }} className="text-xs font-semibold text-blue-700">Сбросить всё</button><span className="text-xs text-slate-500">R — поворот 90° · Shift + R — 45°</span></div>
           </div>
         </div>}
         {/* МОДАЛЬНОЕ ОКНО ПОЛНОЙ БИБЛИОТЕКИ ЭЛЕМЕНТОВ (НЕ СЖИМАЕТ И НЕ ПЕРЕКРЫВАЕТ СХЕМУ) */}

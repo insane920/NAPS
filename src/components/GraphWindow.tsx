@@ -13,13 +13,16 @@ import {
   FileText,
   X,
 } from 'lucide-react';
-import { CircuitSimulationResults, TransientSettings, CircuitElement, CircuitWire } from '../types';
+import { ACSettings, CircuitSimulationResults, TransientSettings, CircuitElement, CircuitWire } from '../types';
 import { CalculationDetails } from './CalculationDetails';
+import { ACCalculationDetails } from './ACCalculationDetails';
 import { formatEngValue } from '../math/circuitSolver';
+import { NapsLogo } from './NapsLogo';
 
 interface GraphWindowProps {
   results: CircuitSimulationResults | null;
   settings: TransientSettings;
+  acSettings?: ACSettings;
   onOpenTransientSettings: () => void;
   onClose?: () => void;
   elements?: CircuitElement[];
@@ -29,6 +32,7 @@ interface GraphWindowProps {
 export function GraphWindow({
   results,
   settings,
+  acSettings,
   onOpenTransientSettings,
   onClose,
   elements,
@@ -42,6 +46,7 @@ export function GraphWindow({
   const isSweepMode = Boolean(results?.sweepInfo);
 
   const [logX, setLogX] = useState<boolean>(isACMode);
+  useEffect(() => { setLogX(isACMode && (acSettings?.scaleType ?? 'log') === 'log'); }, [isACMode, acSettings?.scaleType]);
   const [logY, setLogY] = useState<boolean>(false);
   const [showGrid, setShowGrid] = useState<boolean>(true);
   const [zoomFactor, setZoomFactor] = useState<number>(1);
@@ -54,16 +59,7 @@ export function GraphWindow({
   const plot1Signals = useMemo(() => {
     if (!results) return [];
     if (isACMode) {
-      return [
-        {
-          id: 'ac_db',
-          plotIndex: 1,
-          exprX: 'f',
-          exprY: 'db(U(2))',
-          color: '#2563eb',
-          enabled: true,
-        },
-      ];
+      return acSettings?.signals.filter(s => s.enabled && s.plotIndex === 1 && s.exprY in results.signals) ?? [];
     }
     if (isSweepMode) {
       const keys = Object.keys(results.signals);
@@ -90,40 +86,31 @@ export function GraphWindow({
       }));
     }
     return filtered;
-  }, [settings.signals, results, isACMode, isSweepMode]);
+  }, [settings.signals, acSettings, results, isACMode, isSweepMode]);
 
   const plot2Signals = useMemo(() => {
     if (!results) return [];
     if (isACMode) {
-      return [
-        {
-          id: 'ac_phs',
-          plotIndex: 2,
-          exprX: 'f',
-          exprY: 'phs(U(2))',
-          color: '#dc2626',
-          enabled: true,
-        },
-      ];
+      return acSettings?.signals.filter(s => s.enabled && s.plotIndex === 2 && s.exprY in results.signals) ?? [];
     }
     if (isSweepMode) return [];
     return settings.signals.filter((s) => s.enabled && s.plotIndex === 2);
-  }, [settings.signals, results, isACMode, isSweepMode]);
+  }, [settings.signals, acSettings, results, isACMode, isSweepMode]);
 
   // Экспорт данных в CSV
   const handleExportCSV = () => {
     if (!results) return;
     const sigKeys = Object.keys(results.signals);
-    let csv = `Time (s),${sigKeys.join(',')}\n`;
+    let csv = `${isACMode ? 'Frequency (Hz)' : 'Time (s)'},${sigKeys.join(',')}\n`;
     for (let i = 0; i < results.time.length; i++) {
-      const row = [results.time[i], ...sigKeys.map((k) => results.signals[k][i] ?? 0)];
+      const row = [results.time[i], ...sigKeys.map((k) => results.signals[k][i])];
       csv += row.join(',') + '\n';
     }
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'naps_transient_signals.csv';
+    link.download = isACMode ? 'naps_ac_signals.csv' : 'naps_transient_signals.csv';
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -131,8 +118,9 @@ export function GraphWindow({
   // Копирование сводки в буфер
   const handleCopySummary = () => {
     if (!results) return;
-    let txt = `NAPS — РАСЧЕТ ПЕРЕХОДНОГО ПРОЦЕССА\n`;
-    txt += `Конечное время: ${settings.tMaxStr}, Шаг: ${settings.stepStr}\n\n`;
+    let txt = `NAPS — ${isACMode ? 'ЧАСТОТНЫЙ АНАЛИЗ' : 'РАСЧЕТ ПЕРЕХОДНОГО ПРОЦЕССА'}\n`;
+    txt += isACMode ? `Частоты: ${results.frequency?.[0]}…${results.frequency?.at(-1)} Гц; точек: ${results.time.length}\n\n`
+      : `Конечное время: ${settings.tMaxStr}, Шаг: ${settings.stepStr}\n\n`;
     for (const [sig, stat] of Object.entries(results.summary.stats)) {
       txt += `${sig}: Mean = ${stat.mean.toPrecision(4)} ${stat.unit}, RMS = ${stat.rms.toPrecision(4)} ${stat.unit}, Max = ${stat.max.toPrecision(4)} ${stat.unit}\n`;
     }
@@ -182,7 +170,7 @@ export function GraphWindow({
       <div className="bg-[#e9ecef] border-b border-slate-300 px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-1.5">
           <span className="font-bold text-xs text-slate-700 mr-2 flex items-center gap-1.5">
-            <Activity className="w-3.5 h-3.5 text-blue-600" />
+            <NapsLogo variant="mark" className="w-4 h-4" />
             Окно графиков NAPS
           </span>
 
@@ -305,8 +293,11 @@ export function GraphWindow({
       </div>
 
       {/* 2. ПОЛЕ САМИХ ГРАФИКОВ (1 или 2 связанных по времени подокна) */}
-      {results.model !== 'linear-mna' && !mathOpen && <div role="note" className="px-4 py-2 bg-amber-50 text-amber-950 border-y border-amber-200 text-xs">Учебная модель: {results.derivation?.method ?? 'упрощённый расчёт'}. Она применима только к исходной топологии примера; это не расчёт произвольной схемы по всем соединениям. Формулы и допущения — в «Математическом расчёте».</div>}
-      {mathOpen && elements && wires && <CalculationDetails key={results.summary.durationMs} elements={elements} wires={wires} results={results} settings={settings} />}
+      {results.model === 'topology-mna' && !mathOpen && <div role="note" className="px-4 py-2 bg-amber-50 text-amber-950 border-y border-amber-200 text-xs">Расчёт по соединениям схемы. Нелинейные и цифровые элементы используют идеализированные модели; их параметры и уравнения доступны в «Математическом расчёте».</div>}
+      {!mathOpen && Object.values(results.digitalStates ?? {}).some(series => series.includes('X')) && <div role="note" className="px-4 py-2 bg-amber-50 text-amber-950 border-y border-amber-200 text-xs">В расчёте есть неопределённое цифровое состояние X. Такой выход становится высокоомным; его аналоговое напряжение зависит от подключённой цепи.</div>}
+      {mathOpen && elements && wires && (isACMode
+        ? <ACCalculationDetails key={results.summary.durationMs} elements={elements} results={results} />
+        : <CalculationDetails key={results.summary.durationMs} elements={elements} wires={wires} results={results} settings={settings} />)}
       <div className={`${mathOpen ? 'hidden' : 'flex'} flex-1 p-3 flex-col gap-3 overflow-y-auto bg-white`}>
         {/* ГРАФИК 1 */}
         {plot1Signals.length > 0 && (

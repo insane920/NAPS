@@ -29,5 +29,11 @@ jobs:
       - name: Run regression checks
         run: npm run test
 
+      - name: Install Chromium for browser checks
+        run: node node_modules/playwright-core/cli.js install --with-deps chromium
+
+      - name: Run browser regression checks
+        run: npm run test:browser
+
       - name: Build web application
         run: npm run build

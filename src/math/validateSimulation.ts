@@ -1,9 +1,11 @@
 import type { CircuitElement, CircuitWire, CircuitSimulationResults, TransientSettings } from '../types';
 import { buildCircuitGraph } from './circuitSolver';
 import { electricalElements, isLinearCircuit, linearTypes, solveLinearTransient, sourceValue } from './linearTransient';
+import { validateTopologySimulation } from './validateTopology';
 
 export interface ValidationReport { status: 'passed' | 'failed' | 'unsupported'; messages: string[]; }
 export function validateSimulation(elements: CircuitElement[], wires: CircuitWire[], settings: TransientSettings, result: CircuitSimulationResults): ValidationReport {
+  if (result.model === 'topology-mna') return validateTopologySimulation(elements, wires, settings, result);
   const messages: string[] = [];
   const fail = (message: string): ValidationReport => ({ status: 'failed', messages: [...messages, message] });
   if (!isLinearCircuit(elements) || result.model !== 'linear-mna' || result.isAC || result.sweepInfo) {

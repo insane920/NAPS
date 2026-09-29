@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { TransientSettings, TransientSignalConfig, CircuitElement } from '../types';
 import { parseEngValue } from '../math/circuitSolver';
+import { useModalFocus } from '../hooks/useModalFocus';
 
 interface TransientSetupModalProps {
   isOpen: boolean;
@@ -26,25 +27,13 @@ function TransientSetupContent({
   const [epsStr, setEpsStr] = useState(String(settings.eps || '0.001'));
   const [signals, setSignals] = useState<TransientSignalConfig[]>(settings.signals);
   const [error, setError] = useState('');
+  const dialogRef = useModalFocus<HTMLDivElement>(isOpen, 'input[type="text"]');
 
   // Список доступных сигналов из схемы
   const availableSignals = [
-    'U(2)',
-    'U(4)',
-    'U(1)',
-    'U(3)',
-    'U(5)',
-    'U(6)',
-    'U(7)',
-    'U(IN)',
-    'U(OUT)',
-    'U(SW)',
-    ...elements
-      .filter((e) => e.type !== 'GND' && e.type !== 'TEXT')
-      .map((e) => `U(${e.name})`),
-    ...elements
-      .filter((e) => e.type === 'R' || e.type === 'L' || e.type === 'DIODE' || e.type === 'SWITCH')
-      .map((e) => `I(${e.name})`),
+    ...elements.filter(e => e.type === 'PORT').map(e => `U(${e.portName || e.name})`),
+    ...elements.filter(e => !['GND', 'PORT', 'JUNCTION', 'TEXT'].includes(e.type)).map(e => `U(${e.name})`),
+    ...elements.filter(e => !['GND', 'PORT', 'JUNCTION', 'TEXT'].includes(e.type)).map(e => `I(${e.name})`),
   ];
 
   const handleRowChange = (index: number, field: keyof TransientSignalConfig, value: any) => {
@@ -61,7 +50,7 @@ function TransientSetupContent({
       id: `sig_${Date.now()}`,
       plotIndex: 1,
       exprX: 't',
-      exprY: 'U(OUT)',
+      exprY: availableSignals[0] ?? '',
       color: '#dc2626',
       enabled: true,
     };
@@ -101,16 +90,17 @@ function TransientSetupContent({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 backdrop-blur-2xs">
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Параметры переходного процесса" className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 backdrop-blur-2xs">
         {/* Окно настроек переходного процесса. */}
-      <div className="bg-[#f0f0f0] border-2 border-slate-400 rounded-md shadow-2xl w-full max-w-2xl text-slate-800 text-xs font-sans overflow-hidden">
+      <div className="bg-white border border-slate-200 rounded-xl shadow-2xl w-full max-w-2xl text-slate-800 text-xs font-sans overflow-hidden">
         {/* Заголовок окна */}
-        <div className="bg-gradient-to-r from-[#0055ea] to-[#2680eb] text-white px-3 py-1.5 flex items-center justify-between font-bold select-none">
+        <div className="bg-slate-50 border-b border-slate-200 text-slate-800 px-5 py-3 flex items-center justify-between text-sm font-semibold select-none">
           <span>Переходный процесс (NAPS)</span>
           <button
             type="button"
             onClick={onClose}
-            className="w-5 h-5 bg-[#d9534f] hover:bg-[#c9302c] text-white flex items-center justify-center rounded text-2xs cursor-pointer"
+            aria-label="Закрыть параметры расчёта"
+            className="w-7 h-7 hover:bg-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center rounded-md text-xs"
           >
             ✕
           </button>
@@ -136,7 +126,7 @@ function TransientSetupContent({
                 <span className="text-slate-600 font-mono">с</span>
               </div>
               <div className="col-span-2 text-3xs text-slate-500 font-mono">
-                {parseEngValue(tMaxStr).toExponential(2)} s
+                {Number.isFinite(parseEngValue(tMaxStr)) ? parseEngValue(tMaxStr).toExponential(2) : '—'} s
               </div>
 
               <label className="col-span-4 text-right font-medium text-slate-700">
@@ -272,6 +262,7 @@ function TransientSetupContent({
             {/* Быстрые подсказки доступных выражений */}
             <div className="mt-2 text-3xs text-slate-500 flex flex-wrap items-center gap-1">
               <span>Доступные сигналы в схеме:</span>
+              {availableSignals.length === 0 && <span>Добавьте элементы на схему</span>}
               {availableSignals.slice(0, 8).map((sig) => (
                 <button
                   key={sig}
@@ -293,21 +284,21 @@ function TransientSetupContent({
             <button
               type="button"
               onClick={handleSave}
-              className="px-5 py-1 bg-[#e1e1e1] hover:bg-[#d5d5d5] text-slate-800 border border-slate-400 rounded text-xs font-semibold shadow-2xs cursor-pointer"
+              className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs font-semibold"
             >
               OK
             </button>
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-1 bg-[#e1e1e1] hover:bg-[#d5d5d5] text-slate-800 border border-slate-400 rounded text-xs font-medium shadow-2xs cursor-pointer"
+              className="px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-md text-xs font-medium"
             >
               Отмена
             </button>
             <button
               type="button"
               onClick={() => alert('NAPS — переходный процесс:\nВ выражениях можно использовать U(имя_элемента), I(элемент), P(элемент).')}
-              className="px-4 py-1 bg-[#e1e1e1] hover:bg-[#d5d5d5] text-slate-800 border border-slate-400 rounded text-xs font-medium shadow-2xs cursor-pointer"
+              className="px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-md text-xs font-medium"
             >
               Справка
             </button>

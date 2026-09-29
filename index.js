@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 
 const require = createRequire(import.meta.url);
 const { app, BrowserWindow, dialog, ipcMain } = require('electron');
@@ -16,6 +17,7 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     title: 'NAPS',
+    icon: path.join(__dirname, 'build', 'icon.ico'),
     backgroundColor: '#ffffff',
     autoHideMenuBar: true,
     show: false,
@@ -56,10 +58,18 @@ app.whenReady().then(() => {
   ipcMain.handle('circuit:save', async (event, content, name) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || event.senderFrame !== event.sender.mainFrame) throw new Error('Недоступное окно.');
-    if (typeof content !== 'string' || content.length > 10 * 1024 * 1024 || typeof name !== 'string') throw new Error('Некорректные данные схемы.');
+    if (typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > 10 * 1024 * 1024 || typeof name !== 'string') throw new Error('Некорректные данные схемы.');
     const result = await dialog.showSaveDialog(win, { title: 'Сохранить схему', filters, defaultPath: path.basename(name) });
     if (result.canceled || !result.filePath) return null;
-    await fs.writeFile(result.filePath, content, 'utf8');
+    // Write beside the destination first: a failed write must not truncate an
+    // existing project. Renaming within one directory replaces it atomically.
+    const temporaryPath = path.join(path.dirname(result.filePath), `.${path.basename(result.filePath)}.${randomUUID()}.tmp`);
+    try {
+      await fs.writeFile(temporaryPath, content, { encoding: 'utf8', flag: 'wx' });
+      await fs.rename(temporaryPath, result.filePath);
+    } finally {
+      await fs.rm(temporaryPath, { force: true });
+    }
     return path.basename(result.filePath);
   });
   createWindow();

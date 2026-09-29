@@ -50,10 +50,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .app-shell { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; background: #f2f5fa; }
 .app-header { min-height: 76px; padding: 14px 24px; display: flex; align-items: center; gap: 28px; background: #fff; border-bottom: 1px solid #e2e8f0; flex-shrink: 0; }
 .brand { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
-.brand-mark { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: #2563eb; color: #fff; }
-.brand strong { font-size: 17px; letter-spacing: .06em; color: #17243b; }
-.brand strong span { color: #7b8ba3; font-size: 12px; letter-spacing: 0; margin-left: 3px; }
-.brand small { display: block; color: #718096; font-size: 11px; margin-top: 2px; }
+.brand-logo { display: block; width: 170px; height: 40px; }
+.brand-tagline { max-width: 108px; color: #718096; font-size: 9px; line-height: 1.35; letter-spacing: .02em; }
 .project-name { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; color: #475569; font-size: 13px; }
 .project-name > span:not(.unsaved-dot) { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .project-name small { font-size: 9px; letter-spacing: .09em; padding: 3px 6px; border: 1px solid #e2e8f0; border-radius: 4px; color: #7b8ba3; }

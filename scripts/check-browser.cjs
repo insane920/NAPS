@@ -1,12 +1,13 @@
 const { spawn } = require('node:child_process');
 const { mkdirSync } = require('node:fs');
 const path = require('node:path');
+const { chromium } = require('playwright-core');
 
 const root = path.resolve(__dirname, '..');
 const port = Number(process.env.NAPS_TEST_PORT || 3130);
 const url = `http://127.0.0.1:${port}/`;
 const vite = path.join(root, 'node_modules', 'vite', 'bin', 'vite.js');
-const cases = ['browser-wiring.cjs', 'browser-editor.cjs', 'browser-calculation.cjs'];
+const cases = ['browser-pin-contacts.cjs', 'browser-wiring.cjs', 'browser-editor.cjs', 'browser-calculation.cjs', 'browser-ac.cjs', 'browser-regressions.cjs'];
 
 mkdirSync(path.join(root, '.work'), { recursive: true });
 
@@ -37,7 +38,11 @@ function runCase(file) {
     const child = spawn(process.execPath, [path.join(__dirname, file)], {
       cwd: root,
       stdio: 'inherit',
-      env: { ...process.env, NAPS_TEST_URL: url },
+      env: {
+        ...process.env,
+        NAPS_TEST_URL: url,
+        ...(process.env.CI && !process.env.NAPS_CHROME_PATH ? { NAPS_CHROME_PATH: chromium.executablePath() } : {}),
+      },
     });
     child.on('error', reject);
     child.on('exit', code => code === 0 ? resolve() : reject(new Error(`${file} exited with code ${code}`)));

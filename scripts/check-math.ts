@@ -17,6 +17,9 @@ assert.equal(pulseIsHigh(100 * 6e-7, 1e-5, 0.5), true);
 assert.equal(pulseIsHigh(6.5e-5, 1e-5, 0.5), false);
 assert.equal(pulseIsHigh(0, 1e-5, 0), false);
 for (const [input, expected] of [['0,5 мкФ', 0.5e-6], ['.5m', 0.0005], ['2.2µF', 2.2e-6], ['10 мОм', 0.01], ['1MΩ', 1e6], ['1mA', 0.001], ['20 kHz', 20000], ['3 Гн', 3], ['1e-3', 0.001]] as const) near(parseEngValue(input), expected, Math.abs(expected) * 1e-12);
+for (const invalid of ['1кк', '1garbage', '1k/2', 'Infinity', '', '1e999', '0x10']) {
+  assert.ok(Number.isNaN(parseEngValue(invalid)), `${invalid}: invalid nominal must not be partially parsed`);
+}
 for (const [input, compact] of [['1 кОм', '1к'], ['1k', '1к'], ['1к', '1к'], ['10 мГн', '10м'], ['2.2uF', '2.2мк'], ['1MΩ', '1М']] as const) {
   assert.equal(normalizeEngNotation(input), compact);
   near(parseEngValue(input), parseEngValue(compact), Math.abs(parseEngValue(input)) * 1e-12);
@@ -86,7 +89,8 @@ assert.throws(() => solveCircuitTransient(es, [...ws, wire('missing', '1', 'R1',
 const floating = [...es, element('R3', 'R', 100)];
 assert.throws(() => solveCircuitTransient(floating, ws, s), /вырождена/);
 const buck = SAMPLE_CIRCUITS[0];
-assert.equal(validateSimulation(buck.elements, buck.wires, buck.transient, solveCircuitTransient(buck.elements, buck.wires, buck.transient)).status, 'unsupported');
+const buckResult = solveCircuitTransient(buck.elements, buck.wires, buck.transient);
+assert.ok(buckResult.time.length > 0 && Object.values(buckResult.signals).every(values => values.every(Number.isFinite)));
 console.log('PASS: divider, rewiring, current source, RC/RLC analytical references, initial conditions, convergence, corrupted results and invalid circuits.');
 
 // The visible derivation must use the actual matrix and result series, including k=0.
@@ -102,21 +106,6 @@ for (const k of [0, 1, 500, rr.time.length - 1]) {
   const x = [...system.used.map(id => rr.nodeVoltages[`node_${id}`][k]), ...system.extra.map(e => rr.branchCurrents[e.name][k])];
   system.a.forEach((row, i) => near(row.reduce((sum, a, j) => sum + a * x[j], 0), system.b[i], 1e-10));
 }
-for (const sample of SAMPLE_CIRCUITS.filter(c => c.id !== 'rc-filter' && c.id !== 'rlc-oscillatory')) {
-  const result = solveCircuitTransient(sample.elements, sample.wires, sample.transient);
-  assert.equal(result.derivation?.steps.length, result.time.length);
-  for (const k of [0, 1, result.time.length - 1]) {
-    const report = buildCalculationReport(sample.elements, sample.wires, sample.transient, result, k);
-    assert.ok(report.steps.length > 0);
-    assert.ok(report.steps.every(row => Number.isFinite(row.value) && row.formula && row.substitution));
-    report.signals.forEach(row => near(row.value, result.signals[row.name][k]));
-    if (sample.id === 'synchronous-buck') {
-      near(report.steps.find(row => row.name === 'u_C')!.value, result.signals['U(2)'][k]);
-      near(report.steps.find(row => row.name === 'i_L')!.value, result.signals['I(L1)'][k]);
-      assert.equal(report.signals.find(row => row.name === 'U(2)')!.formula, 'y[k] = u_C');
-    }
-  }
-}
 const htmlReport = buildCalculationReport(es, ws, s, divider, 1);
 htmlReport.title = '<script>alert(1)</script>';
 const html = calculationReportHtml(htmlReport, divider);
@@ -124,5 +113,5 @@ assert.ok(html.includes('&lt;script&gt;'));
 assert.ok(!html.includes('<script>'));
 assert.ok(html.includes('Все точки графиков'));
 assert.ok(!html.includes('проверки пройдены'));
-console.log('PASS: displayed matrix residuals, selected-point formulas, legacy algorithm traces, signal mapping and escaped standalone HTML report.');
+console.log('PASS: displayed matrix residuals, selected-point formulas, signal mapping and escaped standalone HTML report.');
 

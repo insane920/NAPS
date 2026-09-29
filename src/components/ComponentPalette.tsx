@@ -33,7 +33,8 @@ export const TERMINAL_GROUPS: { id: TerminalGroup; label: string }[] = [
 export function terminalGroupForType(type: ComponentType): TerminalGroup | null {
   if (['R', 'C', 'L', 'DIODE', 'V_DC', 'V_AC', 'V_PULSE', 'I_DC', 'NOT'].includes(type)) return 'two';
   if (['THYRISTOR', 'SWITCH', 'OPAMP', 'COMPARATOR', 'AND', 'OR', 'XOR'].includes(type)) return 'three';
-  if (['RS_FF', 'D_FF', 'JK_FF', 'TR3'].includes(type)) return 'four';
+  if (['RS_FF', 'D_FF', 'TR3'].includes(type)) return 'four';
+  if (type === 'JK_FF') return 'multi';
   return null;
 }
 
@@ -68,8 +69,8 @@ export const COMPONENT_CATALOG: ComponentDefinition[] = [
     name: 'Трансформатор',
     code: 'Tr',
     category: 'passive',
-    description: 'Многообмоточный трансформатор',
-    defaultVal: 'k = 1:1',
+    description: 'Двухобмоточный трансформатор, L1 / N2:N1 / k',
+    defaultVal: '1 Гн',
   },
 
   // 2. Полупроводники и вентильные ключи

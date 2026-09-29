@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useModalFocus } from '../hooks/useModalFocus';
 import { X, Copy, Check, Download, Upload, AlertCircle, FileCode } from 'lucide-react';
 import { exportToYamlScm, parseYamlScm } from '../utils/yamlScm';
 import { CircuitElement, CircuitWire, TransientSettings, ACSettings } from '../types';
@@ -14,6 +15,7 @@ interface ScmYamlModalProps {
     elements: CircuitElement[];
     wires: CircuitWire[];
     transient: TransientSettings;
+    ac?: ACSettings;
   }) => void;
 }
 
@@ -29,6 +31,7 @@ export function ScmYamlModal({
   const [yamlText, setYamlText] = useState('');
   const [copied, setCopied] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
+  const dialogRef = useModalFocus<HTMLDivElement>(isOpen, 'textarea');
 
   useEffect(() => {
     if (isOpen) {
@@ -88,7 +91,7 @@ export function ScmYamlModal({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 backdrop-blur-xs font-sans">
-      <div role="dialog" aria-modal="true" aria-label="Редактор кода схемы" className="bg-[#f0f2f5] border border-slate-400 rounded-md shadow-2xl w-full max-w-[1440px] h-[92vh] flex flex-col overflow-hidden">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Редактор кода схемы" className="bg-[#f0f2f5] border border-slate-400 rounded-md shadow-2xl w-full max-w-[1440px] h-[92vh] flex flex-col overflow-hidden">
         {/* Заголовок окна редактора SCM. */}
         <div className="bg-[#2c3e50] text-white px-4 py-2 flex items-center justify-between font-bold text-xs select-none">
           <div className="flex items-center gap-2">

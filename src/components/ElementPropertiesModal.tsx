@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { CircuitElement } from '../types';
 import { parseEngValue, normalizeEngNotation } from '../math/circuitSolver';
+import { useModalFocus } from '../hooks/useModalFocus';
 
 interface ElementPropertiesModalProps {
   element: CircuitElement | null;
+  existingNames: string[];
   isOpen: boolean;
   onClose: () => void;
   onSave: (updated: CircuitElement) => void;
@@ -18,7 +20,36 @@ function ElementPropertiesContent({
   isOpen,
   onClose,
   onSave,
+  existingNames,
 }: ElementPropertiesModalProps & { element: CircuitElement }) {
+
+  const modelFields: Array<{ key: keyof NonNullable<CircuitElement['modelParams']>; label: string; unit: string; defaultValue: number }> =
+    element.type === 'DIODE' || element.type === 'THYRISTOR' ? [
+      { key: 'forwardVoltage', label: 'Порог открытия', unit: 'В', defaultValue: element.value > 0 ? element.value : 0.7 },
+      { key: 'onResistance', label: 'Сопротивление открытого', unit: 'Ом', defaultValue: 0.01 },
+      { key: 'offResistance', label: 'Сопротивление закрытого', unit: 'Ом', defaultValue: 1e9 },
+      ...(element.type === 'THYRISTOR' ? [
+        { key: 'gateThreshold' as const, label: 'Порог затвора', unit: 'В', defaultValue: 2.5 },
+        { key: 'holdingCurrent' as const, label: 'Ток удержания', unit: 'А', defaultValue: 0.01 },
+      ] : []),
+    ] : element.type === 'SWITCH' ? [
+      { key: 'onResistance', label: 'Сопротивление открытого', unit: 'Ом', defaultValue: 0.01 },
+      { key: 'offResistance', label: 'Сопротивление закрытого', unit: 'Ом', defaultValue: 1e9 },
+      { key: 'gateThreshold', label: 'Порог затвора', unit: 'В', defaultValue: 2.5 },
+    ] : element.type === 'OPAMP' ? [
+      { key: 'outputLimit', label: 'Предел выхода ±', unit: 'В', defaultValue: 15 },
+    ] : element.type === 'TR3' ? [
+      { key: 'turnsRatio', label: 'Витки N2/N1', unit: '', defaultValue: element.secondaryValue ?? 1 },
+      { key: 'couplingFactor', label: 'Связь k', unit: '', defaultValue: 0.999 },
+    ] : ['NOT', 'AND', 'OR', 'XOR', 'COMPARATOR', 'RS_FF', 'D_FF', 'JK_FF'].includes(element.type) ? [
+      { key: 'logicHigh', label: 'Высокий уровень', unit: 'В', defaultValue: 5 },
+      { key: 'logicLow', label: 'Низкий уровень', unit: 'В', defaultValue: 0 },
+      { key: 'logicThreshold', label: 'Порог входа', unit: 'В', defaultValue: 2.5 },
+      { key: 'outputResistance', label: 'Сопротивление выхода', unit: 'Ом', defaultValue: 10 },
+      { key: 'propagationDelay', label: 'Задержка', unit: 'с', defaultValue: 0 },
+      { key: 'hysteresis', label: 'Гистерезис', unit: 'В', defaultValue: 0 },
+    ] : [];
+  const modelDefaults = () => Object.fromEntries(modelFields.map(field => [field.key, String(element.modelParams?.[field.key] ?? field.defaultValue)]));
 
   const [name, setName] = useState(element.name);
   const [valStr, setValStr] = useState(normalizeEngNotation(element.valueStr || String(element.value)));
@@ -28,6 +59,9 @@ function ElementPropertiesContent({
   const [icStr, setIcStr] = useState(String(element.initialCondition ?? 0));
   const [portName, setPortName] = useState(element.portName || element.name);
   const [directiveStr, setDirectiveStr] = useState(element.textDirective || '');
+  const [validationError, setValidationError] = useState('');
+  const [modelInputs, setModelInputs] = useState<Record<string, string>>(modelDefaults);
+  const dialogRef = useModalFocus<HTMLDivElement>(isOpen, '#element-name');
 
   useEffect(() => {
     setName(element.name);
@@ -39,6 +73,8 @@ function ElementPropertiesContent({
     setIcStr(String(element.initialCondition ?? 0));
     setPortName(element.portName || element.name);
     setDirectiveStr(element.textDirective || '');
+    setValidationError('');
+    setModelInputs(modelDefaults());
   }, [element]);
 
   // Заголовок окна параметров.
@@ -64,6 +100,14 @@ function ElementPropertiesContent({
         return 'Параметры: Источник тока';
       case 'OPAMP':
         return 'Параметры: Операционный усилитель';
+      case 'TR3':
+        return 'Параметры: Двухобмоточный трансформатор';
+      case 'COMPARATOR':
+        return 'Параметры: Компаратор';
+      case 'NOT': case 'AND': case 'OR': case 'XOR':
+        return 'Параметры: Логический элемент';
+      case 'RS_FF': case 'D_FF': case 'JK_FF':
+        return 'Параметры: Триггер';
       case 'PORT':
         return 'Параметры: Элемент «Порт»';
       case 'GND':
@@ -80,18 +124,63 @@ function ElementPropertiesContent({
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
 
-    const parsedVal = parseEngValue(valStr);
+    const nextName = name.trim();
+    if (existingNames.some(other => other.trim().toLocaleUpperCase() === nextName.toLocaleUpperCase())) {
+      setValidationError('Идентификатор уже используется другим элементом.');
+      return;
+    }
+    const parsedInput = parseEngValue(valStr);
+    // Legacy specialised symbols can use a descriptive, non-numeric label.
+    // Preserve their numeric model value only while that label is unchanged.
+    const oldLabel = normalizeEngNotation(element.valueStr || String(element.value));
+    const parsedVal = !Number.isFinite(parsedInput) && normalizeEngNotation(valStr) === oldLabel
+      ? element.value : parsedInput;
     const parsedSec = secValStr ? parseEngValue(secValStr) : undefined;
     const parsedIc = parseEngValue(icStr);
+    if (!Number.isFinite(parsedVal) || (parsedSec !== undefined && !Number.isFinite(parsedSec)) || !Number.isFinite(parsedIc)) {
+      setValidationError('Укажите число с допустимой инженерной приставкой. Лишние символы недопустимы.');
+      return;
+    }
+    if (['R', 'L', 'C', 'TR3'].includes(element.type) && parsedVal <= 0) {
+      setValidationError('Номинал сопротивления, индуктивности или ёмкости должен быть больше нуля.');
+      return;
+    }
+    if (['V_AC', 'V_PULSE'].includes(element.type) && parsedSec !== undefined && parsedSec <= 0) {
+      setValidationError('Частота должна быть больше нуля.');
+      return;
+    }
+    const modelParams: NonNullable<CircuitElement['modelParams']> = {};
+    for (const field of modelFields) {
+      const value = parseEngValue(modelInputs[field.key]);
+      const allowsZero = ['forwardVoltage', 'holdingCurrent', 'propagationDelay', 'hysteresis'].includes(field.key);
+      const allowsNegative = ['gateThreshold', 'logicHigh', 'logicLow', 'logicThreshold'].includes(field.key);
+      if (!Number.isFinite(value) || (!allowsNegative && (allowsZero ? value < 0 : value <= 0))) {
+        setValidationError(`${field.label}: укажите ${allowsNegative ? 'конечное' : allowsZero ? 'неотрицательное' : 'положительное'} число.`);
+        return;
+      }
+      if (field.key === 'couplingFactor' && value >= 1) {
+        setValidationError('Связь k должна быть меньше 1, чтобы матрица оставалась невырожденной.');
+        return;
+      }
+      modelParams[field.key] = value;
+    }
+    if (modelParams.logicHigh !== undefined && modelParams.logicLow !== undefined && modelParams.logicHigh <= modelParams.logicLow) {
+      setValidationError('Высокий уровень должен быть больше низкого.'); return;
+    }
+    if (['RS_FF', 'D_FF', 'JK_FF'].includes(element.type) && parsedIc !== 0 && parsedIc !== 1) {
+      setValidationError('Начальное состояние Q должно быть 0 или 1.'); return;
+    }
+    setValidationError('');
 
     const updated: CircuitElement = {
       ...element,
-      name: name.trim() || element.name,
+      name: nextName || element.name,
       value: parsedVal,
       valueStr: normalizeEngNotation(valStr),
       secondaryValue: parsedSec,
       secondaryStr: normalizeEngNotation(secValStr),
       initialCondition: parsedIc,
+      modelParams: modelFields.length ? modelParams : element.modelParams,
       portName: element.type === 'PORT' ? (portName.trim() || name.trim()) : undefined,
       textDirective: element.type === 'TEXT' ? directiveStr.trim() : undefined,
     };
@@ -101,16 +190,17 @@ function ElementPropertiesContent({
   };
 
   return (
-    <div role="dialog" aria-modal="true" aria-label={getModalTitle()} className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 backdrop-blur-2xs">
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={getModalTitle()} className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 backdrop-blur-2xs">
       {/* Окно параметров элемента. */}
       <div className="bg-white border border-slate-200 rounded-xl shadow-2xl w-full max-w-lg text-slate-800 text-sm font-sans overflow-hidden">
         {/* Заголовок окна */}
-        <div className="bg-gradient-to-r from-[#0055ea] to-[#2680eb] text-white px-5 py-3 flex items-center justify-between font-bold select-none">
+        <div className="bg-slate-50 border-b border-slate-200 text-slate-800 px-5 py-3 flex items-center justify-between font-semibold select-none">
           <span>{getModalTitle()}</span>
           <button
             type="button"
             onClick={onClose}
-            className="w-5 h-5 bg-[#d9534f] hover:bg-[#c9302c] text-white flex items-center justify-center rounded text-2xs cursor-pointer"
+            aria-label="Закрыть свойства"
+            className="w-7 h-7 hover:bg-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center rounded-md text-xs"
           >
             ✕
           </button>
@@ -118,6 +208,7 @@ function ElementPropertiesContent({
 
         {/* Тело формы */}
         <form onSubmit={handleSave} className="p-5 bg-white flex flex-col gap-4">
+          {validationError && <p role="alert" className="text-rose-700 text-xs">{validationError}</p>}
           {/* Идентификатор (стр. 6: "Идентификатор: L_res") */}
           <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
             <label htmlFor="element-name" title="Уникальное обозначение элемента на схеме, например R1" className="text-right font-medium text-slate-700">
@@ -157,7 +248,7 @@ function ElementPropertiesContent({
           )}
 
           {/* Основное значение номинала с размерностью */}
-          {element.type !== 'PORT' && element.type !== 'GND' && element.type !== 'TEXT' && (
+          {element.type !== 'PORT' && element.type !== 'GND' && element.type !== 'TEXT' && !['DIODE', 'THYRISTOR', 'SWITCH', 'NOT', 'AND', 'OR', 'XOR', 'RS_FF', 'D_FF', 'JK_FF', 'COMPARATOR'].includes(element.type) && (
             <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
               <label htmlFor="element-value" title="Номинал без пробелов: 1к, 10м, 2.2мк. Латинские и русские приставки равнозначны." className="text-right font-medium text-slate-700">
                 {element.type === 'R'
@@ -168,6 +259,8 @@ function ElementPropertiesContent({
                   ? 'Емкость (C):'
                   : element.type === 'OPAMP'
                   ? 'Коэф. усиления (K):'
+                  : element.type === 'TR3'
+                  ? 'Индуктивность L1:'
                   : 'Номинал / Напряжение:'}
               </label>
               <div>
@@ -188,8 +281,22 @@ function ElementPropertiesContent({
             </div>
           )}
 
+          {modelFields.map(field => (
+            <div key={field.key} className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
+              <label htmlFor={`model-${field.key}`} className="text-right font-medium text-slate-700">{field.label}:</label>
+              <input
+                id={`model-${field.key}`}
+                type="text"
+                value={modelInputs[field.key] ?? ''}
+                onChange={event => setModelInputs(previous => ({ ...previous, [field.key]: event.target.value }))}
+                className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 font-mono text-xs focus:border-blue-600 focus:outline-none"
+              />
+              <span className="text-slate-600 font-mono">{field.unit}</span>
+            </div>
+          ))}
+
           {/* Дополнительные параметры источников (Частота, скважность) */}
-          {(element.type === 'V_AC' || element.type === 'V_PULSE' || element.type === 'SWITCH') && (
+          {(element.type === 'V_AC' || element.type === 'V_PULSE') && (
             <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
               <label htmlFor="element-frequency" className="text-right font-medium text-slate-700">
                 Частота (f):
@@ -212,7 +319,7 @@ function ElementPropertiesContent({
           )}
 
           {/* Начальные условия (IC) по стр. 6 */}
-          {(element.type === 'L' || element.type === 'C') && (
+          {(element.type === 'L' || element.type === 'C' || ['RS_FF', 'D_FF', 'JK_FF'].includes(element.type)) && (
             <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
               <label htmlFor="element-initial" className="text-right font-medium text-slate-700">
                 Начальные условия (IC):
@@ -229,7 +336,7 @@ function ElementPropertiesContent({
                 />
               </div>
               <div className="text-slate-600 font-mono">
-                {element.type === 'L' ? 'А' : 'В'}
+                {element.type === 'L' ? 'А' : element.type === 'C' ? 'В' : 'Q'}
               </div>
             </div>
           )}

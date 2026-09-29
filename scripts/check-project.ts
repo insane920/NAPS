@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import { SAMPLE_CIRCUITS } from '../src/data/sampleCircuits';
 import { exportToYamlScm, parseYamlScm } from '../src/utils/yamlScm';
-import { solveCircuitTransient, solveCircuitAC, matchesSpecializedExample, getCircuitPinIds, formatEngValue } from '../src/math/circuitSolver';
+import { solveCircuitTransient, solveCircuitAC, getCircuitPinIds, formatEngValue } from '../src/math/circuitSolver';
+import { topologyTypes } from '../src/math/topologyTransient';
 import { COMPONENT_CATALOG, terminalGroupForType } from '../src/components/ComponentPalette';
 import { renderComponentSymbol } from '../src/components/ComponentSymbol';
+import { getComponentLabelLayout } from '../src/utils/componentLabels';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { buildStoredWireRoute, computeOrthogonalWirePoints, getComponentPins, isAllowedWireSegment, moveWireSegment, projectPointToWire, snapManualWirePoint, splitWireRoute } from '../src/components/SchematicEditor';
 import { buildCircuitGraph } from '../src/math/circuitSolver';
+import { nextComponentName } from '../src/utils/componentNames';
 
 assert.equal(formatEngValue(150e-6, 'с'), '150 мкс');
 assert.equal(formatEngValue(200, 'В'), '200 В');
@@ -20,20 +23,21 @@ for (const sample of SAMPLE_CIRCUITS) {
   assert.deepEqual(parsed.elements.map(e => [e.name, e.x, e.y, e.value, e.valueStr, e.secondaryValue]), sample.elements.map(e => [e.name, e.x, e.y, e.value, e.valueStr, e.secondaryValue]), `${sample.id}: parameters`);
   const ids = new Set(parsed.elements.map(e => e.id));
   assert.ok(parsed.wires.every(w => ids.has(w.fromCompId) && ids.has(w.toCompId)), `${sample.id}: connections`);
-  const results = solveCircuitTransient(parsed.elements, parsed.wires, parsed.transient);
-  assert.ok(results.time.length > 0 && results.time.every(Number.isFinite), `${sample.id}: time series`);
-  for (const [name, values] of Object.entries(results.signals)) {
-    assert.equal(values.length, results.time.length, `${sample.id}: signal ${name} length`);
-    assert.ok(values.every(Number.isFinite), `${sample.id}: signal ${name} values`);
+  if (parsed.elements.some(e => !topologyTypes.has(e.type))) {
+    assert.throws(() => solveCircuitTransient(parsed.elements, parsed.wires, parsed.transient), /нет расчётной модели/);
+  } else if (sample.id === 'buck-converter') {
+    // Its control pin is not connected in the bundled drawing.
+    assert.throws(() => solveCircuitTransient(parsed.elements, parsed.wires, parsed.transient), /подключите управляющий вывод gate/);
+  } else {
+    const results = solveCircuitTransient(parsed.elements, parsed.wires, parsed.transient);
+    assert.ok(results.time.length > 0 && results.time.every(Number.isFinite), `${sample.id}: time series`);
+    for (const [name, values] of Object.entries(results.signals)) {
+      assert.equal(values.length, results.time.length, `${sample.id}: signal ${name} length`);
+      assert.ok(values.every(Number.isFinite), `${sample.id}: signal ${name} values`);
+    }
   }
 }
-const specializedSamples = SAMPLE_CIRCUITS.filter(sample => sample.elements.some(element => !['R', 'L', 'C', 'V_DC', 'V_AC', 'V_PULSE', 'I_DC', 'GND', 'PORT', 'JUNCTION', 'TEXT'].includes(element.type)));
-for (const sample of specializedSamples) {
-  assert.equal(matchesSpecializedExample(sample.elements, sample.wires), true, `${sample.id}: original topology is supported`);
-  assert.equal(matchesSpecializedExample(sample.elements, sample.wires.slice(1)), false, `${sample.id}: changed topology must be rejected`);
-  assert.throws(() => solveCircuitTransient(sample.elements, sample.wires.slice(1), sample.transient), /нелинейной схемы/);
-}
-assert.throws(() => solveCircuitAC([], [], { fMin: 10, fMax: 1000, points: 20, scaleType: 'log', signals: [] }), /Частотный анализ/);
+assert.throws(() => solveCircuitAC([], [], { fMin: 10, fMax: 1000, points: 20, scaleType: 'log', signals: [] }), /землю/);
 const connectedSample = SAMPLE_CIRCUITS[0];
 const beforeGraph = buildCircuitGraph(connectedSample.elements, connectedSample.wires);
 const movedElements = connectedSample.elements.map((element, index) => ({ ...element, x: element.x + index * 20, y: element.y - index * 40, rotation: (element.rotation + 90) % 360 }));
@@ -108,6 +112,14 @@ assert.equal(isolatedRoundTrip.elements[0].isolation, 'open', 'Isolation must su
 const angled = connectedSample.elements.map((el, index) => index === 0 ? { ...el, rotation: 45 } : el);
 const angledRoundTrip = parseYamlScm(exportToYamlScm(angled, connectedSample.wires, connectedSample.transient));
 assert.equal(angledRoundTrip.elements[0].rotation, 45, '45-degree rotation must survive SCM save/load');
+
+const labels0 = getComponentLabelLayout({ rotation: 0, showName: true });
+const labels90 = getComponentLabelLayout({ rotation: 90, showName: true });
+const labels180 = getComponentLabelLayout({ rotation: 180, showName: true });
+assert.ok(labels0.name.x < 0 && labels0.value.x > 0, 'at 0 degrees name and value stay on opposite horizontal sides');
+assert.ok(labels90.name.y < 0 && labels90.value.y > 0, 'at 90 degrees labels move above and below the component');
+assert.ok(labels180.name.x > 0 && labels180.value.x < 0, 'at 180 degrees name and value swap sides');
+assert.equal(getComponentLabelLayout({ rotation: 0, showName: false }).value.x, labels0.name.x, 'value takes the name position when the name is hidden');
 const angledPins = getComponentPins(angled[0]);
 assert.ok(angledPins.some(pin => Math.abs(pin.x) > 1 && Math.abs(pin.y) > 1), '45-degree pin geometry must rotate on both axes');
 for (const component of COMPONENT_CATALOG) {
@@ -126,7 +138,20 @@ const validScm = exportToYamlScm(connectedSample.elements, connectedSample.wires
 assert.throws(() => parseYamlScm(validScm.replace(/To:\s+\{ ID: \d+, Pin: (?:"[^"]+"|\d+) \}/, 'To: { ID: 999, Pin: "1" }')), /Провод 1.*не найден/);
 assert.throws(() => parseYamlScm(validScm.replace(/To:\s+\{ ID: \d+, Pin: (?:"[^"]+"|\d+) \}/, 'To: { ID: 2, Pin: "missing" }')), /Провод 1.*не найден/);
 assert.throws(() => parseYamlScm(validScm.replace('  - ID: 2', '  - ID: 1')), /повторяющийся ID/);
+assert.throws(() => parseYamlScm(validScm.replace(/    Name: "[^"]+"/, `    Name: "${connectedSample.elements[1].name}"`)), /Повторяющийся/);
+assert.throws(() => parseYamlScm(validScm.replace(/    X: [^\n]+/, '    X: wrong')), /X элемента/);
+assert.throws(() => parseYamlScm(validScm.replace(/    Rot: [^\n]+/, '    Rot: NaN')), /Rot элемента/);
+assert.throws(() => parseYamlScm(validScm.replace(/      Value: "[^"]+"/, '      Value: "Infinity"')), /Value элемента/);
+assert.throws(() => parseYamlScm(validScm.replace(/      ValueText: "[^"]+"/, '      ValueText: "1кк"')), /видимый номинал/);
+assert.throws(() => parseYamlScm(validScm.replace(/    EndTime: "[^"]+"/, '    EndTime: "1garbage"')), /EndTime/);
+const blankSignals = parseYamlScm(exportToYamlScm(connectedSample.elements, connectedSample.wires, { ...connectedSample.transient, signals: [] }));
+assert.deepEqual(blankSignals.transient.signals, [], 'An empty signal list must stay empty after SCM reload');
+assert.equal(nextComponentName([
+  { ...connectedSample.elements[0], name: 'R1' },
+  { ...connectedSample.elements[1], name: 'R3' },
+], 'R'), 'R4', 'Deleting R2 must not reuse an occupied suffix');
+assert.equal(nextComponentName([{ ...connectedSample.elements[0], name: 'U3' }], 'U'), 'U4', 'Different voltage source types share a name prefix');
 assert.throws(() => exportToYamlScm(connectedSample.elements, [...connectedSample.wires, { id: 'broken', fromCompId: 'missing', fromPinId: '1', toCompId: connectedSample.elements[0].id, toPinId: '1' }], connectedSample.transient), /Схема не сохранена/);
 assert.equal(terminalGroupForType('GND'), null, 'Reference potential is not a component group');
 assert.equal(terminalGroupForType('JUNCTION'), null, 'Wire junction is not a component group');
-console.log(`PASS: ${SAMPLE_CIRCUITS.length} sample file round-trips and simulations; ${COMPONENT_CATALOG.length} component symbols.`);
+console.log(`PASS: ${SAMPLE_CIRCUITS.length} sample file round-trips, supported simulations and explicit diagnostics; ${COMPONENT_CATALOG.length} component symbols.`);

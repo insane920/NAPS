@@ -252,7 +252,7 @@ export type ComponentType =
   | 'R'           // Резистор
   | 'L'           // Индуктивность
   | 'C'           // Конденсатор
-  | 'TR3'         // Трансформатор / Трехобмоточный индуктор
+  | 'TR3'         // Двухобмоточный трансформатор; имя TR3 оставлено для совместимости SCM
   | 'DIODE'       // Диод
   | 'THYRISTOR'   // Тиристор
   | 'SWITCH'      // Управляемый ключ / транзистор (VCK)
@@ -298,6 +298,23 @@ export interface CircuitElement {
   secondaryValue?: number; // e.g. frequency 1000, dutyCycle 0.5, V_peak
   secondaryStr?: string;
   initialCondition?: number; // IC (начальное условие тока/напряжения)
+  /** Parameters of the documented piecewise-linear semiconductor/control models. */
+  modelParams?: {
+    forwardVoltage?: number; // V, diode/thyristor conducting threshold
+    onResistance?: number; // Ohm
+    offResistance?: number; // Ohm
+    gateThreshold?: number; // V, relative to terminal 2
+    holdingCurrent?: number; // A, thyristor turn-off threshold
+    outputLimit?: number; // V, op-amp symmetric output rail
+    turnsRatio?: number; // secondary/primary winding turns, TR3
+    couplingFactor?: number; // magnetic coupling, 0 < k < 1
+    logicHigh?: number; // internally supplied high output rail, V
+    logicLow?: number; // internally supplied low output rail, V
+    logicThreshold?: number; // analog-to-digital switching level, V
+    outputResistance?: number; // digital output's Thevenin resistance, Ohm
+    propagationDelay?: number; // digital transition delay, s
+    hysteresis?: number; // comparator differential hysteresis, V
+  };
   portName?: string;    // Name of port (e.g. "IN", "OUT", "GATE")
   textDirective?: string; // Text content for TEXT component
 }
@@ -372,11 +389,14 @@ export interface CircuitSimulationResults {
     steps: CalculationStep[][];
     signalSources: Record<string, string>;
   };
-  model?: 'linear-mna';
+  model?: 'linear-mna' | 'topology-mna';
   time: number[];
   signals: Record<string, number[]>; // key: signal expression (e.g. "U(OUT)")
   nodeVoltages: Record<string, number[]>;
   branchCurrents: Record<string, number[]>;
+  complexNodeVoltages?: Record<string, Array<{ re: number; im: number }>>;
+  complexBranchCurrents?: Record<string, Array<{ re: number; im: number }>>;
+  digitalStates?: Record<string, Array<0 | 1 | 'X'>>;
   isAC?: boolean;
   frequency?: number[];
   sweepInfo?: {

@@ -1,5 +1,6 @@
 import type { CircuitElement, CircuitWire, CircuitSimulationResults, TransientSettings } from '../types';
 import { buildCircuitGraph, type CircuitGraph } from './circuitSolver';
+import { createMnaMatrix } from './mnaCore';
 
 export const linearTypes = new Set(['R', 'L', 'C', 'V_DC', 'V_AC', 'V_PULSE', 'I_DC', 'GND', 'PORT', 'JUNCTION', 'TEXT']);
 export const isLinearCircuit = (elements: CircuitElement[]) => elements.every(e => linearTypes.has(e.type));
@@ -30,22 +31,19 @@ export function assembleLinearSystem(branches: CircuitElement[], graph: CircuitG
   const extra = branches.filter(e => e.type.startsWith('V_') || (initial ? e.type === 'C' : e.type === 'L'));
   const size = used.length + extra.length;
   if (size > 160) throw new Error('Схема слишком велика для текущего решателя (более 160 неизвестных).');
-  const a = Array.from({ length: size }, () => new Array(size).fill(0));
-  const b = new Array(size).fill(0);
-  const add = (i: number | undefined, j: number | undefined, v: number) => { if (i !== undefined && j !== undefined) a[i][j] += v; };
-  const stampI = (p: number | undefined, m: number | undefined, value: number) => { if (p !== undefined) b[p] -= value; if (m !== undefined) b[m] += value; };
+  const { a, b, add, current: stampI, conductance: stampG, voltage: stampV } = createMnaMatrix(size);
   for (const e of branches) {
     const p = index.get(node(e, '1')), m = index.get(node(e, '2'));
     let g = 0;
     if (e.type === 'R') g = 1 / e.value;
     if (e.type === 'C' && !initial) { g = e.value / dt; stampI(p, m, -g * previousU[e.name]); }
-    if (g) { add(p, p, g); add(m, m, g); add(p, m, -g); add(m, p, -g); }
+    if (g) stampG(p, m, g);
     if (e.type === 'I_DC') stampI(p, m, e.value);
     if (e.type === 'L' && initial) stampI(p, m, e.initialCondition ?? 0);
     const ei = extra.indexOf(e);
     if (ei >= 0) {
       const q = used.length + ei;
-      add(p, q, 1); add(m, q, -1); add(q, p, 1); add(q, m, -1);
+      stampV(p, m, q, 0);
       if (e.type === 'L') { a[q][q] = -e.value / dt; b[q] = -e.value / dt * previousI[e.name]; }
       else b[q] = e.type === 'C' ? (e.initialCondition ?? 0) : sourceValue(e, t);
     }
@@ -54,7 +52,7 @@ export function assembleLinearSystem(branches: CircuitElement[], graph: CircuitG
 }
 
 // Dense Gaussian elimination with row scaling and partial pivoting.
-function solve(matrix: number[][], rhs: number[]): number[] {
+export function solveDenseSystem(matrix: number[][], rhs: number[]): number[] {
   const n = rhs.length;
   for (let i = 0; i < n; i++) {
     const scale = Math.max(...matrix[i].map(Math.abs));
@@ -128,7 +126,7 @@ export function solveLinearTransient(elements: CircuitElement[], wires: CircuitW
     const previousU = Object.fromEntries(branches.map(e => [e.name, voltages[e.name][k - 1]]));
     const previousI = Object.fromEntries(branches.map(e => [e.name, branchCurrents[e.name][k - 1]]));
     const { a, b, extra } = assembleLinearSystem(branches, graph, initial, time[k], dt, previousU, previousI);
-    const x = solve(a, b);
+    const x = solveDenseSystem(a, b);
     const potential = (n: number) => n === 0 ? 0 : x[index.get(n)!];
     nodeVoltages.node_0.push(0);
     for (const n of used) nodeVoltages[`node_${n}`].push(potential(n));

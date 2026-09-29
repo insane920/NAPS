@@ -1,7 +1,7 @@
 {
   "name": "naps-cad",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.5",
   "description": "NAPS — Numerical, Analytical, PWL, Simulation",
   "author": "NAPS",
   "main": "index.js",
@@ -12,7 +12,7 @@
     "preview": "vite preview",
     "electron:start": "install-electron && vite build && electron .",
     "dist:win": "install-electron && npm run lint && npm run test && npm run build && electron-builder --win nsis portable --x64",
-    "test": "tsx scripts/check-project.ts && tsx scripts/check-math.ts",
+    "test": "tsx scripts/check-project.ts && tsx scripts/check-math.ts && tsx scripts/check-topology-math.ts && tsx scripts/check-ac-math.ts && tsx scripts/check-digital-math.ts",
     "test:browser": "node scripts/check-browser.cjs",
     "test:all": "npm run test && npm run test:browser",
     "lint": "tsc --noEmit",
@@ -23,12 +23,17 @@
     "productName": "NAPS",
     "asar": true,
     "compression": "maximum",
+    "electronLanguages": [
+      "ru",
+      "en-US"
+    ],
     "npmRebuild": false,
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/**/*",
+      "build/icon.ico",
       "index.js",
       "electron/preload.cjs",
       "package.json",
@@ -66,19 +71,16 @@
     "electronDist": "node_modules/electron/dist"
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.1.14",
-    "@vitejs/plugin-react": "^5.0.4",
     "lucide-react": "^0.546.0",
-    "motion": "^12.23.24",
     "react": "^19.0.1",
-    "react-dom": "^19.0.1",
-    "vite": "^6.2.3"
+    "react-dom": "^19.0.1"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.1.14",
+    "@vitejs/plugin-react": "^5.0.4",
     "@types/node": "^22.14.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "autoprefixer": "^10.4.21",
     "electron": "^44.4.3",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.25.0",

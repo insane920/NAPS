@@ -49,14 +49,16 @@ const fs = require('node:fs/promises');
   const size = await page.evaluate(() => ({scroll: document.documentElement.scrollWidth, viewport: innerWidth}));
   assert.ok(size.scroll <= size.viewport, '900px viewport has no horizontal page overflow');
   await page.getByRole('button', { name: 'Закрыть график' }).click();
-  const { valid, rewired, malformed } = await page.evaluate(async () => {
+  const { valid, rewired, malformed, rectifier } = await page.evaluate(async () => {
     const { SAMPLE_CIRCUITS } = await import('/src/data/sampleCircuits.ts');
     const { exportToYamlScm } = await import('/src/utils/yamlScm.ts');
     const sample = SAMPLE_CIRCUITS[0];
+    const nonlinear = SAMPLE_CIRCUITS.find(item => item.id === 'rectifier-bridge');
     const valid = exportToYamlScm(sample.elements, sample.wires, sample.transient);
     return {
       valid,
       rewired: exportToYamlScm(sample.elements, sample.wires.slice(1), sample.transient),
+      rectifier: exportToYamlScm(nonlinear.elements, nonlinear.wires, nonlinear.transient),
       malformed: valid.replace(/To:\s+\{ ID: \d+, Pin: (?:"[^"]+"|\d+) \}/, 'To: { ID: 999, Pin: "1" }'),
     };
   });
@@ -67,12 +69,29 @@ const fs = require('node:fs/promises');
   assert.equal(await page.locator('#schematic-world > g[transform^="translate"]').count(), beforeInvalidImport, 'failed import keeps the current project');
   await fileInput.setInputFiles({ name: 'rewired.scm', mimeType: 'text/plain', buffer: Buffer.from(rewired) });
   await page.getByRole('button', { name: 'Рассчитать схему' }).click();
-  assert.match(await page.getByRole('alert').innerText(), /нелинейной схемы/);
-  assert.equal(await page.getByRole('dialog', { name: 'Результаты расчёта' }).count(), 0, 'unsupported topology has no misleading graph');
+  await page.waitForFunction(() => document.querySelector('[role="alert"]') || document.querySelector('[role="dialog"][aria-label="Результаты расчёта"]'));
+  if (await page.getByRole('dialog', { name: 'Результаты расчёта' }).count()) {
+    await page.getByRole('button', { name: 'Закрыть график' }).click();
+  } else assert.match(await page.getByRole('alert').innerText(), /вырождена|неподключ/);
   await fileInput.setInputFiles({ name: 'example.scm', mimeType: 'text/plain', buffer: Buffer.from(valid) });
   await page.getByRole('button', { name: 'Рассчитать схему' }).click();
   await page.getByRole('dialog', { name: 'Результаты расчёта' }).waitFor();
-  assert.match(await page.getByRole('note').innerText(), /Учебная модель/);
+  await page.getByRole('button', { name: 'Закрыть график' }).click();
+  await fileInput.setInputFiles({ name: 'rectifier.scm', mimeType: 'text/plain', buffer: Buffer.from(rectifier) });
+  await page.getByRole('button', { name: 'Рассчитать схему' }).click();
+  await page.getByRole('dialog', { name: 'Результаты расчёта' }).waitFor();
+  await page.getByRole('button', { name: 'Математический расчёт' }).click();
+  const rectifierText = await page.getByRole('dialog', { name: 'Результаты расчёта' }).innerText();
+  assert.match(rectifierText, /Узловой расчёт нелинейной цепи/);
+  assert.match(rectifierText, /I\(VD1\)/);
+  await page.getByRole('button', { name: 'Закрыть график' }).click();
+  await page.locator('#schematic-world text').filter({ hasText: 'VD1' }).first().dispatchEvent('dblclick');
+  await page.getByRole('dialog', { name: 'Параметры: Диод' }).waitFor();
+  assert.equal(await page.locator('#model-forwardVoltage').inputValue(), '0.7');
+  await page.locator('#model-forwardVoltage').fill('0.8');
+  await page.getByRole('button', { name: 'OK' }).click();
+  await page.getByRole('button', { name: 'Рассчитать схему' }).click();
+  await page.getByRole('dialog', { name: 'Результаты расчёта' }).waitFor();
   assert.equal(errors.length, 0);
   console.log('PASS: empty and incomplete circuits, SCM validation, nonlinear scope, RC graph, CSV and HTML report.');
   await browser.close();

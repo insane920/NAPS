@@ -1,6 +1,6 @@
 import type { CalculationStep, CircuitElement, CircuitSimulationResults, CircuitWire, TransientSettings } from '../types';
 import { buildCircuitGraph } from './circuitSolver';
-import { assembleLinearSystem, electricalElements } from './linearTransient';
+import { assembleLinearSystem, electricalElements, sourceValue } from './linearTransient';
 
 export const numberText = (value: number | undefined) => value === undefined ? '—' : Number.isFinite(value) ? String(Number(value.toPrecision(10))) : String(value);
 export interface CalculationReport {
@@ -19,17 +19,22 @@ export function buildCalculationReport(elements: CircuitElement[], wires: Circui
   const k = Math.max(0, Math.min(results.time.length - 1, Math.trunc(sampleIndex)));
   const t = results.time[k], h = k ? t - results.time[k - 1] : (results.time[1] ?? 0);
   const linear = results.model === 'linear-mna';
+  const topology = results.model === 'topology-mna';
   const graph = buildCircuitGraph(elements, wires);
   const node = (e: CircuitElement, pin: string) => graph.pinToNode.get(`${e.id}_${pin}`);
   const potential = (nodeId: number | undefined, index = k) => results.nodeVoltages[`node_${nodeId}`]?.[index];
   const branches = electricalElements(elements);
   const report: CalculationReport = {
-    title: linear ? 'Узловой расчёт линейной цепи' : results.derivation?.method ?? 'Расчёт графика',
+    title: linear ? 'Узловой расчёт линейной цепи' : topology ? 'Узловой расчёт нелинейной цепи' : results.derivation?.method ?? 'Расчёт графика',
     notes: linear ? [
       'Все числа в подстановках приведены в СИ: В, А, Ом, Ф, Гн, с. Для чтения показано 10 значащих цифр; расчёт выполняется с точностью JavaScript Number.',
       'U элемента = V(вывод 1) − V(вывод 2); положительный ток направлен от вывода 1 к выводу 2. V(0)=0 — земля.',
       'На каждом шаге решается система A·x=b: узловые потенциалы и токи идеальных источников/индуктивностей. Метод Гаусса с выбором главного элемента. Производные заменены обратной разностью (неявный Эйлер).',
       'В t=0: U_C(0)=IC_C и I_L(0)=IC_L; остальные величины определяются совместным решением уравнений. Провод идеален: соединённые выводы имеют один потенциал.',
+    ] : topology ? [
+      'Система построена по фактическим соединениям. Узловые потенциалы, токи идеальных источников и ОУ определяются методом модифицированного узлового анализа.',
+      'Конденсаторы и катушки интегрируются неявным методом Эйлера. Для диода и тиристора используется явно заданная кусочно-линейная модель Vf + Ron / Roff, для ключа — Ron / Roff.',
+      'ОУ моделируется источником напряжения с конечным усилением и симметричным ограничением выхода. Эти идеализированные модели не заменяют паспортные характеристики устройств.',
     ] : [...(results.derivation?.notes ?? ['Подробная запись шагов для этого режима отсутствует.'])],
     parameters: [
       { name: 'Точка k (нумерация с нуля)', value: String(k) },
@@ -37,11 +42,11 @@ export function buildCalculationReport(elements: CircuitElement[], wires: Circui
       { name: 'Фактический шаг h', value: `${n(h)} с` },
       { name: 'Заданный шаг', value: `${n(settings.step)} с` },
       { name: 'Интервал / число точек', value: `0 … ${n(results.time.at(-1))} с / ${results.time.length}` },
-      ...elements.map(e => ({ name: `${e.name} (${e.type})`, value: ['GND', 'JUNCTION', 'PORT', 'TEXT'].includes(e.type) ? e.type === 'TEXT' ? e.textDirective || 'Текстовая аннотация' : `узел ${node(e, '1') ?? '—'}${e.portName ? `, порт ${e.portName}` : ''}` : `${n(e.value)} ${e.unit}; выводы: ${node(e, '1') ?? '—'} → ${node(e, '2') ?? '—'}${e.secondaryValue !== undefined ? `; второй параметр=${n(e.secondaryValue)}` : ''}${e.initialCondition !== undefined ? `; IC / D=${n(e.initialCondition)}` : ''}` })),
+      ...elements.map(e => ({ name: `${e.name} (${e.type})`, value: ['GND', 'JUNCTION', 'PORT', 'TEXT'].includes(e.type) ? e.type === 'TEXT' ? e.textDirective || 'Текстовая аннотация' : `узел ${node(e, '1') ?? '—'}${e.portName ? `, порт ${e.portName}` : ''}` : e.type === 'OPAMP' ? `K=${n(e.value)}; входы: ${node(e, 'in_pos') ?? '—'} (+), ${node(e, 'in_neg') ?? '—'} (−); выход: ${node(e, 'out') ?? '—'}; Uпредел=${n(e.modelParams?.outputLimit ?? 15)} В` : `${n(e.value)} ${e.unit}; выводы: ${node(e, '1') ?? '—'} → ${node(e, '2') ?? '—'}${e.secondaryValue !== undefined ? `; второй параметр=${n(e.secondaryValue)}` : ''}${e.initialCondition !== undefined ? `; IC / D=${n(e.initialCondition)}` : ''}${e.modelParams ? `; модель=${Object.entries(e.modelParams).map(([key, value]) => `${key}=${n(value)}`).join(', ')}` : ''}` })),
     ],
     steps: [], signals: [],
     statistics: Object.entries(results.summary.stats).map(([name, stat]) => ({ name, ...stat })),
-    statisticsFormula: linear ? 'Для ломаной графика: T=t[N]−t[0]; mean = Σ h[k](y[k−1]+y[k])/(2T); RMS = √{Σ h[k](y[k−1]²+y[k−1]y[k]+y[k]²)/(3T)}. min и max — экстремумы всех записанных точек.' : 'Для дискретных отсчётов старой модели: mean = Σ y[k]/N; RMS = √(Σ y[k]²/N); min и max — экстремумы всех записанных точек.',
+    statisticsFormula: linear || topology ? 'Для ломаной графика: T=t[N]−t[0]; mean = Σ h[k](y[k−1]+y[k])/(2T); RMS = √{Σ h[k](y[k−1]²+y[k−1]y[k]+y[k]²)/(3T)}. min и max — экстремумы всех записанных точек.' : 'Для дискретных отсчётов старой модели: mean = Σ y[k]/N; RMS = √(Σ y[k]²/N); min и max — экстремумы всех записанных точек.',
   };
   if (linear) {
     const add = (name: string, formula: string, substitution: string, value: number, unit: string) => report.steps.push({ name, formula, substitution, value, unit });
@@ -88,24 +93,63 @@ export function buildCalculationReport(elements: CircuitElement[], wires: Circui
       }
       add(`P(${e.name})`, 'p[k] = u[k] i[k]', `${n(u)} × (${n(i)})`, u * i, 'Вт');
     }
+  } else if (topology) {
+    const add = (name: string, formula: string, substitution: string, value: number, unit: string) => report.steps.push({ name, formula, substitution, value, unit });
+    const balance = new Map<number, number>();
+    for (const e of branches) {
+      const p = node(e, e.type === 'OPAMP' ? 'out' : '1')!;
+      const m = e.type === 'OPAMP' ? 0 : node(e, '2')!;
+      const u = results.elementVoltages?.[e.name]?.[k] ?? (potential(p)! - potential(m)!);
+      const i = results.branchCurrents[e.name][k];
+      balance.set(p, (balance.get(p) ?? 0) + i);
+      balance.set(m, (balance.get(m) ?? 0) - i);
+      add(`U(${e.name})`, `U = V(${p}) − V(${m})`, `${n(potential(p))} − (${n(potential(m))})`, u, 'В');
+      if (e.type === 'R') add(`I(${e.name})`, 'I = U/R', `${n(u)}/${n(e.value)}`, i, 'А');
+      else if (e.type === 'C') {
+        if (!k) add(`${e.name}: начальное условие`, 'U_C[0] = IC', n(e.initialCondition ?? 0), u, 'В');
+        add(`I(${e.name})`, k ? 'I_C[k] = C·(U_C[k]−U_C[k−1])/h' : 'I_C[0] определяется уравнениями Кирхгофа', k ? `${n(e.value)}·(${n(u)}−${n(results.elementVoltages?.[e.name]?.[k - 1])})/${n(h)}` : `I_C[0]=${n(i)}`, i, 'А');
+      } else if (e.type === 'L') {
+        if (k) add(`${e.name}: уравнение ветви`, 'U_L[k] = L·(I_L[k]−I_L[k−1])/h', `${n(e.value)}·(${n(i)}−${n(results.branchCurrents[e.name][k - 1])})/${n(h)}`, u, 'В');
+        add(`I(${e.name})`, k ? 'I_L[k] — ток, решённый системой Кирхгофа' : 'I_L[0] = IC', k ? `I_L[k]=${n(i)}` : `IC=${n(e.initialCondition ?? 0)}`, i, 'А');
+      }
+      else if (e.type === 'I_DC') add(`I(${e.name})`, 'I = I_DC', n(e.value), i, 'А');
+      else if (e.type.startsWith('V_')) add(`${e.name}: источник`, 'U = U_source(t); ток определяется уравнениями Кирхгофа', `U_source(${n(t)})=${n(sourceValue(e, t))}`, u, 'В');
+      else if (e.type === 'DIODE' || e.type === 'THYRISTOR') {
+        const vf = e.modelParams?.forwardVoltage ?? (e.value > 0 ? e.value : 0.7), ron = e.modelParams?.onResistance ?? 0.01, roff = e.modelParams?.offResistance ?? 1e9;
+        const on = Math.abs(i - (u - vf) / ron) < Math.abs(i - u / roff);
+        add(`I(${e.name})`, on ? 'I = (U−Vf)/Ron' : 'I = U/Roff', on ? `(${n(u)}−${n(vf)})/${n(ron)}` : `${n(u)}/${n(roff)}`, i, 'А');
+        if (e.type === 'THYRISTOR') add(`${e.name}: управление`, 'Открытие: Vgate−V2 ≥ Vпорог; удержание: I ≥ Ihold', `Vgate−V2=${n(potential(node(e, 'gate'))! - potential(m)!)}, Vпорог=${n(e.modelParams?.gateThreshold ?? 2.5)}, Ihold=${n(e.modelParams?.holdingCurrent ?? 0.01)}`, i, 'А');
+      } else if (e.type === 'SWITCH') {
+        const gate = potential(node(e, 'gate'))! - potential(m)!, threshold = e.modelParams?.gateThreshold ?? 2.5;
+        const resistance = gate >= threshold ? e.modelParams?.onResistance ?? 0.01 : e.modelParams?.offResistance ?? 1e9;
+        add(`I(${e.name})`, 'I = U/Rstate; state = (Vgate−V2 ≥ Vпорог)', `${n(u)}/${n(resistance)}; ${n(gate)} ≥ ${n(threshold)}`, i, 'А');
+      } else if (e.type === 'OPAMP') {
+        const drive = e.value * (potential(node(e, 'in_pos'))! - potential(node(e, 'in_neg'))!);
+        const limit = e.modelParams?.outputLimit ?? 15;
+        add(`${e.name}: выход`, 'Uout = clip(K·(V+−V−), −Ulimit, Ulimit)', `clip(${n(e.value)}·(${n(potential(node(e, 'in_pos')))}−${n(potential(node(e, 'in_neg')))}), ±${n(limit)})`, Math.max(-limit, Math.min(limit, drive)), 'В');
+        add(`I(${e.name})`, 'Ток выхода определяется уравнениями Кирхгофа; токи входов = 0', `Iout=${n(i)}`, i, 'А');
+      }
+      add(`P(${e.name})`, 'P = U·I', `${n(u)}·(${n(i)})`, u * i, 'Вт');
+    }
+    for (const [id, sum] of balance) add(`Узел ${id}: закон Кирхгофа`, 'Σ Iвыходящих = 0', n(sum), sum, 'А');
   } else report.steps = [...(results.derivation?.steps[k] ?? [])];
 
   for (const [name, values] of Object.entries(results.signals)) {
     let formula = results.derivation?.signalSources[name] ?? 'Ряд записан расчётным движком';
-    if (linear) {
+    if (linear || topology) {
       const match = name.match(/^([UIP])\(([^)]+)\)$/i);
       if (match) {
         const target = match[2].trim().toUpperCase(), kind = match[1].toUpperCase();
         const e = branches.find(e => e.name.toUpperCase() === target);
         const id = graph.namedNodes.get(target) ?? (/^\d+$/.test(target) ? Number(target) : undefined);
-        formula = kind === 'U' ? id !== undefined ? `y[k] = V(${id}) = ${n(potential(id))} В` : e ? `y[k] = V(${node(e, '1')}) − V(${node(e, '2')}) = ${n(potential(node(e, '1')))} − (${n(potential(node(e, '2')))}) В` : formula : kind === 'I' ? `y[k] = I(${e?.name}); уравнение ветви приведено выше` : `y[k] = U(${e?.name}) × I(${e?.name}); подстановка приведена выше`;
+        formula = kind === 'U' ? id !== undefined ? `y[k] = V(${id}) = ${n(potential(id))} В` : e ? e.type === 'OPAMP' ? `y[k] = V(${node(e, 'out')}) = ${n(potential(node(e, 'out')))} В` : `y[k] = V(${node(e, '1')}) − V(${node(e, '2')}) = ${n(potential(node(e, '1')))} − (${n(potential(node(e, '2')))}) В` : formula : kind === 'I' ? `y[k] = I(${e?.name}); уравнение ветви приведено выше` : `y[k] = U(${e?.name}) × I(${e?.name}); подстановка приведена выше`;
       }
     }
     report.signals.push({ name, formula, value: values[k], unit: results.summary.stats[name]?.unit ?? '' });
     const stat = results.summary.stats[name];
     if (stat) {
       let sum = 0, squareSum = 0;
-      if (linear) {
+      if (linear || topology) {
         for (let j = 1; j < values.length; j++) {
           const a = values[j - 1], b = values[j], dt = results.time[j] - results.time[j - 1];
           sum += dt * (a + b) / 2;
@@ -114,9 +158,9 @@ export function buildCalculationReport(elements: CircuitElement[], wires: Circui
       } else {
         for (const v of values) { sum += v; squareSum += v * v; }
       }
-      const denominator = linear ? results.time.at(-1)! - results.time[0] : values.length;
-      report.steps.push({ name: `Среднее ${name}`, formula: linear ? 'mean = ∫y dt / T (интеграл ломаной)' : 'mean = Σy / N', substitution: `${n(sum)} / ${n(denominator)}`, value: stat.mean, unit: stat.unit });
-      report.steps.push({ name: `RMS ${name}`, formula: linear ? 'RMS = √(∫y² dt / T) (интеграл квадрата ломаной)' : 'RMS = √(Σy² / N)', substitution: `√(${n(squareSum)} / ${n(denominator)})`, value: stat.rms, unit: stat.unit });
+      const denominator = linear || topology ? results.time.at(-1)! - results.time[0] : values.length;
+      report.steps.push({ name: `Среднее ${name}`, formula: linear || topology ? 'mean = ∫y dt / T (интеграл ломаной)' : 'mean = Σy / N', substitution: `${n(sum)} / ${n(denominator)}`, value: stat.mean, unit: stat.unit });
+      report.steps.push({ name: `RMS ${name}`, formula: linear || topology ? 'RMS = √(∫y² dt / T) (интеграл квадрата ломаной)' : 'RMS = √(Σy² / N)', substitution: `√(${n(squareSum)} / ${n(denominator)})`, value: stat.rms, unit: stat.unit });
     }
   }
   return report;

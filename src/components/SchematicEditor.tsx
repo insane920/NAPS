@@ -29,6 +29,10 @@ import {
 } from '../types';
 import { SAMPLE_CIRCUITS, SampleCircuit } from '../data/sampleCircuits';
 import { buildCircuitGraph, normalizeEngNotation } from '../math/circuitSolver';
+import { topologyTypes } from '../math/topologyTransient';
+import { nextComponentName } from '../utils/componentNames';
+import { getComponentLabelLayout } from '../utils/componentLabels';
+import { useModalFocus } from '../hooks/useModalFocus';
 import { ComponentPalette, COMPONENT_CATALOG, TERMINAL_GROUPS, terminalGroupForType, TerminalGroup } from './ComponentPalette';
 
 interface SchematicEditorProps {
@@ -49,6 +53,7 @@ interface SchematicEditorProps {
   fitRevision?: number;
   onOpenTransientSettings: () => void;
   onLoadSample: (sample: SampleCircuit) => void;
+  onClearProject: () => void;
   onHoverStatus?: (text: string | null) => void;
 }
 
@@ -510,10 +515,11 @@ export function getComponentPins(el: CircuitElement): CircuitPin[] {
     const p3 = transform(30, -12);
     const p4 = transform(30, 12);
     return [
-      { id: '1', name: 'S', x: p1.x, y: p1.y },
-      { id: '2', name: 'R', x: p2.x, y: p2.y },
+      { id: '1', name: el.type === 'RS_FF' ? 'S' : el.type === 'D_FF' ? 'D' : 'J', x: p1.x, y: p1.y },
+      { id: '2', name: el.type === 'RS_FF' ? 'R' : el.type === 'D_FF' ? 'CLK' : 'K', x: p2.x, y: p2.y },
       { id: '3', name: 'Q', x: p3.x, y: p3.y },
       { id: '4', name: '/Q', x: p4.x, y: p4.y },
+      ...(el.type === 'JK_FF' ? [{ id: 'clk', name: 'CLK', x: transform(-30, 0).x, y: transform(-30, 0).y }] : []),
     ];
   }
   if (el.type === 'TR3') {
@@ -559,6 +565,7 @@ export function SchematicEditor({
   fitRevision = 0,
   onOpenTransientSettings,
   onLoadSample,
+  onClearProject,
   onHoverStatus,
 }: SchematicEditorProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -583,7 +590,8 @@ export function SchematicEditor({
 
   // Панель библиотеки элементов и активный инструмент
   const [isPaletteOpen, setIsPaletteOpen] = useState<boolean>(false);
-  const [activeTool, setActiveTool] = useState<'select' | 'wire'>('select');
+  const shortcutDialogRef = useModalFocus<HTMLDivElement>(shortcutSettingsOpen);
+  const libraryDialogRef = useModalFocus<HTMLDivElement>(isPaletteOpen, '[aria-label="Поиск компонентов"]');
   const [hoveredPin, setHoveredPin] = useState<{
     compId: string;
     pinId: string;
@@ -655,7 +663,6 @@ export function SchematicEditor({
     setHoveredWirePoint(null);
     setDraggingElemId(null);
     setPendingComponentType(null);
-    setActiveTool('select');
   }, [viewRevision]);
   useEffect(() => {
     if (!contextMenu) return;
@@ -752,7 +759,6 @@ export function SchematicEditor({
           return;
         }
         const type = matchedAction.slice('component:'.length) as ComponentType;
-        setActiveTool('select');
         setWiringFrom(null); wiringFromRef.current = null;
         setWiringCursor(null); setWiringWaypoints([]);
         if (type !== 'GND') {
@@ -885,7 +891,9 @@ export function SchematicEditor({
       defaultValueStr = '';
       defaultUnit = '';
     } else if (type === 'PORT') {
-      portName = existingSameType.length === 0 ? 'OUT' : `P${count}`;
+      portName = elements.some(el => el.name.toLocaleUpperCase() === 'PORT_OUT')
+        ? nextComponentName(elements, 'PORT_P').slice('PORT_'.length)
+        : 'OUT';
       defaultName = `PORT_${portName}`;
       defaultValue = 0;
       defaultValueStr = '';
@@ -928,8 +936,8 @@ export function SchematicEditor({
     } else if (type === 'TR3') {
       defaultName = `TR${count}`;
       defaultValue = 1;
-      defaultValueStr = 'k=1';
-      defaultUnit = '';
+      defaultValueStr = '1';
+      defaultUnit = 'Гн';
     } else if (type === 'JUNCTION') {
       defaultName = `N${count}`;
       defaultValue = 0;
@@ -941,6 +949,8 @@ export function SchematicEditor({
       defaultValueStr = '';
       defaultUnit = '';
     }
+
+    if (type !== 'PORT') defaultName = nextComponentName(elements, defaultName.replace(/\d+$/, ''));
 
     const newElem: CircuitElement = {
       id: `elem_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -1047,7 +1057,7 @@ export function SchematicEditor({
 
   // Разделение провода и создание подвижного узла (JUNCTION)
   const handleWirePointClick = (wireId: string, px: number, py: number) => {
-    if (activeTool !== 'wire' || pendingComponentType || !(wiringFromRef.current ?? wiringFrom)) return;
+    if (pendingComponentType || !(wiringFromRef.current ?? wiringFrom)) return;
     const targetWire = wires.find((w) => w.id === wireId);
     const geometry = wireGeometries.find(item => item.wire.id === wireId);
     if (!targetWire || !geometry) return;
@@ -1083,12 +1093,11 @@ export function SchematicEditor({
     const split = splitWireRoute(geometry.points, projected.segmentIndex, point);
 
     // Создаем новый узел соединения (JUNCTION по ГОСТ 2.702)
-    const junctionCount = elements.filter((el) => el.type === 'JUNCTION').length + 1;
     const junctionId = `junction_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const newJunction: CircuitElement = {
       id: junctionId,
       type: 'JUNCTION',
-      name: `N${junctionCount}`,
+      name: nextComponentName(elements, 'N'),
       x: point.x,
       y: point.y,
       rotation: 0,
@@ -1148,7 +1157,7 @@ export function SchematicEditor({
       setSelectedWireId(null);
       setHoveredWirePoint(null);
       setHoveredPin(null);
-      if (activeTool === 'wire') {
+      if (wiringFromRef.current ?? wiringFrom) {
         // Начинаем вести новый провод от созданного узла
         setWiringFrom({ compId: junctionId, pinId: '1', x: px, y: py });
         setWiringCursor({ x: px, y: py });
@@ -1163,7 +1172,7 @@ export function SchematicEditor({
 
   const appendManualWaypoint = (cursor: Point) => {
     const source = wiringFromRef.current ?? wiringFrom;
-    if (activeTool !== 'wire' || !source) return;
+    if (!source) return;
     const previous = wiringWaypoints.at(-1) ?? source;
     const next = snapManualWirePoint(previous, cursor);
     if (samePoint(previous, next)) return;
@@ -1176,6 +1185,8 @@ export function SchematicEditor({
     if (e.button === 2) {
       // Правая кнопка мыши - отмена по мануалу стр. 4
       e.preventDefault();
+      wiringFromRef.current = null;
+      wirePointerDown.current = false;
       setWiringFrom(null);
       setWiringCursor(null);
       setWiringWaypoints([]);
@@ -1198,7 +1209,7 @@ export function SchematicEditor({
       return;
     }
 
-    if (activeTool === 'wire' && wiringFrom) {
+    if (wiringFrom) {
       appendManualWaypoint({ x: pos.rawX, y: pos.rawY });
       return;
     }
@@ -1254,12 +1265,6 @@ export function SchematicEditor({
       return;
     }
 
-    if (activeTool !== 'wire') {
-      setHoveredPin(null);
-      setHoveredWirePoint(null);
-      return;
-    }
-
     // 1. Поиск ближайшего вывода (Магнитный захват с увеличенным радиусом 28px для надежной фиксации)
     let foundPin: { compId: string; pinId: string; x: number; y: number; name: string } | null = null;
     let minPinDist = 12 / zoom;
@@ -1279,7 +1284,7 @@ export function SchematicEditor({
 
     // 2. Если пин не найден — проверяем наведение на сегменты существующих проводов
     let foundWirePoint: { wireId: string; x: number; y: number } | null = null;
-    if (!foundPin) {
+    if (wiringFrom && !foundPin) {
       let minWireDist = 8 / zoom;
       for (const wg of wireGeometries) {
         const hit = projectPointToWire(wg.points, { x: pos.rawX, y: pos.rawY });
@@ -1317,7 +1322,7 @@ export function SchematicEditor({
     wireSegmentDrag.current = null;
     if (wirePointerDown.current) {
       wirePointerDown.current = false;
-      if (event && activeTool === 'wire' && (wiringFromRef.current ?? wiringFrom)) {
+      if (event && (wiringFromRef.current ?? wiringFrom)) {
         const pos = screenToWorld(event.clientX, event.clientY);
         appendManualWaypoint({ x: pos.rawX, y: pos.rawY });
       }
@@ -1328,7 +1333,7 @@ export function SchematicEditor({
 
   // Нажатие на вывод элемента (Pin)
   const handlePinClick = (e: React.MouseEvent, compId: string, pinId: string, px: number, py: number) => {
-    if (activeTool !== 'wire' || pendingComponentType || e.button !== 0) return;
+    if (pendingComponentType || e.button !== 0) return;
     e.stopPropagation();
 
     const wiringSource = wiringFromRef.current ?? wiringFrom;
@@ -1385,7 +1390,7 @@ export function SchematicEditor({
   };
 
   const handlePinMouseUp = (e: React.MouseEvent, compId: string, pinId: string, px: number, py: number) => {
-    if (activeTool !== 'wire' || !wirePointerDown.current) return;
+    if (!wirePointerDown.current) return;
     e.stopPropagation();
     wirePointerDown.current = false;
     const source = wiringFromRef.current ?? wiringFrom;
@@ -1399,6 +1404,8 @@ export function SchematicEditor({
     e.stopPropagation();
     if (e.button === 2) {
       // Правая кнопка мыши — отмена проводки и инструмента
+      wiringFromRef.current = null;
+      wirePointerDown.current = false;
       setWiringFrom(null);
       setWiringCursor(null);
       setPendingComponentType(null);
@@ -1408,11 +1415,11 @@ export function SchematicEditor({
     const pos = screenToWorld(e.clientX, e.clientY);
 
     if (pendingComponentType) return;
-    if (el.type === 'JUNCTION' && activeTool === 'wire') {
+    if (el.type === 'JUNCTION' && (wiringFromRef.current ?? wiringFrom)) {
       handlePinClick(e, el.id, '1', el.x, el.y);
       return;
     }
-    if (activeTool === 'select') {
+    if (!(wiringFromRef.current ?? wiringFrom)) {
       setSelectedId(el.id);
       setSelectedWireId(null);
       onSelectElement(el);
@@ -1470,7 +1477,7 @@ export function SchematicEditor({
   // Двойной щелчок по элементу: открытие окна параметров (стр. 4: "двойной щелчок мышью - появится окно параметров")
   const handleElementDoubleClick = (e: React.MouseEvent, el: CircuitElement) => {
     e.stopPropagation();
-    if (activeTool !== 'select' || pendingComponentType) return;
+    if (wiringFrom || pendingComponentType) return;
     onOpenProperties(el);
   };
 
@@ -1482,7 +1489,9 @@ export function SchematicEditor({
     if (action === 'copy') setCopiedElement({ ...el });
     if (action === 'paste' && copiedElement) {
       const source = copiedElement;
-      const name = `${source.name}_копия`;
+      const baseName = `${source.name}_копия`;
+      const name = elements.some(item => item.name.toLocaleUpperCase() === baseName.toLocaleUpperCase())
+        ? nextComponentName(elements, baseName, 2) : baseName;
       const copy = { ...source, id: `elem_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, name, x: snapToGrid(el.x + 40), y: snapToGrid(el.y + 40) };
       onElementsChange([...elements, copy]);
       setSelectedId(copy.id);
@@ -1563,7 +1572,7 @@ export function SchematicEditor({
               const definition = COMPONENT_CATALOG.find(item => item.type === type);
               return <div key={group.id} className={`flex items-center gap-0.5 rounded border p-0.5 ${paletteDragGroup === group.id ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-white'}`} title={`${group.label}: удерживайте ЛКМ и перенесите на схему; колесо меняет элемент`}>
                 <span className="px-1 text-[10px] font-bold text-slate-500">{group.id === 'two' ? '2-пол.' : group.id === 'three' ? '3-пол.' : group.id === 'four' ? '4-пол.' : 'много'}</span>
-                <button type="button" disabled={!type} onMouseDown={event => { if (event.button !== 0 || !type) return; event.preventDefault(); setPaletteDragGroup(group.id); setPendingComponentType(type); setActiveTool('select'); setWiringFrom(null); setWiringCursor(null); }} className="flex h-8 min-w-20 items-center gap-1 rounded bg-slate-50 px-1.5 text-[10px] font-semibold text-slate-700 hover:bg-blue-100 disabled:opacity-40">
+                <button type="button" disabled={!type} onMouseDown={event => { if (event.button !== 0 || !type) return; event.preventDefault(); setPaletteDragGroup(group.id); setPendingComponentType(type); wiringFromRef.current = null; setWiringFrom(null); setWiringCursor(null); setWiringWaypoints([]); }} className="flex h-8 min-w-20 items-center gap-1 rounded bg-slate-50 px-1.5 text-[10px] font-semibold text-slate-700 hover:bg-blue-100 disabled:opacity-40">
                   {type && <ComponentSymbol type={type} className="quick-component-symbol" />}<span className="max-w-16 truncate">{definition?.name ?? 'Нет элементов'}</span>
                 </button>
                 <select aria-label={`${group.label}: выбрать элемент`} value={type || ''} disabled={!options.length} onChange={e => { const selected = e.target.value as ComponentType; setQuickTypes(current => ({ ...current, [group.id]: selected })); setPendingComponentType(selected); setPaletteDragGroup(null); }} className="w-6 bg-white text-xs text-slate-700" title={`Открыть список: ${group.label}`}>
@@ -1571,7 +1580,7 @@ export function SchematicEditor({
                 </select>
               </div>;
             })}
-            <button type="button" onClick={() => { setPendingComponentType('GND'); setActiveTool('select'); }} className="rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100" title="Поставить опорный потенциал 0 В">⏚ 0 В</button>
+            <button type="button" onClick={() => { wiringFromRef.current = null; setWiringFrom(null); setWiringCursor(null); setWiringWaypoints([]); setPendingComponentType('GND'); }} className="rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100" title="Поставить опорный потенциал 0 В">⏚ 0 В</button>
 
             {/* Кнопка открытия полной библиотеки компонентов */}
             <button
@@ -1587,25 +1596,6 @@ export function SchematicEditor({
           </div>
 
           <div className="h-4 w-px bg-slate-300 mx-0.5" />
-
-          <button
-            type="button"
-            aria-pressed={activeTool === 'wire'}
-            onClick={() => {
-              setActiveTool(current => current === 'wire' ? 'select' : 'wire');
-              setWiringFrom(null);
-              wiringFromRef.current = null;
-              setWiringCursor(null);
-              setWiringWaypoints([]);
-              setHoveredPin(null);
-              setHoveredWirePoint(null);
-              setPendingComponentType(null);
-            }}
-            className={`rounded border px-2.5 py-1 text-xs font-semibold ${activeTool === 'wire' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 bg-white text-slate-700'}`}
-            title="Включить проводку; повторное нажатие возвращает выбор"
-          >
-            {activeTool === 'wire' ? 'Проводка · вкл' : 'Проводка'}
-          </button>
 
           {/* Повернуть (R) */}
           <button
@@ -1698,7 +1688,7 @@ export function SchematicEditor({
                   className="w-full text-left px-3 py-1.5 hover:bg-slate-100 flex flex-col cursor-pointer border-b border-slate-100 last:border-none"
                 >
                   <span className="font-semibold text-slate-800">{sc.name}</span>
-                  <span className="text-3xs text-slate-500 truncate">{sc.pageRef} • {sc.category}</span>
+                  <span className="text-3xs text-slate-500 truncate">{sc.pageRef} • {sc.category}{sc.elements.some(element => !topologyTypes.has(element.type)) ? ' • модель расчёта ещё не реализована' : sc.id === 'buck-converter' ? ' • требуется подключить затвор ключа' : ''}</span>
                 </button>
               ))}
             </div>
@@ -1709,8 +1699,7 @@ export function SchematicEditor({
             type="button"
             onClick={() => {
               if (confirm('Создать новую пустую схему?')) {
-                onElementsChange([]);
-                onWiresChange([]);
+                onClearProject();
               }
             }}
             className="px-2 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-medium flex items-center gap-1 shadow-2xs cursor-pointer"
@@ -1824,7 +1813,7 @@ export function SchematicEditor({
         )}
 
         {shortcutSettingsOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50" onClick={e => { if (e.target === e.currentTarget) { setShortcutSettingsOpen(false); setRecordingShortcut(null); } }}>
-          <div role="dialog" aria-modal="true" aria-label="Горячие клавиши" className="flex max-h-[85vh] w-[min(46rem,calc(100vw-2rem))] flex-col rounded-xl bg-white p-5 shadow-2xl">
+          <div ref={shortcutDialogRef} role="dialog" aria-modal="true" aria-label="Горячие клавиши" className="flex max-h-[85vh] w-[min(46rem,calc(100vw-2rem))] flex-col rounded-xl bg-white p-5 shadow-2xl">
             <div className="mb-2 flex items-center justify-between"><strong className="text-lg">Горячие клавиши</strong><button type="button" onClick={() => { setShortcutSettingsOpen(false); setRecordingShortcut(null); }} aria-label="Закрыть">×</button></div>
             <p className="mb-3 text-xs text-slate-600">Для размещения нажмите сочетание, затем укажите точку на схеме. Можно использовать Ctrl, Alt и Shift. Настройки сохраняются на этом компьютере.</p>
             <div className="min-h-0 flex-1 overflow-y-auto rounded border border-slate-200 px-3">
@@ -1863,7 +1852,7 @@ export function SchematicEditor({
               if (e.target === e.currentTarget) { setIsPaletteOpen(false); setReplacingId(null); }
             }}
           >
-            <div role="dialog" aria-modal="true" aria-label="Библиотека компонентов" className="library-dialog bg-white shadow-2xl overflow-hidden flex flex-col">
+            <div ref={libraryDialogRef} role="dialog" aria-modal="true" aria-label="Библиотека компонентов" className="library-dialog bg-white shadow-2xl overflow-hidden flex flex-col">
               <div className="library-dialog-header flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Layers className="w-4 h-4 text-blue-600" />
@@ -1894,7 +1883,6 @@ export function SchematicEditor({
                     }
                     setPendingComponentType(t);
                     setIsPaletteOpen(false);
-                    if (t) setActiveTool('select');
                   }}
                   className="h-full border-none rounded-none shadow-none"
                 />
@@ -1962,15 +1950,15 @@ export function SchematicEditor({
                   onMouseDown={(e) => {
                     if (e.button === 1 || e.shiftKey) return;
                     e.stopPropagation();
-                    if (e.button === 2) { setWiringFrom(null); setWiringCursor(null); return; }
+                    if (e.button === 2) { wiringFromRef.current = null; wirePointerDown.current = false; setWiringFrom(null); setWiringCursor(null); setWiringWaypoints([]); return; }
                     if (e.button !== 0 || pendingComponentType) return;
-                    if (activeTool === 'wire' && wiringFrom) {
+                    if (wiringFrom) {
                       const pos = screenToWorld(e.clientX, e.clientY);
                       const hit = projectPointToWire(wg.points, { x: pos.rawX, y: pos.rawY });
                       if (hit) handleWirePointClick(wire.id, hit.point.x, hit.point.y);
                       return;
                     }
-                    if (activeTool === 'select') {
+                    if (!wiringFrom) {
                       const pos = screenToWorld(e.clientX, e.clientY);
                       const hit = projectPointToWire(wg.points, { x: pos.rawX, y: pos.rawY });
                       if (hit) wireSegmentDrag.current = { wireId: wire.id, segmentIndex: hit.segmentIndex, points: wg.points, started: false };
@@ -1979,7 +1967,7 @@ export function SchematicEditor({
                     setSelectedId(null);
                   }}
                   onMouseUp={(e) => {
-                    if (activeTool !== 'wire' || !wirePointerDown.current || !wiringFrom) return;
+                    if (!wirePointerDown.current || !wiringFrom) return;
                     e.stopPropagation();
                     wirePointerDown.current = false;
                     const pos = screenToWorld(e.clientX, e.clientY);
@@ -2073,6 +2061,12 @@ export function SchematicEditor({
             {elements.map((el) => {
               const isSelected = selectedId === el.id;
               const pins = getComponentPins(el);
+              const labelLayout = getComponentLabelLayout({
+                rotation: el.rotation,
+                flipH: el.flipH,
+                flipV: el.flipV,
+                showName: showElementNames,
+              });
 
               return (
                 <g
@@ -2082,11 +2076,11 @@ export function SchematicEditor({
                   onMouseEnter={() => onHoverStatus?.(`${el.name} · ${COMPONENT_CATALOG.find(item => item.type === el.type)?.name ?? el.type}${el.valueStr ? ` · ${normalizeEngNotation(el.valueStr)}${el.unit ? ` ${el.unit}` : ''}` : ''} · выводов: ${getComponentPins(el).length}${el.isolation ? ` · ${el.isolation === 'open' ? 'разрыв' : 'замыкание'}` : ''}`)}
                   onMouseLeave={() => onHoverStatus?.(null)}
                   onMouseUp={(e) => {
-                    if (el.type === 'JUNCTION' && activeTool === 'wire') handlePinMouseUp(e, el.id, '1', el.x, el.y);
+                    if (el.type === 'JUNCTION' && wiringFrom) handlePinMouseUp(e, el.id, '1', el.x, el.y);
                   }}
                   onDoubleClick={(e) => handleElementDoubleClick(e, el)}
                   onWheel={(e) => {
-                    if (activeTool !== 'select' || pendingComponentType || el.type === 'JUNCTION') return;
+                    if (wiringFrom || pendingComponentType || el.type === 'JUNCTION') return;
                     e.preventDefault(); e.stopPropagation();
                     if (e.buttons & 1) {
                       const step = e.shiftKey ? 45 : 90;
@@ -2134,14 +2128,19 @@ export function SchematicEditor({
                           <circle r={10} fill="transparent" />
                           <circle r={3.5} fill={isSelected ? '#dc2626' : '#1e293b'} pointerEvents="none" />
                           {(hoveredJunctionId === el.id || isSelected) && <circle data-export-hide="true" r={6} fill="none" stroke="#2563eb" strokeWidth={1.5} pointerEvents="none" />}
+                          <circle r={6 / zoom} fill="transparent" className="cursor-pointer"
+                            onMouseDown={(e) => handlePinClick(e, el.id, '1', el.x, el.y)}
+                            onMouseUp={(e) => handlePinMouseUp(e, el.id, '1', el.x, el.y)} />
                         </g>
                       : renderComponentSymbol(el, isSelected)}
-                    {el.type !== 'TEXT' && el.type !== 'JUNCTION' && (showElementNames || showElementValues) && <g className="pointer-events-none select-none" style={{ fontFamily: 'GOST type A, GOST 2.304, Arial Narrow, sans-serif' }}>
-                      {showElementNames && <text x={-38} y={-12} textAnchor="end" fontSize={11} fontWeight="bold" fill="#1e293b">{el.name}</text>}
-                      {showElementValues && el.valueStr && <text x={showElementNames ? 38 : -38} y={-12} textAnchor={showElementNames ? 'start' : 'end'} fontSize={10} fill="#3730a3">{normalizeEngNotation(el.valueStr)}</text>}
-                      {el.isolation && <text x={0} y={-31} textAnchor="middle" fontSize={9} fill="#b91c1c" fontWeight="bold">{el.isolation === 'open' ? 'РАЗРЫВ' : 'КЗ'}</text>}
-                    </g>}
                   </g>
+
+                  {/* Подписи следуют ориентации элемента, но остаются горизонтальными и читаемыми. */}
+                  {el.type !== 'TEXT' && el.type !== 'JUNCTION' && (showElementNames || showElementValues || el.isolation) && <g data-element-labels={el.id} className="pointer-events-none select-none" style={{ fontFamily: 'GOST type A, GOST 2.304, Arial Narrow, sans-serif' }}>
+                    {showElementNames && <text data-label-kind="name" x={labelLayout.name.x} y={labelLayout.name.y} textAnchor={labelLayout.name.anchor} fontSize={11} fontWeight="bold" fill="#1e293b">{el.name}</text>}
+                    {showElementValues && el.valueStr && <text data-label-kind="value" x={labelLayout.value.x} y={labelLayout.value.y} textAnchor={labelLayout.value.anchor} fontSize={10} fill="#3730a3">{normalizeEngNotation(el.valueStr)}</text>}
+                    {el.isolation && <text data-label-kind="isolation" x={labelLayout.isolation.x} y={labelLayout.isolation.y} textAnchor="middle" fontSize={9} fill="#b91c1c" fontWeight="bold">{el.isolation === 'open' ? 'РАЗРЫВ' : 'КЗ'}</text>}
+                  </g>}
 
                   {/* Выводы элемента (Pins с магнитным притягиванием и подсветкой) — только для стандартных компонентов */}
                   {el.type !== 'JUNCTION' &&
@@ -2154,7 +2153,7 @@ export function SchematicEditor({
                       const isHovered = hoveredPin?.compId === el.id && hoveredPin?.pinId === pin.id;
 
                       return (
-                        <g key={pin.id} pointerEvents={activeTool === 'wire' ? 'auto' : 'none'}>
+                        <g key={pin.id}>
                           {/* Ореол подсветки вывода */}
                           {(isHovered || isWiringSource) && (
                             <circle data-export-hide="true"

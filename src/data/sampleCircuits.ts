@@ -639,9 +639,9 @@ export const SAMPLE_CIRCUITS: SampleCircuit[] = [
   // 4. Однофазный мостовой выпрямитель с емкостным сглаживанием
   {
     id: 'rectifier-bridge',
-    name: 'Однофазный мостовой выпрямитель с C-фильтром',
+    name: 'Однополупериодный выпрямитель с C-фильтром',
     category: 'Силовые вентильные преобразователи',
-    description: 'Двухполупериодный диодный выпрямитель переменного тока U = 220 В, 50 Гц со сглаживающим емкостным фильтром C1 = 220 мкФ и нагрузкой R1 = 20 Ом.',
+    description: 'Однополупериодный диодный выпрямитель с фильтром C1 = 220 мкФ и нагрузкой R_LOAD = 20 Ом. 220 В — амплитуда источника; диод: Vf = 0,7 В, Ron = 2 Ом. Шаг 10 мкс, контроль EPS = 5 %.',
     pageRef: 'Вентильные цепи',
     elements: [
       {
@@ -679,17 +679,7 @@ export const SAMPLE_CIRCUITS: SampleCircuit[] = [
         value: 0,
         valueStr: 'Диод',
         unit: '',
-      },
-      {
-        id: 'vd2',
-        type: 'DIODE',
-        name: 'VD2',
-        x: 220,
-        y: 220,
-        rotation: 0,
-        value: 0,
-        valueStr: 'Диод',
-        unit: '',
+        modelParams: { forwardVoltage: 0.7, onResistance: 2, offResistance: 1e9 },
       },
       {
         id: 'c_filter',
@@ -772,9 +762,9 @@ export const SAMPLE_CIRCUITS: SampleCircuit[] = [
     transient: {
       tMax: 0.04,
       tMaxStr: '40m',
-      step: 5e-5,
-      stepStr: '50u',
-      eps: 0.001,
+      step: 1e-5,
+      stepStr: '10u',
+      eps: 0.05,
       signals: [
         { id: 's1', plotIndex: 1, exprX: 't', exprY: 'U(IN)', color: '#2563eb', enabled: true },
         { id: 's2', plotIndex: 1, exprX: 't', exprY: 'U(OUT)', color: '#dc2626', enabled: true },

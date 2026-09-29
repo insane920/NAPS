@@ -34,6 +34,7 @@ export function CalculationDetails({ elements, wires, results, settings }: Props
       <h3>Уравнения и числовая подстановка</h3>
       <div className="calculation-table"><table><thead><tr><th>Величина</th><th>Формула</th><th>Подстановка в СИ</th><th>Результат</th></tr></thead><tbody>{report.steps.map((step, i) => <tr key={i}><th scope="row">{step.name}</th><td>{step.formula}</td><td className="math-number">{step.substitution}</td><td className="math-number">{n(step.value)} {step.unit}</td></tr>)}</tbody></table></div>
       <h3>Связь расчёта с сигналами графика</h3>
+      {results.digitalStates && Object.keys(results.digitalStates).length > 0 && <><h3>Цифровые состояния</h3><div className="calculation-table"><table><thead><tr><th>Элемент</th><th>Q в точке k</th></tr></thead><tbody>{Object.entries(results.digitalStates).map(([name, series]) => <tr key={name}><th scope="row">{name}</th><td>{series[index]}</td></tr>)}</tbody></table></div></>}
       <div className="calculation-table"><table><thead><tr><th>Сигнал</th><th>Выражение</th><th>y[k−1]</th><th>y[k]</th><th>y[k+1]</th></tr></thead><tbody>{report.signals.map(s => <tr key={s.name}><th scope="row">{s.name}, {s.unit}</th><td>{s.formula}</td><td className="math-number">{index ? n(results.signals[s.name][index - 1]) : '—'}</td><td className="math-number">{n(s.value)}</td><td className="math-number">{n(results.signals[s.name][index + 1])}</td></tr>)}</tbody></table></div>
       <h3>Среднее, действующее значение и экстремумы</h3>
       <p className="math-number">{report.statisticsFormula}</p>

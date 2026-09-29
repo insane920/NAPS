@@ -98,6 +98,9 @@ export function exportToYamlScm(
     if (el.secondaryValue !== undefined) params['SecondaryValue'] = String(el.secondaryValue);
     if (el.secondaryStr !== undefined) params['SecondaryText'] = el.secondaryStr;
     if (el.initialCondition !== undefined) params['IC'] = String(el.initialCondition);
+    for (const [key, value] of Object.entries(el.modelParams ?? {})) {
+      if (value !== undefined) params[`Model_${key}`] = String(value);
+    }
 
     return {
       ID: idx + 1,
@@ -170,13 +173,13 @@ export function exportToYamlScm(
 
   if (ac) {
     yaml += `  AC:\n`;
-    yaml += `    FMin: "${ac.fMinStr}"\n`;
-    yaml += `    FMax: "${ac.fMaxStr}"\n`;
+    yaml += `    FMin: "${ac.fMinStr || ac.fMin}"\n`;
+    yaml += `    FMax: "${ac.fMaxStr || ac.fMax}"\n`;
     yaml += `    Points: ${ac.points}\n`;
     yaml += `    Scale: "${ac.scaleType}"\n`;
     yaml += `    Expressions:\n`;
-    for (const sig of ac.signals.filter((s) => s.enabled)) {
-      yaml += `      - { Plot: ${sig.plotIndex}, X: "${sig.exprX}", Y: "${sig.exprY}", Color: "${sig.color}" }\n`;
+    for (const sig of ac.signals) {
+      yaml += `      - { Plot: ${sig.plotIndex}, X: ${JSON.stringify(sig.exprX)}, Y: ${JSON.stringify(sig.exprY)}, Color: ${JSON.stringify(sig.color)}, Enabled: ${sig.enabled} }\n`;
     }
   }
 
@@ -212,7 +215,7 @@ function mapTypeToYaml(type: string): string {
   }
 }
 
-function mapYamlToType(type: string): any {
+function mapYamlToType(type: string): CircuitElement['type'] {
   const t = type.toLowerCase();
   if (t.includes('resistor') || t === 'r') return 'R';
   if (t.includes('inductor') || t === 'l') return 'L';
@@ -237,7 +240,18 @@ function mapYamlToType(type: string): any {
   if (t === 'gnd' || t.includes('земля')) return 'GND';
   if (t === 'port') return 'PORT';
   if (t.includes('trans') || t === 'tr3') return 'TR3';
-  return 'TEXT';
+  if (t === 'directive' || t === 'text') return 'TEXT';
+  throw new Error(`Неизвестный тип элемента SCM: ${type}.`);
+}
+
+function finiteScmNumber(value: string | number, label: string): number {
+  const text = String(value).trim();
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(text)) {
+    throw new Error(`${label}: ожидается конечное число.`);
+  }
+  const number = Number(text);
+  if (!Number.isFinite(number)) throw new Error(`${label}: ожидается конечное число.`);
+  return number;
 }
 
 /**
@@ -247,12 +261,13 @@ export function parseYamlScm(yamlText: string): {
   elements: CircuitElement[];
   wires: CircuitWire[];
   transient: TransientSettings;
+  ac?: ACSettings;
 } {
   const lines = yamlText.split('\n');
   const elements: CircuitElement[] = [];
   const wires: CircuitWire[] = [];
 
-  let currentSection: 'none' | 'objects' | 'wires' | 'transient' = 'none';
+  let currentSection: 'none' | 'objects' | 'wires' | 'transient' | 'ac' = 'none';
   let currentObj: Partial<YamlScmObject> | null = null;
   let pendingFrom: RegExpMatchArray | null = null;
   const numIdToElemId = new Map<number, string>();
@@ -262,6 +277,10 @@ export function parseYamlScm(yamlText: string): {
   let epsStr = '1m';
   let initialConditionTransfer = false;
   let expressions: Array<{ Plot: number; X: string; Y: string; Color?: string; Enabled?: boolean }> = [];
+  let hasAc = false;
+  let fMinStr = '10', fMaxStr = '100k', acPoints = 101;
+  let acScale: ACSettings['scaleType'] = 'log';
+  const acExpressions: Array<{ Plot: number; X: string; Y: string; Color?: string; Enabled?: boolean }> = [];
   const readScalar = (text: string): string => {
     const value = text.trim();
     return value.startsWith('"') ? JSON.parse(value) : value;
@@ -272,7 +291,8 @@ export function parseYamlScm(yamlText: string): {
     if (!trimmed || trimmed.startsWith('#')) continue;
 
     if (trimmed === 'AC:') {
-      currentSection = 'none';
+      hasAc = true;
+      currentSection = 'ac';
       continue;
     }
     if (trimmed === 'Objects:') {
@@ -300,7 +320,7 @@ export function parseYamlScm(yamlText: string): {
           commitCurrentObject(currentObj, elements, numIdToElemId);
         }
         currentObj = {
-          ID: parseInt(trimmed.replace('- ID:', '').trim()),
+          ID: finiteScmNumber(trimmed.replace('- ID:', ''), 'ID элемента'),
           Params: {},
         };
       } else if (currentObj) {
@@ -309,11 +329,11 @@ export function parseYamlScm(yamlText: string): {
         } else if (trimmed.startsWith('Name:')) {
           currentObj.Name = readScalar(trimmed.slice('Name:'.length));
         } else if (trimmed.startsWith('X:')) {
-          currentObj.X = parseInt(trimmed.replace('X:', '').trim());
+          currentObj.X = finiteScmNumber(trimmed.slice(2), `X элемента ${currentObj.ID}`);
         } else if (trimmed.startsWith('Y:')) {
-          currentObj.Y = parseInt(trimmed.replace('Y:', '').trim());
+          currentObj.Y = finiteScmNumber(trimmed.slice(2), `Y элемента ${currentObj.ID}`);
         } else if (trimmed.startsWith('Rot:')) {
-          currentObj.Rot = parseFloat(trimmed.replace('Rot:', '').trim());
+          currentObj.Rot = finiteScmNumber(trimmed.slice(4), `Rot элемента ${currentObj.ID}`);
         } else if (trimmed.startsWith('FlipH:')) {
           currentObj.FlipH = trimmed.includes('true');
         } else if (trimmed.startsWith('FlipV:')) {
@@ -369,6 +389,21 @@ export function parseYamlScm(yamlText: string): {
           toPinId: toPin,
         });
       }
+    } else if (currentSection === 'ac') {
+      if (trimmed.startsWith('FMin:')) fMinStr = readScalar(trimmed.slice(5));
+      else if (trimmed.startsWith('FMax:')) fMaxStr = readScalar(trimmed.slice(5));
+      else if (trimmed.startsWith('Points:')) acPoints = finiteScmNumber(trimmed.slice(7), 'AC Points');
+      else if (trimmed.startsWith('Scale:')) {
+        const scale = readScalar(trimmed.slice(6));
+        if (scale !== 'log' && scale !== 'linear') throw new Error('AC Scale: используйте log или linear.');
+        acScale = scale;
+      } else if (trimmed.includes('Plot:') && trimmed.includes('Y:')) {
+        const match = trimmed.match(/Plot:\s*(\d+)/);
+        const x = trimmed.match(/X:\s*"([^"]+)"/);
+        const y = trimmed.match(/Y:\s*"([^"]+)"/);
+        const color = trimmed.match(/Color:\s*"([^"]+)"/);
+        if (y) acExpressions.push({ Plot: match ? Number(match[1]) : 1, X: x?.[1] || 'f', Y: y[1], Color: color?.[1], Enabled: !/Enabled:\s*false/.test(trimmed) });
+      }
     } else if (currentSection === 'transient') {
       if (trimmed.startsWith('ICTransfer:')) initialConditionTransfer = trimmed.includes('true');
       if (trimmed.startsWith('EndTime:')) {
@@ -399,23 +434,28 @@ export function parseYamlScm(yamlText: string): {
     commitCurrentObject(currentObj, elements, numIdToElemId);
   }
   if (pendingFrom) throw new Error(`Провод ${wires.length + 1}: отсутствует конечный вывод.`);
+  const names = new Set<string>();
+  for (const element of elements) {
+    const key = element.name.trim().toLocaleUpperCase();
+    if (!key || names.has(key)) throw new Error(`Повторяющийся или пустой идентификатор элемента: ${element.name}.`);
+    names.add(key);
+  }
 
   // Расчет параметров transient
-  let parsedTmax = parseEngValue(tMaxStr) || 0.01;
+  const parsedTmax = parseEngValue(tMaxStr);
+  if (!Number.isFinite(parsedTmax) || parsedTmax <= 0) throw new Error('EndTime: укажите положительное конечное время.');
   let parsedStep = 0;
-  if (stepStr.toLowerCase().includes('tmax')) {
-    const div = parseFloat(stepStr.split('/')[1]) || 200;
-    parsedStep = parsedTmax / div;
+  if (/tmax/i.test(stepStr)) {
+    const match = stepStr.trim().match(/^tmax\s*\/\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))$/i);
+    if (!match) throw new Error('TimeStep: используйте число или tmax/N.');
+    const divisor = finiteScmNumber(match[1], 'TimeStep');
+    parsedStep = parsedTmax / divisor;
   } else {
-    parsedStep = parseEngValue(stepStr) || parsedTmax / 200;
+    parsedStep = parseEngValue(stepStr);
   }
-
-  if (expressions.length === 0) {
-    expressions = [
-      { Plot: 1, X: 't', Y: 'U(OUT)', Color: '#2563eb' },
-      { Plot: 2, X: 't', Y: 'I(R1)', Color: '#dc2626' },
-    ];
-  }
+  if (!Number.isFinite(parsedStep) || parsedStep <= 0) throw new Error('TimeStep: шаг должен быть положительным.');
+  const parsedEps = parseEngValue(epsStr);
+  if (!Number.isFinite(parsedEps) || parsedEps <= 0 || parsedEps >= 1) throw new Error('EPS: укажите число больше 0 и меньше 1.');
 
   const signals = expressions.map((exp, idx) => ({
     id: `sig_${idx}`,
@@ -426,15 +466,21 @@ export function parseYamlScm(yamlText: string): {
     enabled: exp.Enabled ?? true,
   }));
 
+  const fMin = parseEngValue(fMinStr), fMax = parseEngValue(fMaxStr);
+  if (hasAc && (!Number.isFinite(fMin) || !Number.isFinite(fMax) || fMin <= 0 || fMax <= fMin || !Number.isSafeInteger(acPoints) || acPoints < 2 || acPoints > 2000)) {
+    throw new Error('AC: проверьте диапазон частот и число точек (2–2000).');
+  }
   return {
     elements,
     wires,
+    ac: hasAc ? { fMin, fMax, fMinStr, fMaxStr, points: acPoints, scaleType: acScale,
+      signals: acExpressions.map((s, i) => ({ id: `ac_${i}`, plotIndex: s.Plot === 2 ? 2 : 1, exprX: s.X, exprY: s.Y, color: s.Color || '#2563eb', enabled: s.Enabled ?? true })) } : undefined,
     transient: {
       tMax: parsedTmax,
       tMaxStr,
       step: parsedStep,
       stepStr,
-      eps: parseEngValue(epsStr) || 0.001,
+      eps: parsedEps,
       initialConditionTransfer,
       signals,
     },
@@ -446,7 +492,7 @@ function commitCurrentObject(
   elements: CircuitElement[],
   numIdToElemId: Map<number, string>
 ) {
-  if (!Number.isInteger(raw.ID) || !raw.ID || numIdToElemId.has(raw.ID)) {
+  if (!Number.isSafeInteger(raw.ID) || !raw.ID || raw.ID < 0 || numIdToElemId.has(raw.ID)) {
     throw new Error(`Некорректный или повторяющийся ID элемента: ${raw.ID}.`);
   }
   const elemId = `elem_${raw.ID}_${Date.now()}`;
@@ -476,6 +522,28 @@ function commitCurrentObject(
     unit = 'В';
   }
 
+  const value = params['Value'] !== undefined ? finiteScmNumber(params['Value'], `Value элемента ${raw.ID}`) : val;
+  const secondaryValue = params['SecondaryValue'] !== undefined
+    ? finiteScmNumber(params['SecondaryValue'], `SecondaryValue элемента ${raw.ID}`)
+    : params['f'] ? parseEngValue(params['f']) : undefined;
+  const initialCondition = params['IC'] !== undefined ? finiteScmNumber(params['IC'], `IC элемента ${raw.ID}`) : undefined;
+  const modelParams: NonNullable<CircuitElement['modelParams']> = {};
+  for (const key of ['forwardVoltage', 'onResistance', 'offResistance', 'gateThreshold', 'holdingCurrent', 'outputLimit', 'turnsRatio', 'couplingFactor', 'logicHigh', 'logicLow', 'logicThreshold', 'outputResistance', 'propagationDelay', 'hysteresis'] as const) {
+    const stored = params[`Model_${key}`];
+    if (stored !== undefined) modelParams[key] = finiteScmNumber(stored, `${key} элемента ${raw.ID}`);
+  }
+  if (!Number.isFinite(value) || (secondaryValue !== undefined && !Number.isFinite(secondaryValue))) {
+    throw new Error(`Элемент ${raw.ID}: некорректное числовое значение.`);
+  }
+  if (['R', 'L', 'C'].includes(type) && value <= 0) throw new Error(`Элемент ${raw.ID}: номинал должен быть больше нуля.`);
+  const visibleValue = params['ValueText'] ?? valStr;
+  if (['R', 'L', 'C', 'V_DC', 'V_AC', 'I_DC'].includes(type) && visibleValue) {
+    const labelValue = parseEngValue(visibleValue);
+    if (!Number.isFinite(labelValue) || Math.abs(labelValue - value) > 1e-9 * Math.max(1, Math.abs(value))) {
+      throw new Error(`Элемент ${raw.ID}: видимый номинал не соответствует числовому значению.`);
+    }
+  }
+
   elements.push({
     id: elemId,
     type,
@@ -485,13 +553,14 @@ function commitCurrentObject(
     rotation: ((raw.Rot || 0) * 90) % 360,
     flipH: raw.FlipH,
     flipV: raw.FlipV,
-    value: params['Value'] !== undefined ? Number(params['Value']) : val,
-    valueStr: params['ValueText'] ?? valStr,
+    value,
+    valueStr: visibleValue,
     unit: params['Unit'] ?? unit,
     isolation: params['Isolation'] === 'open' || params['Isolation'] === 'short' ? params['Isolation'] : undefined,
-    secondaryValue: params['SecondaryValue'] !== undefined ? Number(params['SecondaryValue']) : params['f'] ? parseEngValue(params['f']) : undefined,
+    secondaryValue,
     secondaryStr: params['SecondaryText'] ?? params['f'],
-    initialCondition: params['IC'] ? parseFloat(params['IC']) : undefined,
+    initialCondition,
+    modelParams: Object.keys(modelParams).length ? modelParams : undefined,
     portName: params['Label'] || (type === 'PORT' ? raw.Name : undefined),
     textDirective: params['Directive'],
   });

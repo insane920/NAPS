@@ -170,6 +170,7 @@ export function renderComponentSymbol(el: CircuitElement, selected = false) {
         <g>
           <line x1={-30} y1={-12} x2={-18} y2={-12} stroke={stroke} strokeWidth={strokeW} />
           <line x1={-30} y1={12} x2={-18} y2={12} stroke={stroke} strokeWidth={strokeW} />
+          {el.type === 'JK_FF' && <line x1={-30} y1={0} x2={-18} y2={0} stroke={stroke} strokeWidth={strokeW} />}
           <rect x={-18} y={-22} width={36} height={44} fill="#ffffff" stroke={stroke} strokeWidth={strokeW} />
           <text x={-12} y={-8} className="font-mono text-3xs font-bold fill-slate-700" style={{ fontSize: '8px' }}>
             {el.type === 'RS_FF' ? 'S' : el.type === 'D_FF' ? 'D' : 'J'}
@@ -177,6 +178,7 @@ export function renderComponentSymbol(el: CircuitElement, selected = false) {
           <text x={-12} y={16} className="font-mono text-3xs font-bold fill-slate-700" style={{ fontSize: '8px' }}>
             {el.type === 'RS_FF' ? 'R' : el.type === 'D_FF' ? 'C' : 'K'}
           </text>
+          {el.type === 'JK_FF' && <text x={-12} y={3} className="font-mono text-3xs font-bold fill-slate-700" style={{ fontSize: '7px' }}>C</text>}
           <text x={6} y={-8} className="font-mono text-3xs font-bold fill-slate-700" style={{ fontSize: '8px' }}>Q</text>
           <text x={4} y={16} className="font-mono text-3xs font-bold fill-slate-700" style={{ fontSize: '8px' }}>/Q</text>
           <line x1={18} y1={-12} x2={30} y2={-12} stroke={stroke} strokeWidth={strokeW} />
@@ -185,7 +187,7 @@ export function renderComponentSymbol(el: CircuitElement, selected = false) {
       );
 
     case 'TR3':
-      // Трансформатор / Трехобмоточный индуктор
+      // Двухобмоточный трансформатор (четыре вывода)
       return (
         <g>
           <line x1={-30} y1={-15} x2={-10} y2={-15} stroke={stroke} strokeWidth={strokeW} />

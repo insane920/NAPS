@@ -12,7 +12,8 @@ const near = (a: number, b: number, tolerance = 1e-7) => assert.ok(Math.abs(a - 
 for (const [kind, inputs, expected] of [
   ['NOT', [0], 1], ['NOT', [5], 0],
   ['AND', [0, 0], 0], ['AND', [5, 0], 0], ['AND', [5, 5], 1],
-  ['OR', [0, 0], 0], ['OR', [5, 0], 1], ['XOR', [5, 0], 1], ['XOR', [5, 5], 0],
+  ['OR', [0, 0], 0], ['OR', [5, 0], 1], ['OR', [0, 5], 1], ['OR', [5, 5], 1],
+  ['XOR', [0, 0], 0], ['XOR', [5, 0], 1], ['XOR', [0, 5], 1], ['XOR', [5, 5], 0],
 ] as Array<[CircuitElement['type'], number[], number]>) {
   const outPin = kind === 'NOT' ? '2' : '3';
   const gate = element('GATE', kind);
@@ -29,6 +30,13 @@ const comparator = [element('POS', 'V_DC', 3), element('NEG', 'V_DC', 2), elemen
 const comparatorWires = [wire('POS', '1', 'CMP', 'in_pos'), wire('NEG', '1', 'CMP', 'in_neg'), wire('POS', '2', 'G', '1'), wire('NEG', '2', 'G', '1'), wire('CMP', 'out', 'OUT', '1'), wire('CMP', 'out', 'LOAD', '1'), wire('LOAD', '2', 'G', '1')];
 near(solveCircuitTransient(comparator, comparatorWires, settings()).signals['U(OUT)'][0], 5 * 1000 / 1010);
 near(solveCircuitTransient(comparator.map(e => e.id === 'POS' ? { ...e, value: 1 } : e), comparatorWires, settings()).signals['U(OUT)'][0], 0);
+const comparisonClock = { ...element('CLK', 'V_PULSE', 5), secondaryValue: 100000, initialCondition: 0.2 };
+const compareLatch = [...comparator.filter(e => e.id !== 'OUT'), comparisonClock, element('FF', 'D_FF'), { ...element('OUT', 'PORT'), portName: 'OUT' }];
+const compareLatchWires = comparatorWires.filter(w => w.fromCompId !== 'CMP' && w.toCompId !== 'OUT').concat([
+  wire('CMP', 'out', 'FF', '1'), wire('CLK', '1', 'FF', '2'), wire('CLK', '2', 'G', '1'),
+  wire('FF', '3', 'OUT', '1'), wire('FF', '3', 'LOAD', '1'),
+]);
+assert.equal(solveCircuitTransient(compareLatch, compareLatchWires, settings()).digitalStates?.FF[0], 1, 'analog comparator and clock settle together');
 
 const rs = [element('SET', 'V_DC', 5), element('RESET', 'V_DC', 0), element('FF', 'RS_FF'), element('LOAD', 'R', 1000), element('G', 'GND'), { ...element('OUT', 'PORT'), portName: 'OUT' }];
 const rsWires = [wire('SET', '1', 'FF', '1'), wire('RESET', '1', 'FF', '2'), wire('SET', '2', 'G', '1'), wire('RESET', '2', 'G', '1'), wire('FF', '3', 'OUT', '1'), wire('FF', '3', 'LOAD', '1'), wire('LOAD', '2', 'G', '1')];
@@ -62,6 +70,9 @@ const saved = parseYamlScm(exportToYamlScm(jk, jkWires, settings()));
 const restored = saved.elements.find(e => e.type === 'JK_FF')!;
 assert.ok(saved.wires.some(w => w.toCompId === restored.id && w.toPinId === 'clk'));
 assert.equal(solveCircuitTransient(saved.elements, saved.wires, saved.transient).digitalStates?.FF[0], 1);
+const legacyJK = parseYamlScm(exportToYamlScm(jk, jkWires.filter(w => w.toPinId !== 'clk'), settings()));
+assert.equal(legacyJK.wires.length, jkWires.length - 1, 'older four-pin JK wiring must survive SCM load');
+assert.ok(legacyJK.elements.some(e => e.type === 'JK_FF'));
 
 // A digital inverter drives the electrical gate of an analog switch through its output resistance.
 const mixed = [element('IN', 'V_DC', 0), element('LOGIC', 'NOT'), element('POWER', 'V_DC', 5), element('R1', 'R', 1000), element('S1', 'SWITCH'), element('G', 'GND'), { ...element('OUT', 'PORT'), portName: 'OUT' }];

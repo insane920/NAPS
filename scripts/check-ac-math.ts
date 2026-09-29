@@ -64,6 +64,9 @@ assert.equal(savedTransformer.ac?.signals[0].exprY, 'mag(U(OUT))');
 near(solveCircuitAC(savedTransformer.elements, savedTransformer.wires, savedTransformer.ac!).signals['mag(U(OUT))'][0], tr.signals['mag(U(OUT))'][0]);
 assert.throws(() => solveCircuitAC(lowpass, lowpassWires, settings(['db(U(OUT)/U(MISSING))'], corner)), /не найден/);
 assert.throws(() => solveCircuitAC(lowpass, lowpassWires, { ...settings(['mag(U(OUT))'], corner), fMin: 0 }), /начальная частота/);
+assert.throws(() => solveCircuitAC(lowpass.map(e => e.id === 'V1' ? { ...e, value: 0 } : e), lowpassWires, settings(['mag(U(OUT))'], corner)), /ненулевой амплитудой/);
+assert.throws(() => solveCircuitAC([...lowpass, element('FLOAT', 'R', 100)], lowpassWires, settings(['mag(U(OUT))'], corner)), /вырождена/);
+assert.throws(() => solveCircuitAC(biasedDiode.map(e => e.id === 'D1' ? { ...e, modelParams: { onResistance: 0 } } : e), diodeWires, settings(['mag(U(OUT))'], 1000)), /сопротивления/);
 const transient = solveCircuitTransient(
   transformer.map(e => e.id === 'V1' ? { ...e, type: 'V_DC' as const } : e), transformerWires,
   { tMax: 5e-6, tMaxStr: '5u', step: 1e-6, stepStr: '1u', eps: 0.001,

@@ -7,7 +7,7 @@ const root = path.resolve(__dirname, '..');
 const port = Number(process.env.NAPS_TEST_PORT || 3130);
 const url = `http://127.0.0.1:${port}/`;
 const vite = path.join(root, 'node_modules', 'vite', 'bin', 'vite.js');
-const cases = ['browser-pin-contacts.cjs', 'browser-wiring.cjs', 'browser-editor.cjs', 'browser-calculation.cjs', 'browser-ac.cjs', 'browser-regressions.cjs'];
+const cases = ['browser-pin-contacts.cjs', 'browser-wiring.cjs', 'browser-editor.cjs', 'browser-editor-completion.cjs', 'browser-calculation.cjs', 'browser-ac.cjs', 'browser-regressions.cjs'];
 
 mkdirSync(path.join(root, '.work'), { recursive: true });
 

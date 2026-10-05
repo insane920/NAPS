@@ -28,12 +28,13 @@ import {
   CircuitPin,
 } from '../types';
 import { SAMPLE_CIRCUITS, SampleCircuit } from '../data/sampleCircuits';
-import { buildCircuitGraph, normalizeEngNotation } from '../math/circuitSolver';
+import { buildCircuitGraph } from '../math/circuitSolver';
 import { topologyTypes } from '../math/topologyTransient';
 import { nextComponentName } from '../utils/componentNames';
-import { getComponentLabelLayout } from '../utils/componentLabels';
+import { getComponentLabelLayout, getComponentValueLabel } from '../utils/componentLabels';
 import { useModalFocus } from '../hooks/useModalFocus';
 import { ComponentPalette, COMPONENT_CATALOG, TERMINAL_GROUPS, terminalGroupForType, TerminalGroup } from './ComponentPalette';
+import { SYMBOL_METRICS } from './symbolMetrics';
 
 interface SchematicEditorProps {
   elements: CircuitElement[];
@@ -64,11 +65,12 @@ const COMPONENT_SHORTCUT_CODES: Partial<Record<ComponentType, string>> = {
   SWITCH: 'KeyS', OPAMP: 'KeyO', COMPARATOR: 'KeyG', V_DC: 'Digit2', V_AC: 'Digit3',
   V_PULSE: 'KeyP', I_DC: 'Digit4', NOT: 'KeyN', AND: 'KeyA', OR: 'KeyU', XOR: 'KeyX',
   RS_FF: 'KeyQ', D_FF: 'KeyF', JK_FF: 'KeyJ', GND: 'Digit0',
+  JUNCTION: 'Digit5', TEXT: 'Digit6', PORT: 'Digit7',
 };
 const SHORTCUT_ACTIONS: EditorShortcut[] = [
   'rotate', 'add',
-  ...COMPONENT_CATALOG.filter(item => terminalGroupForType(item.type)).map(item => `component:${item.type}`),
-  'component:GND',
+  ...COMPONENT_CATALOG.map(item => `component:${item.type}`),
+  'component:PORT',
 ];
 const DEFAULT_SHORTCUTS: Record<EditorShortcut, string> = Object.fromEntries([
   ['rotate', 'KeyR'], ['add', 'KeyA'],
@@ -119,7 +121,7 @@ function shortcutActionLabel(action: EditorShortcut): string {
   if (action === 'add') return 'Открыть библиотеку';
   const type = action.slice('component:'.length) as ComponentType;
   const item = COMPONENT_CATALOG.find(component => component.type === type);
-  return type === 'GND' ? 'Земля (GND)' : `${item?.name ?? type} (${item?.code ?? type})`;
+  return type === 'PORT' ? 'Порт (совместимость SCM)' : `${item?.name ?? type} (${item?.code ?? type})`;
 }
 
 function loadEditorShortcuts(): Record<EditorShortcut, string> {
@@ -464,17 +466,17 @@ export function getComponentPins(el: CircuitElement): CircuitPin[] {
   }
 
   if (el.type === 'GND') {
-    const p = transform(0, -20);
+    const p = transform(0, -SYMBOL_METRICS.groundPinOffset);
     return [{ id: '1', name: 'GND', x: p.x, y: p.y }];
   }
   if (el.type === 'PORT') {
-    const p = transform(-30, 0);
+    const p = transform(-SYMBOL_METRICS.pinReach, 0);
     return [{ id: '1', name: el.portName || el.name, x: p.x, y: p.y }];
   }
   if (el.type === 'OPAMP' || el.type === 'COMPARATOR') {
-    const pNeg = transform(-35, -15);
-    const pPos = transform(-35, 15);
-    const pOut = transform(35, 0);
+    const pNeg = transform(-SYMBOL_METRICS.analogPinReach, -15);
+    const pPos = transform(-SYMBOL_METRICS.analogPinReach, 15);
+    const pOut = transform(SYMBOL_METRICS.analogPinReach, 0);
     return [
       { id: 'in_neg', name: '-', label: '-', x: pNeg.x, y: pNeg.y },
       { id: 'in_pos', name: '+', label: '+', x: pPos.x, y: pPos.y },
@@ -482,27 +484,27 @@ export function getComponentPins(el: CircuitElement): CircuitPin[] {
     ];
   }
   if (el.type === 'SWITCH' || el.type === 'THYRISTOR') {
-    const p1 = transform(-30, 0);
-    const p2 = transform(30, 0);
-    const pGate = transform(0, 25);
+    const p1 = transform(-SYMBOL_METRICS.pinReach, 0);
+    const p2 = transform(SYMBOL_METRICS.pinReach, 0);
+    const pGate = transform(0, SYMBOL_METRICS.gateDrop);
     return [
-      { id: '1', name: 'A', x: p1.x, y: p1.y },
-      { id: '2', name: 'K', x: p2.x, y: p2.y },
+      { id: '1', name: el.type === 'THYRISTOR' ? 'A' : 'IN', x: p1.x, y: p1.y },
+      { id: '2', name: el.type === 'THYRISTOR' ? 'K' : 'OUT', x: p2.x, y: p2.y },
       { id: 'gate', name: 'G', label: 'G', x: pGate.x, y: pGate.y },
     ];
   }
   if (el.type === 'NOT') {
-    const p1 = transform(-30, 0);
-    const p2 = transform(30, 0);
+    const p1 = transform(-SYMBOL_METRICS.pinReach, 0);
+    const p2 = transform(SYMBOL_METRICS.pinReach, 0);
     return [
       { id: '1', name: 'IN', x: p1.x, y: p1.y },
       { id: '2', name: 'OUT', x: p2.x, y: p2.y },
     ];
   }
   if (el.type === 'AND' || el.type === 'OR' || el.type === 'XOR') {
-    const p1 = transform(-30, -10);
-    const p2 = transform(-30, 10);
-    const pOut = transform(30, 0);
+    const p1 = transform(-SYMBOL_METRICS.pinReach, -SYMBOL_METRICS.logicInputOffset);
+    const p2 = transform(-SYMBOL_METRICS.pinReach, SYMBOL_METRICS.logicInputOffset);
+    const pOut = transform(SYMBOL_METRICS.pinReach, 0);
     return [
       { id: '1', name: 'X1', x: p1.x, y: p1.y },
       { id: '2', name: 'X2', x: p2.x, y: p2.y },
@@ -510,23 +512,23 @@ export function getComponentPins(el: CircuitElement): CircuitPin[] {
     ];
   }
   if (el.type === 'RS_FF' || el.type === 'D_FF' || el.type === 'JK_FF') {
-    const p1 = transform(-30, -12);
-    const p2 = transform(-30, 12);
-    const p3 = transform(30, -12);
-    const p4 = transform(30, 12);
+    const p1 = transform(-SYMBOL_METRICS.pinReach, -SYMBOL_METRICS.flipFlopInputOffset);
+    const p2 = transform(-SYMBOL_METRICS.pinReach, SYMBOL_METRICS.flipFlopInputOffset);
+    const p3 = transform(SYMBOL_METRICS.pinReach, -SYMBOL_METRICS.flipFlopInputOffset);
+    const p4 = transform(SYMBOL_METRICS.pinReach, SYMBOL_METRICS.flipFlopInputOffset);
     return [
       { id: '1', name: el.type === 'RS_FF' ? 'S' : el.type === 'D_FF' ? 'D' : 'J', x: p1.x, y: p1.y },
       { id: '2', name: el.type === 'RS_FF' ? 'R' : el.type === 'D_FF' ? 'CLK' : 'K', x: p2.x, y: p2.y },
       { id: '3', name: 'Q', x: p3.x, y: p3.y },
       { id: '4', name: '/Q', x: p4.x, y: p4.y },
-      ...(el.type === 'JK_FF' ? [{ id: 'clk', name: 'CLK', x: transform(-30, 0).x, y: transform(-30, 0).y }] : []),
+      ...(el.type === 'JK_FF' ? [{ id: 'clk', name: 'CLK', ...transform(-SYMBOL_METRICS.pinReach, 0) }] : []),
     ];
   }
   if (el.type === 'TR3') {
-    const p1 = transform(-30, -15);
-    const p2 = transform(-30, 15);
-    const p3 = transform(30, -15);
-    const p4 = transform(30, 15);
+    const p1 = transform(-SYMBOL_METRICS.pinReach, -SYMBOL_METRICS.transformerWindingOffset);
+    const p2 = transform(-SYMBOL_METRICS.pinReach, SYMBOL_METRICS.transformerWindingOffset);
+    const p3 = transform(SYMBOL_METRICS.pinReach, -SYMBOL_METRICS.transformerWindingOffset);
+    const p4 = transform(SYMBOL_METRICS.pinReach, SYMBOL_METRICS.transformerWindingOffset);
     return [
       { id: '1', name: 'P1', x: p1.x, y: p1.y },
       { id: '2', name: 'P2', x: p2.x, y: p2.y },
@@ -539,12 +541,33 @@ export function getComponentPins(el: CircuitElement): CircuitPin[] {
   }
 
   // 2-выводные элементы (R, L, C, DIODE, V_DC, V_AC, V_PULSE, I_DC)
-  const p1 = transform(-30, 0);
-  const p2 = transform(30, 0);
+  const p1 = transform(-SYMBOL_METRICS.pinReach, 0);
+  const p2 = transform(SYMBOL_METRICS.pinReach, 0);
+  const firstName = el.type === 'DIODE' ? 'A' : ['V_DC', 'V_AC', 'V_PULSE'].includes(el.type) ? '+' : el.type === 'I_DC' ? 'IN' : '1';
+  const secondName = el.type === 'DIODE' ? 'K' : ['V_DC', 'V_AC', 'V_PULSE'].includes(el.type) ? '−' : el.type === 'I_DC' ? 'OUT' : '2';
   return [
-    { id: '1', name: '1', x: p1.x, y: p1.y },
-    { id: '2', name: '2', x: p2.x, y: p2.y },
+    { id: '1', name: firstName, x: p1.x, y: p1.y },
+    { id: '2', name: secondName, x: p2.x, y: p2.y },
   ];
+}
+
+/** Move only the waypoint next to a moved terminal; the middle of a manual route stays put. */
+export function reanchorManualWires(wires: CircuitWire[], before: CircuitElement, after: CircuitElement): CircuitWire[] {
+  const oldPins = new Map(getComponentPins(before).map(pin => [pin.id, { x: before.x + pin.x, y: before.y + pin.y }]));
+  const newPins = new Map(getComponentPins(after).map(pin => [pin.id, { x: after.x + pin.x, y: after.y + pin.y }]));
+  return wires.map(wire => {
+    if (!wire.waypoints?.length || (wire.fromCompId !== before.id && wire.toCompId !== before.id)) return wire;
+    const waypoints = wire.waypoints.map(point => ({ ...point }));
+    const shift = (pinId: string, index: number) => {
+      const oldPin = oldPins.get(pinId), newPin = newPins.get(pinId);
+      if (!oldPin || !newPin) return;
+      waypoints[index].x += newPin.x - oldPin.x;
+      waypoints[index].y += newPin.y - oldPin.y;
+    };
+    if (wire.fromCompId === before.id) shift(wire.fromPinId, 0);
+    if (wire.toCompId === before.id) shift(wire.toPinId, waypoints.length - 1);
+    return { ...wire, waypoints };
+  });
 }
 
 export function SchematicEditor({
@@ -715,6 +738,12 @@ export function SchematicEditor({
 
   // Снэп к сетке
   const snapToGrid = (val: number) => Math.round(val / GRID_SIZE) * GRID_SIZE;
+  const changeElementGeometry = useCallback((before: CircuitElement, after: CircuitElement) => {
+    onElementsChange(elements.map(element => element.id === before.id ? after : element));
+    if (wires.some(wire => wire.waypoints?.length && (wire.fromCompId === before.id || wire.toCompId === before.id))) {
+      onWiresChange(reanchorManualWires(wires, before, after));
+    }
+  }, [elements, wires, onElementsChange, onWiresChange]);
 
   // Преобразование координат экрана в координаты схемы
   const screenToWorld = useCallback(
@@ -745,6 +774,24 @@ export function SchematicEditor({
         return;
       }
 
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === 'KeyC' && selectedId) {
+        const selected = elements.find(element => element.id === selectedId);
+        if (selected) { e.preventDefault(); setCopiedElement({ ...selected }); }
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === 'KeyV' && copiedElement) {
+        e.preventDefault();
+        const baseName = `${copiedElement.name}_копия`;
+        const name = elements.some(element => element.name.toLocaleUpperCase() === baseName.toLocaleUpperCase())
+          ? nextComponentName(elements, baseName, 2) : baseName;
+        const copy = { ...copiedElement, id: `elem_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          name, x: snapToGrid(copiedElement.x + 40), y: snapToGrid(copiedElement.y + 40) };
+        onElementsChange([...elements, copy]);
+        setSelectedId(copy.id);
+        onSelectElement(copy);
+        return;
+      }
+
       const matchedAction = SHORTCUT_ACTIONS.find(action => shortcutMatches(e, editorShortcuts[action], action === 'rotate'));
       if (matchedAction) {
         e.preventDefault();
@@ -753,9 +800,8 @@ export function SchematicEditor({
           return;
         }
         if (matchedAction === 'rotate') {
-          if (selectedId) onElementsChange(elements.map(el => el.id === selectedId
-            ? { ...el, rotation: ((el.rotation || 0) + (e.shiftKey ? 45 : 90)) % 360 }
-            : el));
+          const selected = elements.find(element => element.id === selectedId);
+          if (selected) changeElementGeometry(selected, { ...selected, rotation: ((selected.rotation || 0) + (e.shiftKey ? 45 : 90)) % 360 });
           return;
         }
         const type = matchedAction.slice('component:'.length) as ComponentType;
@@ -778,18 +824,25 @@ export function SchematicEditor({
         setPendingComponentType(null);
         setSelectedId(null);
         setSelectedWireId(null);
+      } else if (e.key === 'Enter' && selectedId) {
+        const selected = elements.find(element => element.id === selectedId);
+        if (selected) { e.preventDefault(); onOpenProperties(selected); }
+      } else if (selectedId && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+        e.preventDefault();
+        const dx = e.key === 'ArrowLeft' ? -GRID_SIZE : e.key === 'ArrowRight' ? GRID_SIZE : 0;
+        const dy = e.key === 'ArrowUp' ? -GRID_SIZE : e.key === 'ArrowDown' ? GRID_SIZE : 0;
+        const selected = elements.find(element => element.id === selectedId);
+        if (selected) changeElementGeometry(selected, { ...selected, x: selected.x + dx, y: selected.y + dy });
       } else if ((e.key === 'f' || e.key === 'а' || e.key === 'F') && selectedId) {
         // Отразить слева направо (стр. 4)
         e.preventDefault();
-        onElementsChange(
-          elements.map((el) => (el.id === selectedId ? { ...el, flipH: !el.flipH } : el))
-        );
+        const selected = elements.find(element => element.id === selectedId);
+        if (selected) changeElementGeometry(selected, { ...selected, flipH: !selected.flipH });
       } else if ((e.key === 'v' || e.key === 'м' || e.key === 'V') && selectedId) {
         // Отразить сверху вниз (стр. 4)
         e.preventDefault();
-        onElementsChange(
-          elements.map((el) => (el.id === selectedId ? { ...el, flipV: !el.flipV } : el))
-        );
+        const selected = elements.find(element => element.id === selectedId);
+        if (selected) changeElementGeometry(selected, { ...selected, flipV: !selected.flipV });
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selectedId) {
           e.preventDefault();
@@ -812,7 +865,7 @@ export function SchematicEditor({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedId, selectedWireId, elements, wires, onElementsChange, onWiresChange, onRunSimulation, shortcutsEnabled, isPaletteOpen, shortcutSettingsOpen, editorShortcuts]);
+    }, [selectedId, selectedWireId, copiedElement, elements, wires, onElementsChange, onWiresChange, changeElementGeometry, onOpenProperties, onSelectElement, onRunSimulation, shortcutsEnabled, isPaletteOpen, shortcutSettingsOpen, editorShortcuts]);
 
   // Добавление нового компонента на схему
   const handlePlaceNewComponent = (type: ComponentType, worldX: number, worldY: number, replaceId = replacingId) => {
@@ -1006,6 +1059,9 @@ export function SchematicEditor({
     }
     return map;
   }, [elements]);
+  const connectedPinKeys = useMemo(() => new Set(wires.flatMap(wire => [
+    `${wire.fromCompId}_${wire.fromPinId}`, `${wire.toCompId}_${wire.toPinId}`,
+  ])), [wires]);
 
   // Геометрия всех проводов с ортогональной трассировкой (под прямым углом)
   const wireGeometries = useMemo(() => {
@@ -1253,9 +1309,10 @@ export function SchematicEditor({
       setHoveredWirePoint(null);
       const targetX = snapToGrid(pos.rawX - dragOffset.x);
       const targetY = snapToGrid(pos.rawY - dragOffset.y);
-      onElementsChange(
-        elements.map((el) => (el.id === draggingElemId ? { ...el, x: targetX, y: targetY } : el))
-      );
+      const dragged = elements.find(element => element.id === draggingElemId);
+      if (dragged && (dragged.x !== targetX || dragged.y !== targetY)) {
+        changeElementGeometry(dragged, { ...dragged, x: targetX, y: targetY });
+      }
       return;
     }
 
@@ -1503,7 +1560,7 @@ export function SchematicEditor({
     }
     if (['cw', 'ccw', 'cw45', 'ccw45'].includes(action)) {
       const delta = action === 'cw' ? 90 : action === 'ccw' ? 270 : action === 'cw45' ? 45 : 315;
-      onElementsChange(elements.map(item => item.id === id ? { ...item, rotation: ((item.rotation || 0) + delta) % 360 } : item));
+      changeElementGeometry(el, { ...el, rotation: ((el.rotation || 0) + delta) % 360 });
     }
     if (action === 'swap' && twoPins.length === 2) onWiresChange(wires.map(w => ({
       ...w,
@@ -1565,12 +1622,12 @@ export function SchematicEditor({
         {/* Кнопки инструментов и быстрый выбор компонентов */}
         <div className="flex items-center gap-1.5 flex-wrap">
           {/* Быстрый выбор по числу выводов. Колесо перебирает элементы группы. */}
-          <div className="flex items-center gap-0.5 bg-white border border-slate-300 rounded p-0.5 shadow-2xs">
+          <div className="flex max-w-full flex-wrap items-center gap-0.5 bg-white border border-slate-300 rounded p-0.5 shadow-2xs">
             {TERMINAL_GROUPS.map(group => {
               const options = COMPONENT_CATALOG.filter(item => terminalGroupForType(item.type) === group.id);
               const type = quickTypes[group.id] ?? options[0]?.type;
               const definition = COMPONENT_CATALOG.find(item => item.type === type);
-              return <div key={group.id} className={`flex items-center gap-0.5 rounded border p-0.5 ${paletteDragGroup === group.id ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-white'}`} title={`${group.label}: удерживайте ЛКМ и перенесите на схему; колесо меняет элемент`}>
+              return <div key={group.id} className={`flex shrink-0 items-center gap-0.5 rounded border p-0.5 ${paletteDragGroup === group.id ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-white'}`} title={`${group.label}: удерживайте ЛКМ и перенесите на схему; колесо меняет элемент`}>
                 <span className="px-1 text-[10px] font-bold text-slate-500">{group.id === 'two' ? '2-пол.' : group.id === 'three' ? '3-пол.' : group.id === 'four' ? '4-пол.' : 'много'}</span>
                 <button type="button" disabled={!type} onMouseDown={event => { if (event.button !== 0 || !type) return; event.preventDefault(); setPaletteDragGroup(group.id); setPendingComponentType(type); wiringFromRef.current = null; setWiringFrom(null); setWiringCursor(null); setWiringWaypoints([]); }} className="flex h-8 min-w-20 items-center gap-1 rounded bg-slate-50 px-1.5 text-[10px] font-semibold text-slate-700 hover:bg-blue-100 disabled:opacity-40">
                   {type && <ComponentSymbol type={type} className="quick-component-symbol" />}<span className="max-w-16 truncate">{definition?.name ?? 'Нет элементов'}</span>
@@ -1580,19 +1637,19 @@ export function SchematicEditor({
                 </select>
               </div>;
             })}
-            <button type="button" onClick={() => { wiringFromRef.current = null; setWiringFrom(null); setWiringCursor(null); setWiringWaypoints([]); setPendingComponentType('GND'); }} className="rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100" title="Поставить опорный потенциал 0 В">⏚ 0 В</button>
+            <button type="button" onClick={() => { wiringFromRef.current = null; setWiringFrom(null); setWiringCursor(null); setWiringWaypoints([]); setPendingComponentType('GND'); }} className="shrink-0 whitespace-nowrap rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100" title="Поставить опорный потенциал 0 В">⏚ 0 В</button>
 
             {/* Кнопка открытия полной библиотеки компонентов */}
             <button
               type="button"
               onClick={() => setIsPaletteOpen(true)}
-              className="px-2 py-1 rounded text-2xs font-semibold flex items-center gap-1 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 cursor-pointer ml-0.5 transition-colors"
+              className="shrink-0 whitespace-nowrap px-2 py-1 rounded text-2xs font-semibold flex items-center gap-1 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 cursor-pointer ml-0.5 transition-colors"
               title="Открыть полную библиотеку компонентов (ОУ, логика, триггеры, трансформаторы и т.д.)"
             >
               <Layers className="w-3 h-3 text-blue-600" />
               <span>Библиотека...</span>
             </button>
-            <button type="button" onClick={() => setShortcutSettingsOpen(true)} className="px-2 py-1 rounded text-2xs font-semibold bg-white border border-slate-300 text-slate-700 hover:bg-slate-100" title="Настроить горячие клавиши">Клавиши</button>
+            <button type="button" onClick={() => setShortcutSettingsOpen(true)} className="shrink-0 whitespace-nowrap px-2 py-1 rounded text-2xs font-semibold bg-white border border-slate-300 text-slate-700 hover:bg-slate-100" title="Настроить горячие клавиши">Клавиши</button>
           </div>
 
           <div className="h-4 w-px bg-slate-300 mx-0.5" />
@@ -1603,13 +1660,8 @@ export function SchematicEditor({
             disabled={!selectedId}
             onClick={() => {
               if (selectedId) {
-                onElementsChange(
-                  elements.map((el) =>
-                    el.id === selectedId
-                      ? { ...el, rotation: ((el.rotation || 0) + 90) % 360 }
-                      : el
-                  )
-                );
+                const selected = elements.find(element => element.id === selectedId);
+                if (selected) changeElementGeometry(selected, { ...selected, rotation: ((selected.rotation || 0) + 90) % 360 });
               }
             }}
             className="p-1 bg-white hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-white text-slate-700 border border-slate-300 rounded text-xs shadow-2xs cursor-pointer"
@@ -1617,7 +1669,7 @@ export function SchematicEditor({
           >
             <RotateCw className="w-3.5 h-3.5" />
           </button>
-          <button type="button" disabled={!selectedId} onClick={() => selectedId && onElementsChange(elements.map(el => el.id === selectedId ? { ...el, rotation: ((el.rotation || 0) + 45) % 360 } : el))} className="px-2 py-1 bg-white hover:bg-slate-100 disabled:opacity-40 text-blue-700 border border-blue-300 rounded text-xs font-bold shadow-2xs" title="Повернуть выбранный элемент на 45° (Shift+R)">45°</button>
+          <button type="button" disabled={!selectedId} onClick={() => { const selected = elements.find(element => element.id === selectedId); if (selected) changeElementGeometry(selected, { ...selected, rotation: ((selected.rotation || 0) + 45) % 360 }); }} className="px-2 py-1 bg-white hover:bg-slate-100 disabled:opacity-40 text-blue-700 border border-blue-300 rounded text-xs font-bold shadow-2xs" title="Повернуть выбранный элемент на 45° (Shift+R)">45°</button>
 
           <label className="flex items-center gap-1 text-xs text-slate-600" title="Временно исключить двухвыводный элемент из расчёта">
             <span>В расчёте</span>
@@ -1826,7 +1878,7 @@ export function SchematicEditor({
                     if (e.code === 'Escape') { setRecordingShortcut(null); setShortcutMessage('Назначение отменено.'); return; }
                     if (['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(e.code)) return;
                     const combo = shortcutFromEvent(e);
-                    const reserved = ['Delete', 'Backspace', 'F9', 'Tab', 'Enter'].includes(e.code) || ['Ctrl+KeyZ', 'Ctrl+KeyY', 'Ctrl+KeyS', 'Ctrl+KeyO', 'Meta+KeyZ', 'Meta+KeyY', 'Meta+KeyS', 'Meta+KeyO'].includes(combo);
+                    const reserved = ['Delete', 'Backspace', 'F9', 'Tab', 'Enter', 'Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.code) || ['Ctrl+KeyZ', 'Ctrl+Shift+KeyZ', 'Ctrl+KeyY', 'Ctrl+KeyS', 'Ctrl+KeyO', 'Ctrl+KeyC', 'Ctrl+KeyV', 'Meta+KeyZ', 'Meta+Shift+KeyZ', 'Meta+KeyY', 'Meta+KeyS', 'Meta+KeyO', 'Meta+KeyC', 'Meta+KeyV'].includes(combo);
                     if (reserved) { setShortcutMessage('Это сочетание уже используется командой редактора или окна. Выберите другое.'); return; }
                     const conflict = SHORTCUT_ACTIONS.find(key => key !== action && shortcutBindingsConflict(action, combo, key, editorShortcuts[key]));
                     if (conflict) { setShortcutMessage(`Уже назначено: ${shortcutActionLabel(conflict)}. Снимите старое назначение или выберите другую клавишу.`); return; }
@@ -2013,7 +2065,13 @@ export function SchematicEditor({
               const fromPin = pinPositions.get(`${wiringFrom.compId}_${wiringFrom.pinId}`);
               const targetIsPinOrWire = !!hoveredPin || !!hoveredWirePoint;
               const tailStart = wiringWaypoints.at(-1) ?? wiringFrom;
-              const previewEnd = targetIsPinOrWire ? wiringCursor : snapManualWirePoint(tailStart, wiringCursor);
+              const snappedEnd = targetIsPinOrWire ? wiringCursor : snapManualWirePoint(tailStart, wiringCursor);
+              const pinDirection = fromPin && Math.hypot(fromPin.relX, fromPin.relY) > 0
+                ? { x: fromPin.relX / Math.hypot(fromPin.relX, fromPin.relY), y: fromPin.relY / Math.hypot(fromPin.relX, fromPin.relY) }
+                : { x: 1, y: 0 };
+              const previewEnd = samePoint(tailStart, snappedEnd)
+                ? { x: tailStart.x + pinDirection.x * 14, y: tailStart.y + pinDirection.y * 14 }
+                : snappedEnd;
               const pts = wiringWaypoints.length
                 ? buildStoredWireRoute(wiringFrom, previewEnd, wiringWaypoints)
                 : targetIsPinOrWire
@@ -2061,6 +2119,7 @@ export function SchematicEditor({
             {elements.map((el) => {
               const isSelected = selectedId === el.id;
               const pins = getComponentPins(el);
+              const valueLabel = getComponentValueLabel(el);
               const labelLayout = getComponentLabelLayout({
                 rotation: el.rotation,
                 flipH: el.flipH,
@@ -2073,7 +2132,7 @@ export function SchematicEditor({
                   key={el.id}
                   transform={`translate(${el.x}, ${el.y})`}
                   onMouseDown={(e) => handleElementMouseDown(e, el)}
-                  onMouseEnter={() => onHoverStatus?.(`${el.name} · ${COMPONENT_CATALOG.find(item => item.type === el.type)?.name ?? el.type}${el.valueStr ? ` · ${normalizeEngNotation(el.valueStr)}${el.unit ? ` ${el.unit}` : ''}` : ''} · выводов: ${getComponentPins(el).length}${el.isolation ? ` · ${el.isolation === 'open' ? 'разрыв' : 'замыкание'}` : ''}`)}
+                  onMouseEnter={() => onHoverStatus?.(`${el.name} · ${COMPONENT_CATALOG.find(item => item.type === el.type)?.name ?? el.type}${valueLabel ? ` · ${valueLabel}` : ''} · выводов: ${pins.length}${el.isolation ? ` · ${el.isolation === 'open' ? 'разрыв' : 'замыкание'}` : ''}`)}
                   onMouseLeave={() => onHoverStatus?.(null)}
                   onMouseUp={(e) => {
                     if (el.type === 'JUNCTION' && wiringFrom) handlePinMouseUp(e, el.id, '1', el.x, el.y);
@@ -2084,7 +2143,7 @@ export function SchematicEditor({
                     e.preventDefault(); e.stopPropagation();
                     if (e.buttons & 1) {
                       const step = e.shiftKey ? 45 : 90;
-                      onElementsChange(elements.map(item => item.id === el.id ? { ...item, rotation: ((item.rotation || 0) + (e.deltaY > 0 ? step : 360 - step)) % 360 } : item));
+                      changeElementGeometry(el, { ...el, rotation: ((el.rotation || 0) + (e.deltaY > 0 ? step : 360 - step)) % 360 });
                     } else {
                       const category = terminalGroupForType(el.type);
                       const types = COMPONENT_CATALOG.filter(item => category && terminalGroupForType(item.type) === category).map(item => item.type);
@@ -2132,13 +2191,14 @@ export function SchematicEditor({
                             onMouseDown={(e) => handlePinClick(e, el.id, '1', el.x, el.y)}
                             onMouseUp={(e) => handlePinMouseUp(e, el.id, '1', el.x, el.y)} />
                         </g>
-                      : renderComponentSymbol(el, isSelected)}
+                      : renderComponentSymbol(el, isSelected, el.type !== 'PORT')}
                   </g>
+                  {el.type === 'PORT' && <text x={0} y={3} textAnchor="middle" fontSize={9} fontWeight="bold" fill={isSelected ? '#dc2626' : '#1e293b'} className="pointer-events-none select-none">{el.portName || el.name}</text>}
 
                   {/* Подписи следуют ориентации элемента, но остаются горизонтальными и читаемыми. */}
-                  {el.type !== 'TEXT' && el.type !== 'JUNCTION' && (showElementNames || showElementValues || el.isolation) && <g data-element-labels={el.id} className="pointer-events-none select-none" style={{ fontFamily: 'GOST type A, GOST 2.304, Arial Narrow, sans-serif' }}>
+                  {el.type !== 'TEXT' && el.type !== 'JUNCTION' && (showElementNames || showElementValues || el.isolation) && <g data-element-labels={el.id} className="pointer-events-none select-none" style={{ fontFamily: 'GOST type A, GOST 2.304, Arial Narrow, sans-serif', paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 3.5, strokeLinejoin: 'round' }}>
                     {showElementNames && <text data-label-kind="name" x={labelLayout.name.x} y={labelLayout.name.y} textAnchor={labelLayout.name.anchor} fontSize={11} fontWeight="bold" fill="#1e293b">{el.name}</text>}
-                    {showElementValues && el.valueStr && <text data-label-kind="value" x={labelLayout.value.x} y={labelLayout.value.y} textAnchor={labelLayout.value.anchor} fontSize={10} fill="#3730a3">{normalizeEngNotation(el.valueStr)}</text>}
+                    {showElementValues && valueLabel && <text data-label-kind="value" x={labelLayout.value.x} y={labelLayout.value.y} textAnchor={labelLayout.value.anchor} fontSize={11} fill="#3730a3">{valueLabel}</text>}
                     {el.isolation && <text data-label-kind="isolation" x={labelLayout.isolation.x} y={labelLayout.isolation.y} textAnchor="middle" fontSize={9} fill="#b91c1c" fontWeight="bold">{el.isolation === 'open' ? 'РАЗРЫВ' : 'КЗ'}</text>}
                   </g>}
 
@@ -2151,6 +2211,7 @@ export function SchematicEditor({
                       const nodeNum = circuitGraph.pinToNode.get(pinKey);
                       const isWiringSource = wiringFrom?.compId === el.id && wiringFrom?.pinId === pin.id;
                       const isHovered = hoveredPin?.compId === el.id && hoveredPin?.pinId === pin.id;
+                      const isConnected = connectedPinKeys.has(pinKey);
 
                       return (
                         <g key={pin.id}>
@@ -2166,6 +2227,12 @@ export function SchematicEditor({
                               strokeWidth={1.5}
                             />
                           )}
+
+                          {/* Постоянный маркер вывода в редакторе; на экспортной схеме он скрыт. */}
+                          {pin.label === '+' ? <rect data-export-hide="true" x={pin.x - 3} y={pin.y - 3} width={6} height={6}
+                            fill={isConnected ? '#334155' : '#ffffff'} stroke={isConnected ? '#334155' : '#64748b'} strokeWidth={1.25} pointerEvents="none" />
+                            : <circle data-export-hide="true" cx={pin.x} cy={pin.y} r={3}
+                              fill={isConnected ? '#334155' : '#ffffff'} stroke={isConnected ? '#334155' : '#64748b'} strokeWidth={1.25} pointerEvents="none" />}
 
                           {/* Широкая невидимая область клика (радиус 18px) для безошибочного захвата мышью */}
                           <circle

@@ -248,7 +248,7 @@ function ElementPropertiesContent({
           )}
 
           {/* Основное значение номинала с размерностью */}
-          {element.type !== 'PORT' && element.type !== 'GND' && element.type !== 'TEXT' && !['DIODE', 'THYRISTOR', 'SWITCH', 'NOT', 'AND', 'OR', 'XOR', 'RS_FF', 'D_FF', 'JK_FF', 'COMPARATOR'].includes(element.type) && (
+          {element.type !== 'PORT' && element.type !== 'GND' && element.type !== 'JUNCTION' && element.type !== 'TEXT' && !['DIODE', 'THYRISTOR', 'SWITCH', 'NOT', 'AND', 'OR', 'XOR', 'RS_FF', 'D_FF', 'JK_FF', 'COMPARATOR'].includes(element.type) && (
             <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
               <label htmlFor="element-value" title="Номинал без пробелов: 1к, 10м, 2.2мк. Латинские и русские приставки равнозначны." className="text-right font-medium text-slate-700">
                 {element.type === 'R'

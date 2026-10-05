@@ -81,7 +81,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .help-dialog dd { font-family: Consolas, monospace; color: #2563eb; text-align: right; }
 .primary-action { background: #2563eb; color: white; border-radius: 7px; padding: 9px 18px; font-size: 13px; }
 .loading-panel { padding: 32px; background: white; border-radius: 12px; color: #64748b; }
-@media (max-width: 1100px) { .app-header { padding: 12px 16px; gap: 18px; } .brand small, .project-name small, .status-hint { display: none; } .workspace { padding: 10px 10px 0; } }
+@media (max-width: 1100px) { .app-header { padding: 12px 16px; gap: 18px; } .project-name small, .status-hint { display: none; } .workspace { padding: 10px 10px 0; } }
 @media (max-width: 700px) { .app-header { flex-wrap: wrap; gap: 10px; } .project-name { order: 3; flex-basis: 100%; } .file-actions { margin-left: auto; } .file-actions button span { display: none; } .status-bar { padding-inline: 10px; gap: 8px; } .status-count { gap: 8px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
 

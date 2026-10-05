@@ -1,6 +1,7 @@
 const { chromium } = require('playwright-core');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const { version } = require('../package.json');
 
 (async () => {
   const browser = await chromium.launch({ ...(process.env.NAPS_CHROME_PATH ? { executablePath: process.env.NAPS_CHROME_PATH } : { channel: 'chrome' }), headless: true, args: ['--no-sandbox'] });
@@ -8,6 +9,9 @@ const fs = require('node:fs/promises');
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(process.env.NAPS_TEST_URL || 'http://127.0.0.1:3000/', { waitUntil: 'networkidle' });
+  const groundButton = await page.getByTitle('Поставить опорный потенциал 0 В').boundingBox();
+  assert.ok(groundButton.width >= 40 && groundButton.height <= 36, '900px toolbar keeps the ground action readable on one line');
+  assert.ok(await page.locator('.brand').getByText(`Версия ${version}`).isVisible(), 'pre-release version remains visible on a narrow screen');
   await page.getByRole('button', { name: 'Рассчитать схему' }).click();
   assert.match(await page.getByRole('alert').innerText(), /Добавьте элементы/);
   const canvas = await page.locator('.schematic-editor div.relative.overflow-hidden.bg-white').last().boundingBox();

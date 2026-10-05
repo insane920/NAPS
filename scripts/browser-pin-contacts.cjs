@@ -76,6 +76,9 @@ async function worldPoint(page, x, y) {
 
     await page.mouse.click(from.x, from.y);
     assert.equal(await page.locator('#schematic-world path[stroke-dasharray="4 3"]').count(), 1);
+    const immediatePreview = await page.locator('#schematic-world path[stroke-dasharray="4 3"]').getAttribute('d');
+    const previewNumbers = immediatePreview.match(/-?\d+(?:\.\d+)?/g).map(Number);
+    assert.ok(previewNumbers.length >= 4 && (previewNumbers[0] !== previewNumbers[2] || previewNumbers[1] !== previewNumbers[3]), 'a nonzero wire stub is visible immediately after selecting a terminal');
     await page.mouse.click(bounds.x + 100, bounds.y + 500, { button: 'right' });
     assert.equal(await page.locator('#schematic-world path[stroke-dasharray="4 3"]').count(), 0, 'right click cancels the pending wire');
 

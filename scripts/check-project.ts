@@ -5,9 +5,9 @@ import { solveCircuitTransient, solveCircuitAC, getCircuitPinIds, formatEngValue
 import { topologyTypes } from '../src/math/topologyTransient';
 import { COMPONENT_CATALOG, terminalGroupForType } from '../src/components/ComponentPalette';
 import { renderComponentSymbol } from '../src/components/ComponentSymbol';
-import { getComponentLabelLayout } from '../src/utils/componentLabels';
+import { getComponentLabelLayout, getComponentValueLabel } from '../src/utils/componentLabels';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { buildStoredWireRoute, computeOrthogonalWirePoints, getComponentPins, isAllowedWireSegment, moveWireSegment, projectPointToWire, snapManualWirePoint, splitWireRoute } from '../src/components/SchematicEditor';
+import { buildStoredWireRoute, computeOrthogonalWirePoints, getComponentPins, isAllowedWireSegment, moveWireSegment, projectPointToWire, reanchorManualWires, snapManualWirePoint, splitWireRoute } from '../src/components/SchematicEditor';
 import { buildCircuitGraph } from '../src/math/circuitSolver';
 import { nextComponentName } from '../src/utils/componentNames';
 
@@ -83,6 +83,12 @@ const movedManual = buildStoredWireRoute({ x: 20, y: 0 }, { x: 140, y: 120 }, [d
 assert.deepEqual(movedManual[0], { x: 20, y: 0 });
 assert.deepEqual(movedManual.at(-1), { x: 140, y: 120 });
 assert.ok(movedManual.slice(1).every((point, i) => isAllowedWireSegment(movedManual[i], point)), 'Moved endpoints must preserve an 8-way route');
+const anchorBefore = { id: 'A', type: 'R' as const, name: 'R1', x: 0, y: 0, rotation: 0, value: 1, valueStr: '1', unit: 'Ом' };
+const anchorAfter = { ...anchorBefore, x: 40, y: 20, rotation: 90 };
+const anchoredWire = { id: 'w', fromCompId: 'A', fromPinId: '2', toCompId: 'B', toPinId: '1', manual: true, waypoints: [{ x: 60, y: 0 }, { x: 100, y: 0 }] };
+const reanchored = reanchorManualWires([anchoredWire], anchorBefore, anchorAfter)[0];
+assert.deepEqual(reanchored.waypoints?.[0], { x: 70, y: 50 }, 'manual route start follows the same terminal after move and rotation');
+assert.deepEqual(reanchored.waypoints?.[1], anchoredWire.waypoints[1], 'middle route stays at its edited location');
 const crossingElements = [
   { id: 'A', type: 'R' as const, name: 'A', x: 0, y: 0, rotation: 0, value: 1, valueStr: '1', unit: 'Ом' },
   { id: 'B', type: 'R' as const, name: 'B', x: 100, y: 100, rotation: 0, value: 1, valueStr: '1', unit: 'Ом' },
@@ -116,16 +122,26 @@ assert.equal(angledRoundTrip.elements[0].rotation, 45, '45-degree rotation must 
 const labels0 = getComponentLabelLayout({ rotation: 0, showName: true });
 const labels90 = getComponentLabelLayout({ rotation: 90, showName: true });
 const labels180 = getComponentLabelLayout({ rotation: 180, showName: true });
-assert.ok(labels0.name.x < 0 && labels0.value.x > 0, 'at 0 degrees name and value stay on opposite horizontal sides');
-assert.ok(labels90.name.y < 0 && labels90.value.y > 0, 'at 90 degrees labels move above and below the component');
-assert.ok(labels180.name.x > 0 && labels180.value.x < 0, 'at 180 degrees name and value swap sides');
-assert.equal(getComponentLabelLayout({ rotation: 0, showName: false }).value.x, labels0.name.x, 'value takes the name position when the name is hidden');
+const labels270 = getComponentLabelLayout({ rotation: 270, showName: true });
+assert.ok(labels0.name.y < 0 && labels0.value.y > 0, 'at 0 degrees name and value avoid horizontal conductors');
+assert.ok(labels90.name.x > 0 && labels90.value.x < 0, 'at 90 degrees labels avoid vertical conductors');
+assert.ok(labels180.name.y > 0 && labels180.value.y < 0, 'at 180 degrees name and value swap sides');
+assert.ok(labels270.name.x < 0 && labels270.value.x > 0, 'at 270 degrees labels avoid vertical conductors');
+for (const angle of [0, 45, 90, 180, 270]) {
+  const layout = getComponentLabelLayout({ rotation: angle, showName: true });
+  assert.ok(Math.hypot(layout.name.x, layout.name.y) > 30 && Math.hypot(layout.value.x, layout.value.y) > 30, `${angle}° labels remain outside the body`);
+}
+assert.deepEqual(getComponentLabelLayout({ rotation: 0, showName: false }).value, labels0.name, 'value takes the name position when the name is hidden');
+assert.equal(getComponentValueLabel({ ...anchorBefore, type: 'DIODE', value: 0, valueStr: 'Диод', modelParams: { forwardVoltage: 0.62 } }), '0.62В', 'diode model edit updates its visible parameter');
+assert.equal(getComponentValueLabel({ ...anchorBefore, type: 'AND', valueStr: '&' }), '', 'logic function is not repeated as a nominal');
+assert.equal(getComponentValueLabel({ ...anchorBefore, type: 'TR3', value: 1, valueStr: '1 Гн', secondaryValue: 2 }), 'L1=1Гн · n=2', 'transformer label states its electrical parameters once');
 const angledPins = getComponentPins(angled[0]);
 assert.ok(angledPins.some(pin => Math.abs(pin.x) > 1 && Math.abs(pin.y) > 1), '45-degree pin geometry must rotate on both axes');
-for (const component of COMPONENT_CATALOG) {
-  const markup = renderToStaticMarkup(renderComponentSymbol({ id: 'test', type: component.type, name: 'test', x: 0, y: 0, rotation: 0, value: 0, valueStr: '', unit: '' }));
-  assert.ok(markup.length > 0, `${component.type}: symbol`);
-  assert.ok(!markup.includes('r="10"'), `${component.type}: fallback symbol must not be used`);
+const auditedTypes = [...COMPONENT_CATALOG.map(component => component.type), 'PORT' as const];
+for (const type of auditedTypes) {
+  const markup = renderToStaticMarkup(renderComponentSymbol({ id: 'test', type, name: 'test', x: 0, y: 0, rotation: 0, value: 0, valueStr: '', unit: '' }));
+  assert.ok(markup.length > 0, `${type}: symbol`);
+  assert.ok(!markup.includes('r="10"'), `${type}: fallback symbol must not be used`);
 }
 for (const component of COMPONENT_CATALOG) {
   const group = terminalGroupForType(component.type);
@@ -133,6 +149,25 @@ for (const component of COMPONENT_CATALOG) {
   const pins = getComponentPins({ id: 'group-test', type: component.type, name: 'test', x: 0, y: 0, rotation: 0, value: 0, valueStr: '', unit: '' });
   assert.deepEqual(pins.map(pin => pin.id), getCircuitPinIds(component.type), `${component.type}: editor and electrical pin IDs agree`);
   assert.equal(group, pins.length === 2 ? 'two' : pins.length === 3 ? 'three' : pins.length === 4 ? 'four' : 'multi', `${component.type}: terminal group`);
+}
+for (const type of auditedTypes) {
+  const element = { id: `audit_${type}`, type, name: `AUDIT_${type}`, x: 100, y: 120,
+    rotation: 45, flipH: true, flipV: false, value: 1, valueStr: '1', unit: '',
+    portName: type === 'PORT' ? 'AUDIT_PORT' : undefined,
+    textDirective: type === 'TEXT' ? '.define TEST = 1;' : undefined };
+  const expectedPins = getCircuitPinIds(type);
+  for (const rotation of [0, 45, 90, 180, 270]) {
+    const pins = getComponentPins({ ...element, rotation });
+    assert.deepEqual(pins.map(pin => pin.id), expectedPins, `${type}: terminals at ${rotation}°`);
+    assert.ok(pins.every(pin => Number.isFinite(pin.x) && Number.isFinite(pin.y)), `${type}: finite rotated terminals`);
+    assert.ok(pins.every(pin => Math.hypot(pin.x, pin.y) <= 40), `${type}: terminal stays inside shared symbol scale`);
+  }
+  const restored = parseYamlScm(exportToYamlScm([element], [], connectedSample.transient)).elements[0];
+  assert.equal(restored.type, type, `${type}: SCM symbol type`);
+  assert.deepEqual(getComponentPins(restored).map(pin => pin.id), expectedPins, `${type}: SCM terminals`);
+  assert.equal(restored.name, element.name, `${type}: SCM designation`);
+  assert.equal(restored.rotation, element.rotation, `${type}: SCM rotation`);
+  assert.equal(restored.value, element.value, `${type}: SCM value`);
 }
 const validScm = exportToYamlScm(connectedSample.elements, connectedSample.wires, connectedSample.transient);
 assert.throws(() => parseYamlScm(validScm.replace(/To:\s+\{ ID: \d+, Pin: (?:"[^"]+"|\d+) \}/, 'To: { ID: 999, Pin: "1" }')), /Провод 1.*не найден/);
@@ -154,4 +189,4 @@ assert.equal(nextComponentName([{ ...connectedSample.elements[0], name: 'U3' }],
 assert.throws(() => exportToYamlScm(connectedSample.elements, [...connectedSample.wires, { id: 'broken', fromCompId: 'missing', fromPinId: '1', toCompId: connectedSample.elements[0].id, toPinId: '1' }], connectedSample.transient), /Схема не сохранена/);
 assert.equal(terminalGroupForType('GND'), null, 'Reference potential is not a component group');
 assert.equal(terminalGroupForType('JUNCTION'), null, 'Wire junction is not a component group');
-console.log(`PASS: ${SAMPLE_CIRCUITS.length} sample file round-trips, supported simulations and explicit diagnostics; ${COMPONENT_CATALOG.length} component symbols.`);
+console.log(`PASS: ${SAMPLE_CIRCUITS.length} sample file round-trips, supported simulations and explicit diagnostics; ${auditedTypes.length} component symbols.`);

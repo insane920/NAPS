@@ -198,6 +198,14 @@ export const COMPONENT_CATALOG: ComponentDefinition[] = [
     description: 'Асинхронный RS-триггер',
     defaultVal: 'RS-тип',
   },
+  {
+    type: 'JK_FF',
+    name: 'JK-триггер',
+    code: 'JK-FF',
+    category: 'logic',
+    description: 'Синхронный JK-триггер с отдельным тактовым входом',
+    defaultVal: 'JK-тип',
+  },
 
   // 5. Узлы, земля и метки
   {

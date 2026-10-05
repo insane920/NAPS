@@ -9,6 +9,7 @@ import { exportToYamlScm, parseYamlScm } from './utils/yamlScm';
 import type { ACSettings, CircuitElement, CircuitWire, CircuitSimulationResults, TransientSettings } from './types';
 import { useModalFocus } from './hooks/useModalFocus';
 import { NapsLogo } from './components/NapsLogo';
+import { version as appVersion } from '../package.json';
 
 const GraphWindow = lazy(() => import('./components/GraphWindow').then(m => ({ default: m.GraphWindow })));
 const ScmYamlModal = lazy(() => import('./components/ScmYamlModal').then(m => ({ default: m.ScmYamlModal })));
@@ -121,7 +122,7 @@ export default function App() {
     restoreSnapshot(next, 'Действие повторено');
   }, [restoreSnapshot]);
   useEffect(() => () => { worker.current?.terminate(); if (historyGroupTimer.current) clearTimeout(historyGroupTimer.current); }, []);
-  useEffect(() => { document.title = `${dirty ? '• ' : ''}${name} — NAPS`; }, [dirty, name]);
+  useEffect(() => { document.title = `${dirty ? '• ' : ''}${name} — NAPS ${appVersion}`; }, [dirty, name]);
   useEffect(() => {
     const guard = (event: BeforeUnloadEvent) => {
       if (dirty) { event.preventDefault(); event.returnValue = ''; }
@@ -266,7 +267,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <div className="brand" aria-label="NAPS — Numerical, Analytical, PWL, Simulation"><NapsLogo className="brand-logo" /><span className="brand-tagline">Numerical · Analytical · PWL · Simulation</span></div>
+        <div className="brand" aria-label={`NAPS ${appVersion} — Numerical, Analytical, PWL, Simulation`}><NapsLogo className="brand-logo" /><span className="brand-tagline">Numerical · Analytical · PWL · Simulation<small className="block mt-1 font-semibold">Версия {appVersion}</small></span></div>
         <div className="project-name" title={name}>{dirty && <span className="unsaved-dot" title="Есть несохранённые изменения" />}<span>{name}</span><small>СХЕМА</small></div>
         <nav className="file-actions" aria-label="Действия с проектом">
           <button onClick={undo} disabled={!undoStack.current.length} title="Отменить (Ctrl+Z)" aria-label="Отменить"><Undo2 size={16} /></button>
@@ -313,7 +314,7 @@ export default function App() {
       {yamlOpen && <Suspense fallback={<div className="modal-backdrop"><div className="loading-panel">Загрузка редактора…</div></div>}><ScmYamlModal isOpen onClose={() => setYamlOpen(false)} elements={elements} wires={wires} transient={settings} ac={ac} onApplyYaml={data => {
         replaceProject(data, name, true); setYamlOpen(false);
       }} /></Suspense>}
-      {helpOpen && <div ref={helpDialogRef} className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="help-title"><section className="help-dialog"><header><h2 id="help-title">Работа со схемой</h2><button onClick={() => setHelpOpen(false)} aria-label="Закрыть помощь"><X size={20} /></button></header><p>Элементы сгруппированы по числу полюсов. Удерживайте ЛКМ на миниатюре и перенесите её на схему; во время переноса колесо меняет элемент внутри группы. Стрелка справа открывает полный список.</p><p>Для соединения включите «Проводка», нажмите вывод и затем конечный вывод. Кликами по пустому полю можно задать ручной маршрут, в том числе под 45°. Клик по существующему проводу создаёт видимый узел; простое пересечение линии не соединяет.</p><dl><dt>Выбрать и переместить элемент</dt><dd>Перетащите его за корпус</dd><dt>Изменить форму провода</dt><dd>Перетащите участок провода в режиме выбора</dd><dt>Исключить элемент из расчёта</dt><dd>Выделите двухвыводный элемент и выберите «Разрыв» или «Замыкание»</dd><dt>Свойства элемента</dt><dd>Двойной щелчок или меню по правому клику</dd><dt>Повернуть элемент</dt><dd>Кнопки 90° и 45°, R или Shift+R</dd><dt>Перебрать переносимый элемент</dt><dd>Колесо при удержании ЛКМ</dd><dt>Настроить клавиши</dt><dd>Кнопка «Клавиши» на панели схемы; выберите элемент, нажмите «Назначить» и задайте клавишу или сочетание, затем щёлкните по схеме для размещения</dd><dt>Удалить выбранное</dt><dd>Delete</dd><dt>Отменить / повторить действие</dt><dd>Ctrl+Z / Ctrl+Y</dd><dt>Отменить действие</dt><dd>Esc</dd><dt>Рассчитать и показать график</dt><dd>F9</dd><dt>Открыть / сохранить</dt><dd>Ctrl+O / Ctrl+S</dd></dl><p>Начать можно с готовой схемы в меню «Примеры». Время расчёта и сигналы настраиваются кнопкой с шестерёнкой.</p><button className="primary-action" onClick={() => setHelpOpen(false)}>Понятно</button></section></div>}
+      {helpOpen && <div ref={helpDialogRef} className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="help-title"><section className="help-dialog"><header><h2 id="help-title">Работа со схемой</h2><button onClick={() => setHelpOpen(false)} aria-label="Закрыть помощь"><X size={20} /></button></header><p>Элементы сгруппированы по числу полюсов. Удерживайте ЛКМ на миниатюре и перенесите её на схему; во время переноса колесо меняет элемент внутри группы. Стрелка справа открывает полный список.</p><p>Наведите на вывод, нажмите ЛКМ и протяните провод к другому выводу. Отдельный режим проводки не требуется. Кликами по пустому полю можно задать ручной маршрут, в том числе под 45°. Клик по существующему проводу создаёт видимый узел; простое пересечение линии не соединяет.</p><dl><dt>Выбрать и переместить элемент</dt><dd>Перетащите его за корпус</dd><dt>Изменить форму провода</dt><dd>Перетащите участок провода</dd><dt>Исключить элемент из расчёта</dt><dd>Выделите двухвыводный элемент и выберите «Разрыв» или «Замыкание»</dd><dt>Свойства элемента</dt><dd>Двойной щелчок, Enter или меню по правому клику</dd><dt>Повернуть элемент</dt><dd>Кнопки 90° и 45°, R или Shift+R</dd><dt>Копировать / вставить</dt><dd>Ctrl+C / Ctrl+V</dd><dt>Перебрать переносимый элемент</dt><dd>Колесо при удержании ЛКМ</dd><dt>Настроить клавиши</dt><dd>Кнопка «Клавиши» на панели схемы</dd><dt>Удалить выбранное</dt><dd>Delete</dd><dt>Отменить / повторить действие</dt><dd>Ctrl+Z / Ctrl+Y или Ctrl+Shift+Z</dd><dt>Отменить действие</dt><dd>Esc или правый клик по пустому полю</dd><dt>Рассчитать и показать график</dt><dd>F9</dd><dt>Открыть / сохранить</dt><dd>Ctrl+O / Ctrl+S</dd></dl><p>Начать можно с готовой схемы в меню «Примеры». Время расчёта и сигналы настраиваются кнопкой с шестерёнкой.</p><button className="primary-action" onClick={() => setHelpOpen(false)}>Понятно</button></section></div>}
     </div>
   );
 }

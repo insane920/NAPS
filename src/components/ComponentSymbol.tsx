@@ -1,9 +1,10 @@
 import React from 'react';
 import type { CircuitElement, ComponentType } from '../types';
+import { SYMBOL_METRICS } from './symbolMetrics';
 
-export function renderComponentSymbol(el: CircuitElement, selected = false) {
+export function renderComponentSymbol(el: CircuitElement, selected = false, showEmbeddedLabel = true) {
   const stroke = selected ? '#dc2626' : '#1e293b';
-  const strokeW = 1.75;
+  const strokeW = SYMBOL_METRICS.normalStroke;
 
   switch (el.type) {
     case 'JUNCTION':
@@ -87,54 +88,36 @@ export function renderComponentSymbol(el: CircuitElement, selected = false) {
       );
 
     case 'SWITCH':
-      // Управляемый вентильный ключ VCK.
+      // Управляемый размыкающий контакт; управляющий вывод остаётся электрически отдельным.
       return (
         <g>
-          {/* Коллектор (вход) */}
-          <line x1={-30} y1={0} x2={-10} y2={0} stroke={stroke} strokeWidth={strokeW} />
-          {/* Вертикальная база ключа */}
-          <line x1={-10} y1={-14} x2={-10} y2={14} stroke={stroke} strokeWidth={strokeW + 0.5} />
-          {/* Зазор и эмиттер */}
-          <line x1={-4} y1={-14} x2={-4} y2={14} stroke={stroke} strokeWidth={strokeW + 0.5} />
-          <line x1={-4} y1={0} x2={30} y2={0} stroke={stroke} strokeWidth={strokeW} />
-          {/* Управляющий вывод (Gate) */}
-          <line x1={-7} y1={14} x2={-7} y2={25} stroke={stroke} strokeWidth={strokeW} />
-          <line x1={-7} y1={25} x2={0} y2={25} stroke={stroke} strokeWidth={strokeW} />
-          {/* Метка полярности + */}
-          <text x={-22} y={-4} className="font-mono font-bold fill-slate-700" style={{ fontSize: '9px' }}>+</text>
+          <path d="M -30 0 H -12 M 12 0 H 30 M -12 0 L 8 -10" fill="none" stroke={stroke} strokeWidth={strokeW} />
+          <circle cx={-12} cy={0} r={2} fill={stroke} />
+          <circle cx={12} cy={0} r={2} fill="white" stroke={stroke} strokeWidth={strokeW} />
+          <path d="M 0 25 V 12 M 0 9 V 4" fill="none" stroke={stroke} strokeWidth={strokeW} strokeDasharray="3 2" />
         </g>
       );
 
     case 'NOT':
-      // Логический инвертор НЕ.
+      // Прямоугольный функциональный символ с указателем инверсии на выходе.
       return (
         <g>
-          <line x1={-30} y1={0} x2={-14} y2={0} stroke={stroke} strokeWidth={strokeW} />
-          <polygon
-            points="-14,-14 -14,14 12,0"
-            fill="#ffffff"
-            stroke={stroke}
-            strokeWidth={strokeW}
-          />
-          <circle cx={16} cy={0} r={3.5} fill="#ffffff" stroke={stroke} strokeWidth={strokeW} />
-          <line x1={19.5} y1={0} x2={30} y2={0} stroke={stroke} strokeWidth={strokeW} />
+          <path d="M -30 0 H -15 M 19 0 H 30" fill="none" stroke={stroke} strokeWidth={strokeW} />
+          <rect x={-15} y={-16} width={30} height={32} fill="white" stroke={stroke} strokeWidth={strokeW} />
+          <text x={0} y={4} textAnchor="middle" fill={stroke} fontSize={11} fontWeight="bold">1</text>
+          <circle cx={17} cy={0} r={2.5} fill="white" stroke={stroke} strokeWidth={strokeW} />
         </g>
       );
 
     case 'AND':
-      // Логический элемент И (&)
+      // Единый прямоугольный функциональный символ цифровой техники.
       return (
         <g>
           <line x1={-30} y1={-10} x2={-15} y2={-10} stroke={stroke} strokeWidth={strokeW} />
           <line x1={-30} y1={10} x2={-15} y2={10} stroke={stroke} strokeWidth={strokeW} />
-          <path
-            d="M -15,-16 L 0,-16 A 16 16 0 0 1 0,16 L -15,16 Z"
-            fill="#ffffff"
-            stroke={stroke}
-            strokeWidth={strokeW}
-          />
-          <text x={-6} y={4} className="font-mono font-bold fill-slate-800" style={{ fontSize: '10px' }}>&</text>
-          <line x1={16} y1={0} x2={30} y2={0} stroke={stroke} strokeWidth={strokeW} />
+          <rect x={-15} y={-16} width={30} height={32} fill="white" stroke={stroke} strokeWidth={strokeW} />
+          <text x={0} y={4} textAnchor="middle" fill={stroke} fontSize={11} fontWeight="bold">&amp;</text>
+          <line x1={15} y1={0} x2={30} y2={0} stroke={stroke} strokeWidth={strokeW} />
         </g>
       );
 
@@ -220,18 +203,19 @@ export function renderComponentSymbol(el: CircuitElement, selected = false) {
           <polygon
             points="-18,-9 10,-9 20,0 10,9 -18,9"
             fill="#eff6ff"
-            stroke="#1d4ed8"
+            stroke={stroke}
             strokeWidth={1.5}
           />
-          <text
+          {showEmbeddedLabel && <text
             x={-2}
             y={3}
             textAnchor="middle"
-            className="font-mono font-bold fill-blue-800 select-none"
+            className="font-mono font-bold select-none"
+            fill={stroke}
             style={{ fontSize: '9px' }}
           >
             {el.portName || el.name}
-          </text>
+          </text>}
         </g>
       );
 
@@ -297,7 +281,12 @@ export function renderComponentSymbol(el: CircuitElement, selected = false) {
       return <g fill="none" stroke={stroke} strokeWidth={strokeW}><path d="M -30 0 H -14 M 14 0 H 30" /><circle r={14} fill="white" /><path d="M -8 0 H 8 M 3 -5 L 8 0 L 3 5" /></g>;
 
     case 'COMPARATOR':
-      return <g stroke={stroke} strokeWidth={strokeW}><path d="M -35 -15 H -20 M -35 15 H -20 M 22 0 H 35" fill="none" /><path d="M -20 -24 L 22 0 L -20 24 Z" fill="white" /><path d="M -16 -15 H -10 M -16 15 H -10 M -13 12 V 18 M -5 5 V -5 H 5" fill="none" /></g>;
+      return <g stroke={stroke} strokeWidth={strokeW}>
+        <path d="M -35 -15 H -20 M -35 15 H -20 M 22 0 H 35" fill="none" />
+        <path d="M -20 -24 L 22 0 L -20 24 Z" fill="white" />
+        <text x={-13} y={-11} textAnchor="middle" fill={stroke} stroke="none" fontSize={11} fontWeight="bold">−</text>
+        <text x={-13} y={19} textAnchor="middle" fill={stroke} stroke="none" fontSize={11} fontWeight="bold">+</text>
+      </g>;
 
     case 'OPAMP':
       // Операционный усилитель (треугольник, стр. 4, 15, 22)
@@ -341,7 +330,7 @@ export function renderComponentSymbol(el: CircuitElement, selected = false) {
             width={160}
             height={28}
             fill="#f8fafc"
-            stroke="#cbd5e1"
+            stroke={stroke}
             strokeWidth={1}
             strokeDasharray="2 2"
             rx={2}
@@ -349,7 +338,8 @@ export function renderComponentSymbol(el: CircuitElement, selected = false) {
           <text
             x={-42}
             y={4}
-            className="font-mono text-3xs fill-slate-600 select-none"
+            className="font-mono text-3xs select-none"
+            fill={stroke}
             style={{ fontSize: '9px' }}
           >
             {el.textDirective || '.define'}

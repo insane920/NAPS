@@ -1,6 +1,7 @@
 import type { CalculationStep, CircuitElement, CircuitSimulationResults, CircuitWire, TransientSettings } from '../types';
 import { buildCircuitGraph } from './circuitSolver';
 import { assembleLinearSystem, electricalElements, sourceValue } from './linearTransient';
+import { transistorCurrent, transistorTypes } from './transistorModel';
 
 export const numberText = (value: number | undefined) => value === undefined ? '—' : Number.isFinite(value) ? String(Number(value.toPrecision(10))) : String(value);
 export interface CalculationReport {
@@ -33,7 +34,8 @@ export function buildCalculationReport(elements: CircuitElement[], wires: Circui
       'В t=0: U_C(0)=IC_C и I_L(0)=IC_L; остальные величины определяются совместным решением уравнений. Провод идеален: соединённые выводы имеют один потенциал.',
     ] : topology ? [
       'Система построена по фактическим соединениям. Узловые потенциалы, токи идеальных источников и ОУ определяются методом модифицированного узлового анализа.',
-      'Конденсаторы и катушки интегрируются неявным методом Эйлера. Для диода и тиристора используется явно заданная кусочно-линейная модель Vf + Ron / Roff, для ключа — Ron / Roff.',
+      'Конденсаторы и катушки интегрируются неявным методом Эйлера. Идеальный диод использует условия U≤0, I≥0, U·I=0; кусочно-линейный — Vf + Ron / Roff. Для ключа используется Ron / Roff.',
+      'Биполярные транзисторы: модель Эберса — Молла; MOS: модель длинного канала Level 1 без паразитных ёмкостей. Нелинейные уравнения решаются итерациями Ньютона; малосигнальный режим линеаризуется около заданной точки.',
       'ОУ моделируется источником напряжения с конечным усилением и симметричным ограничением выхода. Эти идеализированные модели не заменяют паспортные характеристики устройств.',
     ] : [...(results.derivation?.notes ?? ['Подробная запись шагов для этого режима отсутствует.'])],
     parameters: [
@@ -103,6 +105,12 @@ export function buildCalculationReport(elements: CircuitElement[], wires: Circui
       const i = results.branchCurrents[e.name][k];
       balance.set(p, (balance.get(p) ?? 0) + i);
       balance.set(m, (balance.get(m) ?? 0) - i);
+      if (transistorTypes.has(e.type)) {
+        const base = node(e, 'gate')!;
+        const model = transistorCurrent(e, [potential(p)!, potential(m)!, potential(base)!]);
+        balance.set(m, (balance.get(m) ?? 0) + model.currents[1] + i);
+        balance.set(base, (balance.get(base) ?? 0) + model.currents[2]);
+      }
       add(`U(${e.name})`, `U = V(${p}) − V(${m})`, `${n(potential(p))} − (${n(potential(m))})`, u, 'В');
       if (e.type === 'R') add(`I(${e.name})`, 'I = U/R', `${n(u)}/${n(e.value)}`, i, 'А');
       else if (e.type === 'C') {
@@ -112,12 +120,26 @@ export function buildCalculationReport(elements: CircuitElement[], wires: Circui
         if (k) add(`${e.name}: уравнение ветви`, 'U_L[k] = L·(I_L[k]−I_L[k−1])/h', `${n(e.value)}·(${n(i)}−${n(results.branchCurrents[e.name][k - 1])})/${n(h)}`, u, 'В');
         add(`I(${e.name})`, k ? 'I_L[k] — ток, решённый системой Кирхгофа' : 'I_L[0] = IC', k ? `I_L[k]=${n(i)}` : `IC=${n(e.initialCondition ?? 0)}`, i, 'А');
       }
-      else if (e.type === 'I_DC') add(`I(${e.name})`, 'I = I_DC', n(e.value), i, 'А');
-      else if (e.type.startsWith('V_')) add(`${e.name}: источник`, 'U = U_source(t); ток определяется уравнениями Кирхгофа', `U_source(${n(t)})=${n(sourceValue(e, t))}`, u, 'В');
+      else if (e.type === 'I_DC' || e.type === 'I_AC' || e.type === 'I_PULSE') add(`I(${e.name})`, e.type === 'I_DC' ? 'I = I_DC' : e.type === 'I_AC' ? 'I(t)=Ioffset+A·sin(2πft+φ)' : 'I(t)=Imin + прямоугольный импульс до Imax с задержкой, фронтами и заполнением D', `t=${n(t)}, f=${n(e.secondaryValue)}, D=${n(e.initialCondition)}, I_source=${n(sourceValue(e, t))}`, i, 'А');
+      else if (e.type.startsWith('V_')) add(`${e.name}: источник`, e.type === 'V_DC' ? 'U(t)=U_DC' : e.type === 'V_AC' ? 'U(t)=Uoffset+A·sin(2πft+φ)' : 'U(t)=Umin + прямоугольный импульс до Umax с задержкой, фронтами и заполнением D', `t=${n(t)}, f=${n(e.secondaryValue)}, D=${n(e.initialCondition)}, U_source=${n(sourceValue(e, t))}`, u, 'В');
+      else if (e.type === 'VCVS' || e.type === 'VCCS') {
+        const cp = potential(node(e, 'ctrl_pos'))!, cm = potential(node(e, 'ctrl_neg'))!, control = cp - cm;
+        add(`${e.name}: управление`, e.type === 'VCVS' ? 'Uвых=K·(Vctrl+−Vctrl−)' : 'Iвых=g·(Vctrl+−Vctrl−)', `${n(e.value)}·(${n(cp)}−(${n(cm)}))`, e.type === 'VCVS' ? u : i, e.type === 'VCVS' ? 'В' : 'А');
+        add(`${e.name}: Uупр`, 'Uупр=Vctrl+−Vctrl−', `${n(cp)}−(${n(cm)})`, control, 'В');
+      } else if (e.type === 'CCVS' || e.type === 'CCCS') {
+        const control = Object.entries(results.branchCurrents).find(([name]) => name.toUpperCase() === e.controlSource?.toUpperCase())?.[1]?.[k];
+        add(`${e.name}: управление`, e.type === 'CCVS' ? 'Uвых=Rm·Iупр' : 'Iвых=β·Iупр', `${n(e.value)}·${n(control)}`, e.type === 'CCVS' ? u : i, e.type === 'CCVS' ? 'В' : 'А');
+      } else if (transistorTypes.has(e.type)) {
+        const control = potential(node(e, 'gate'))!;
+        const model = transistorCurrent(e, [potential(p)!, potential(m)!, control]);
+        const controlVoltage = control - potential(m)!;
+        add(`${e.name}: V${e.type === 'NPN' || e.type === 'PNP' ? 'BE' : 'GS'}`, 'Vcontrol−V2', `${n(control)}−(${n(potential(m))})`, controlVoltage, 'В');
+        add(`I(${e.name})`, e.transistorModel === 'small-signal' ? 'I≈I(Vbias)+J·(V−Vbias)' : e.type === 'NPN' || e.type === 'PNP' ? 'Ic=±(αF·Is·(exp(±Vbe/Vt)−1)−Is·(exp(±Vbc/Vt)−1))' : 'Id=±K·F(Vgs,Vds,Vth)·(1+λ·|Vds|)', `I1=${n(model.currents[0])}, I2=${n(model.currents[1])}, Iупр=${n(model.currents[2])}`, i, 'А');
+      }
       else if (e.type === 'DIODE' || e.type === 'THYRISTOR') {
         const vf = e.modelParams?.forwardVoltage ?? (e.value > 0 ? e.value : 0.7), ron = e.modelParams?.onResistance ?? 0.01, roff = e.modelParams?.offResistance ?? 1e9;
-        const on = Math.abs(i - (u - vf) / ron) < Math.abs(i - u / roff);
-        add(`I(${e.name})`, on ? 'I = (U−Vf)/Ron' : 'I = U/Roff', on ? `(${n(u)}−${n(vf)})/${n(ron)}` : `${n(u)}/${n(roff)}`, i, 'А');
+        const on = e.diodeModel === 'ideal' ? i >= -1e-10 : Math.abs(i - (u - vf) / ron) < Math.abs(i - u / roff);
+        add(`I(${e.name})`, e.diodeModel === 'ideal' ? on ? 'U=0, I≥0 (идеальный диод открыт)' : 'I=0, U≤0 (идеальный диод закрыт)' : on ? 'I = (U−Vf)/Ron' : 'I = U/Roff', e.diodeModel === 'ideal' ? `U=${n(u)}, I=${n(i)}` : on ? `(${n(u)}−${n(vf)})/${n(ron)}` : `${n(u)}/${n(roff)}`, i, 'А');
         if (e.type === 'THYRISTOR') add(`${e.name}: управление`, 'Открытие: Vgate−V2 ≥ Vпорог; удержание: I ≥ Ihold', `Vgate−V2=${n(potential(node(e, 'gate'))! - potential(m)!)}, Vпорог=${n(e.modelParams?.gateThreshold ?? 2.5)}, Ihold=${n(e.modelParams?.holdingCurrent ?? 0.01)}`, i, 'А');
       } else if (e.type === 'SWITCH') {
         const gate = potential(node(e, 'gate'))! - potential(m)!, threshold = e.modelParams?.gateThreshold ?? 2.5;
@@ -129,7 +151,14 @@ export function buildCalculationReport(elements: CircuitElement[], wires: Circui
         add(`${e.name}: выход`, 'Uout = clip(K·(V+−V−), −Ulimit, Ulimit)', `clip(${n(e.value)}·(${n(potential(node(e, 'in_pos')))}−${n(potential(node(e, 'in_neg')))}), ±${n(limit)})`, Math.max(-limit, Math.min(limit, drive)), 'В');
         add(`I(${e.name})`, 'Ток выхода определяется уравнениями Кирхгофа; токи входов = 0', `Iout=${n(i)}`, i, 'А');
       }
-      add(`P(${e.name})`, 'P = U·I', `${n(u)}·(${n(i)})`, u * i, 'Вт');
+      if (transistorTypes.has(e.type)) {
+        const terminalVoltages = [potential(node(e, '1'))!, potential(node(e, '2'))!, potential(node(e, 'gate'))!] as [number, number, number];
+        const terminalCurrents = transistorCurrent(e, terminalVoltages).currents;
+        add(`P(${e.name})`, 'P=V1·I1+V2·I2+Vупр·Iупр', terminalVoltages.map((voltage, index) => `${n(voltage)}·(${n(terminalCurrents[index])})`).join(' + '), terminalVoltages.reduce((sum, voltage, index) => sum + voltage * terminalCurrents[index], 0), 'Вт');
+      } else if (e.type === 'TR3') {
+        const u2 = potential(node(e, '3'))! - potential(node(e, '4'))!, i2 = results.branchCurrents[`${e.name}:secondary`]?.[k] ?? 0;
+        add(`P(${e.name})`, 'P=U1·I1+U2·I2', `${n(u)}·(${n(i)}) + ${n(u2)}·(${n(i2)})`, u * i + u2 * i2, 'Вт');
+      } else add(`P(${e.name})`, 'P = U·I', `${n(u)}·(${n(i)})`, u * i, 'Вт');
     }
     for (const [id, sum] of balance) add(`Узел ${id}: закон Кирхгофа`, 'Σ Iвыходящих = 0', n(sum), sum, 'А');
   } else report.steps = [...(results.derivation?.steps[k] ?? [])];
@@ -142,7 +171,7 @@ export function buildCalculationReport(elements: CircuitElement[], wires: Circui
         const target = match[2].trim().toUpperCase(), kind = match[1].toUpperCase();
         const e = branches.find(e => e.name.toUpperCase() === target);
         const id = graph.namedNodes.get(target) ?? (/^\d+$/.test(target) ? Number(target) : undefined);
-        formula = kind === 'U' ? id !== undefined ? `y[k] = V(${id}) = ${n(potential(id))} В` : e ? e.type === 'OPAMP' ? `y[k] = V(${node(e, 'out')}) = ${n(potential(node(e, 'out')))} В` : `y[k] = V(${node(e, '1')}) − V(${node(e, '2')}) = ${n(potential(node(e, '1')))} − (${n(potential(node(e, '2')))}) В` : formula : kind === 'I' ? `y[k] = I(${e?.name}); уравнение ветви приведено выше` : `y[k] = U(${e?.name}) × I(${e?.name}); подстановка приведена выше`;
+        formula = kind === 'U' ? id !== undefined ? `y[k] = V(${id}) = ${n(potential(id))} В` : e ? e.type === 'OPAMP' ? `y[k] = V(${node(e, 'out')}) = ${n(potential(node(e, 'out')))} В` : `y[k] = V(${node(e, '1')}) − V(${node(e, '2')}) = ${n(potential(node(e, '1')))} − (${n(potential(node(e, '2')))}) В` : formula : kind === 'I' ? `y[k] = I(${e?.name}); уравнение ветви приведено выше` : e && (transistorTypes.has(e.type) || e.type === 'TR3') ? `y[k] = P(${e.name}); сумма мощностей всех выводов приведена выше` : `y[k] = U(${e?.name}) × I(${e?.name}); подстановка приведена выше`;
       }
     }
     report.signals.push({ name, formula, value: values[k], unit: results.summary.stats[name]?.unit ?? '' });

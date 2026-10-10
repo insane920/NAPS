@@ -8,6 +8,18 @@ const wire = (a: string, ap: string, b: string, bp: string): CircuitWire => ({ i
 const settings = (exprs: string[], frequency: number): ACSettings => ({ fMin: frequency, fMax: frequency * 1.000001, points: 2, scaleType: 'linear', signals: exprs.map((exprY, i) => ({ id: String(i), plotIndex: /^phs/i.test(exprY) ? 2 : 1, exprX: 'f', exprY, color: '#000', enabled: true })) });
 const near = (actual: number, expected: number, tolerance = 1e-7) => assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} != ${expected} ± ${tolerance}`);
 
+const currentSourceCircuit = [element('IA', 'I_AC', 0.01), element('RL', 'R', 100), element('G0', 'GND', 0), { ...element('OUTI', 'PORT', 0), portName: 'OUTI' }];
+const currentSourceWires = [wire('IA', '1', 'RL', '1'), wire('IA', '2', 'RL', '2'), wire('RL', '2', 'G0', '1'), wire('RL', '1', 'OUTI', '1')];
+const currentAc = solveCircuitAC(currentSourceCircuit, currentSourceWires, settings(['mag(U(OUTI))', 'mag(I(IA))'], 100));
+near(currentAc.signals['mag(U(OUTI))'][0], 1);
+near(currentAc.signals['mag(I(IA))'][0], 0.01);
+const acControlled = [element('VIN', 'V_AC', 2), element('E1', 'VCVS', 3), element('RL', 'R', 100), element('G0', 'GND', 0)];
+const acControlledWires = [wire('VIN', '2', 'G0', '1'), wire('E1', 'ctrl_pos', 'VIN', '1'), wire('E1', 'ctrl_neg', 'G0', '1'), wire('E1', '1', 'RL', '1'), wire('E1', '2', 'G0', '1'), wire('RL', '2', 'G0', '1')];
+near(solveCircuitAC(acControlled, acControlledWires, settings(['mag(U(RL))'], 100)).signals['mag(U(RL))'][0], 6);
+const acCurrentControlled = [element('VIN', 'V_AC', 2), element('RIN', 'R', 100), { ...element('H1', 'CCVS', 50), controlSource: 'VIN' }, element('RL', 'R', 100), element('G0', 'GND', 0)];
+const acCurrentControlledWires = [wire('VIN', '1', 'RIN', '1'), wire('RIN', '2', 'G0', '1'), wire('VIN', '2', 'G0', '1'), wire('H1', '1', 'RL', '1'), wire('H1', '2', 'G0', '1'), wire('RL', '2', 'G0', '1')];
+near(solveCircuitAC(acCurrentControlled, acCurrentControlledWires, settings(['mag(U(RL))'], 100)).signals['mag(U(RL))'][0], 1);
+
 const divider = [element('V1', 'V_AC', 10), element('R1', 'R', 1000), element('R2', 'R', 2000), element('G', 'GND', 0), { ...element('OUT', 'PORT', 0), portName: 'OUT' }];
 const dividerWires = [wire('V1', '1', 'R1', '1'), wire('R1', '2', 'R2', '1'), wire('R1', '2', 'OUT', '1'), wire('R2', '2', 'G', '1'), wire('V1', '2', 'G', '1')];
 const d = solveCircuitAC(divider, dividerWires, settings(['mag(U(OUT))', 'db(U(OUT)/U(V1))', 'phs(U(OUT)/U(V1))'], 1000));
@@ -15,6 +27,9 @@ assert.equal(d.isAC, true);
 near(d.signals['mag(U(OUT))'][0], 20 / 3);
 near(d.signals['db(U(OUT)/U(V1))'][0], 20 * Math.log10(2 / 3));
 near(d.signals['phs(U(OUT)/U(V1))'][0], 0);
+const phased = solveCircuitAC(divider.map(item => item.id === 'V1' ? { ...item, modelParams: { sourceOffset: 2, sourcePhaseDeg: 90 } } : item), dividerWires, settings(['mag(U(OUT))', 'phs(U(V1))'], 1000));
+near(phased.signals['mag(U(OUT))'][0], 20 / 3);
+near(phased.signals['phs(U(V1))'][0], 90);
 
 // RC low-pass: H(jw) = 1/(1+jwRC); at the corner |H|=1/sqrt(2), phase=-45°.
 const corner = 1 / (2 * Math.PI * 1000 * 1e-6);
@@ -46,6 +61,8 @@ const diodeWires = [wire('BIAS', '2', 'G', '1'), wire('BIAS', '1', 'V1', '2'), w
   wire('R1', '2', 'D1', '1'), wire('D1', '1', 'OUT', '1'), wire('D1', '2', 'G', '1')];
 const diodeAC = solveCircuitAC(biasedDiode, diodeWires, settings(['mag(U(OUT))'], 1000));
 near(diodeAC.signals['mag(U(OUT))'][0], 0.01 / 1000.01, 1e-9);
+const idealBiased = biasedDiode.map(item => item.id === 'D1' ? { ...item, diodeModel: 'ideal' as const } : item);
+near(solveCircuitAC(idealBiased, diodeWires, settings(['mag(U(OUT))'], 1000)).signals['mag(U(OUT))'][0], 0, 1e-9);
 const reverse = solveCircuitAC(biasedDiode.map(e => e.id === 'BIAS' ? { ...e, value: -5 } : e), diodeWires, settings(['mag(U(OUT))'], 1000));
 near(reverse.signals['mag(U(OUT))'][0], 1e9 / (1e9 + 1000), 1e-9);
 

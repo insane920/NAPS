@@ -3,6 +3,9 @@ import { buildCircuitGraph, getCircuitPinIds } from './circuitSolver';
 import { solveDenseSystem } from './linearTransient';
 import { createMnaMatrix } from './mnaCore';
 import { solveDCOperatingPoint } from './dcOperatingPoint';
+import { controlBranch, validateControlledSources } from './controlledSources';
+import { validateSourceModel } from './sourceModel';
+import { transistorAt, transistorBias, transistorCurrent, transistorTypes, validateTransistor } from './transistorModel';
 
 type Complex = { re: number; im: number };
 const zero = (): Complex => ({ re: 0, im: 0 });
@@ -15,9 +18,9 @@ const div = (a: Complex, b: Complex): Complex => {
 const mul = (a: Complex, b: Complex): Complex => ({ re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re });
 
 const passive = new Set(['GND', 'PORT', 'JUNCTION', 'TEXT']);
-const supported = new Set(['R', 'C', 'L', 'V_DC', 'V_AC', 'V_PULSE', 'I_DC', 'TR3', 'OPAMP', 'DIODE', 'SWITCH', 'THYRISTOR', ...passive]);
+const supported = new Set(['R', 'C', 'L', 'V_DC', 'V_AC', 'V_PULSE', 'I_DC', 'I_AC', 'I_PULSE', 'VCVS', 'VCCS', 'CCVS', 'CCCS', 'TR3', 'OPAMP', 'DIODE', 'SWITCH', 'THYRISTOR', ...passive, ...transistorTypes]);
 
-/** AC small-signal phasors use the peak amplitude of V_AC and a cosine reference. */
+/** AC small-signal phasors use peak amplitude and a sine reference, matching sourceValue(). */
 export function solveACAnalysis(elements: CircuitElement[], wires: CircuitWire[], settings: ACSettings): CircuitSimulationResults {
   const started = performance.now();
   if (!Number.isFinite(settings.fMin) || !Number.isFinite(settings.fMax) || settings.fMin <= 0 || settings.fMax <= settings.fMin) throw new Error('AC: задайте 0 < начальная частота < конечная частота.');
@@ -29,12 +32,15 @@ export function solveACAnalysis(elements: CircuitElement[], wires: CircuitWire[]
   if (byId.size !== elements.length) throw new Error('Идентификаторы элементов должны быть уникальными.');
   for (const w of wires) for (const [id, pin] of [[w.fromCompId, w.fromPinId], [w.toCompId, w.toPinId]]) {
     const e = byId.get(id);
-    if (!e || !getCircuitPinIds(e.type).includes(pin)) throw new Error('Провод ссылается на отсутствующий элемент или вывод.');
+    if (!e || !getCircuitPinIds(e.type, e).includes(pin)) throw new Error('Провод ссылается на отсутствующий элемент или вывод.');
   }
   const active = elements.filter(e => !passive.has(e.type) && !e.isolation);
-  if (!active.length || !active.some(e => e.type === 'V_AC' && e.value !== 0)) throw new Error('AC: подключите источник V_AC с ненулевой амплитудой.');
+  validateControlledSources(elements);
+  if (!active.length || !active.some(e => (e.type === 'V_AC' || e.type === 'I_AC') && e.value !== 0)) throw new Error('AC: подключите источник V_AC или I_AC с ненулевой амплитудой.');
   if (new Set(active.map(e => e.name.toUpperCase())).size !== active.length) throw new Error('Имена электрических компонентов должны быть уникальными.');
   for (const e of active) {
+    validateSourceModel(e);
+    validateTransistor(e);
     if (!Number.isFinite(e.value) || (['R', 'L', 'C', 'TR3'].includes(e.type) && e.value <= 0)) throw new Error(`${e.name}: недопустимый номинал.`);
     if (['DIODE', 'THYRISTOR', 'SWITCH'].includes(e.type)) {
       const ron = e.modelParams?.onResistance ?? 0.01, roff = e.modelParams?.offResistance ?? 1e9;
@@ -48,12 +54,12 @@ export function solveACAnalysis(elements: CircuitElement[], wires: CircuitWire[]
     }
   }
   const graph = buildCircuitGraph(elements, wires);
-  const operatingPoint = active.some(e => ['DIODE', 'SWITCH', 'THYRISTOR', 'OPAMP'].includes(e.type))
+  const operatingPoint = active.some(e => ['DIODE', 'SWITCH', 'THYRISTOR', 'OPAMP'].includes(e.type) || transistorTypes.has(e.type))
     ? solveDCOperatingPoint(elements, wires) : undefined;
   const pin = (e: CircuitElement, p: string) => graph.pinToNode.get(`${e.id}_${p}`)!;
-  const used = [...new Set(active.flatMap(e => getCircuitPinIds(e.type).map(p => pin(e, p))))].filter(n => n !== 0);
+  const used = [...new Set(active.flatMap(e => getCircuitPinIds(e.type, e).map(p => pin(e, p))))].filter(n => n !== 0);
   const nodeIndex = new Map(used.map((n, i) => [n, i]));
-  const extras = active.flatMap(e => e.type === 'TR3' ? [`${e.id}:primary`, `${e.id}:secondary`] : e.type.startsWith('V_') || e.type === 'OPAMP' ? [e.id] : []);
+  const extras = active.flatMap(e => e.type === 'TR3' ? [`${e.id}:primary`, `${e.id}:secondary`] : e.type.startsWith('V_') || e.type === 'VCVS' || e.type === 'CCVS' || (e.type === 'DIODE' && e.diodeModel === 'ideal') || e.type === 'OPAMP' ? [e.id] : []);
   const extraIndex = new Map(extras.map((id, i) => [id, used.length + i]));
   const size = used.length + extras.length;
   if (size > 160) throw new Error('Схема слишком велика для текущего решателя (более 160 неизвестных).');
@@ -97,14 +103,56 @@ export function solveACAnalysis(elements: CircuitElement[], wires: CircuitWire[]
       const p = idx(pin(e, e.type === 'OPAMP' ? 'out' : '1'));
       const m = e.type === 'OPAMP' ? undefined : idx(pin(e, '2'));
       if (e.type === 'R') admittance(p, m, { re: 1 / e.value, im: 0 });
+      else if (transistorTypes.has(e.type)) {
+        const pins = ['1', '2', 'gate'];
+        const terminals = pins.map(id => idx(pin(e, id)));
+        const dc = e.transistorModel === 'small-signal' ? transistorBias(e) : pins.map(id => operatingPoint?.potentials.get(pin(e, id)) ?? 0) as [number, number, number];
+        const model = e.transistorModel === 'small-signal' ? transistorCurrent(e, dc) : transistorAt(e, dc);
+        for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) addZ(terminals[row], terminals[col], { re: model.jacobian[row][col], im: 0 });
+      }
       else if (e.type === 'C') admittance(p, m, { re: 0, im: omega * e.value });
       else if (e.type === 'L') admittance(p, m, { re: 0, im: -1 / (omega * e.value) });
+      else if (e.type === 'DIODE' && e.diodeModel === 'ideal') {
+        const q = extraIndex.get(e.id)!;
+        if (operatingPoint?.states.get(e.id) === 1) voltage(p, m, q, zero());
+        else { addZ(q, q, { re: 1, im: 0 }); }
+      }
       else if (e.type === 'DIODE' || e.type === 'THYRISTOR' || e.type === 'SWITCH') {
         const on = operatingPoint?.states.get(e.id) === 1;
         const resistance = on ? e.modelParams?.onResistance ?? 0.01 : e.modelParams?.offResistance ?? 1e9;
         admittance(p, m, { re: 1 / resistance, im: 0 });
       }
-      else if (e.type.startsWith('V_')) voltage(p, m, extraIndex.get(e.id)!, { re: e.type === 'V_AC' ? e.value : 0, im: 0 });
+      else if (e.type === 'I_AC') {
+        const phase = (e.modelParams?.sourcePhaseDeg ?? 0) * Math.PI / 180;
+        const re = e.value * Math.cos(phase), im = e.value * Math.sin(phase);
+        if (p !== undefined) { matrix.b[p] -= re; matrix.b[p + size] -= im; }
+        if (m !== undefined) { matrix.b[m] += re; matrix.b[m + size] += im; }
+      }
+      else if (e.type === 'VCVS' || e.type === 'VCCS') {
+        const cp = idx(pin(e, 'ctrl_pos')), cm = idx(pin(e, 'ctrl_neg'));
+        if (e.type === 'VCVS') {
+          const q = extraIndex.get(e.id)!;
+          voltage(p, m, q, zero());
+          addZ(q, cp, { re: -e.value, im: 0 }); addZ(q, cm, { re: e.value, im: 0 });
+        } else {
+          addZ(p, cp, { re: e.value, im: 0 }); addZ(p, cm, { re: -e.value, im: 0 });
+          addZ(m, cp, { re: -e.value, im: 0 }); addZ(m, cm, { re: e.value, im: 0 });
+        }
+      }
+      else if (e.type === 'CCVS' || e.type === 'CCCS') {
+        const control = extraIndex.get(controlBranch(e, active).id)!;
+        if (e.type === 'CCVS') {
+          const q = extraIndex.get(e.id)!;
+          voltage(p, m, q, zero());
+          addZ(q, control, { re: -e.value, im: 0 });
+        } else {
+          addZ(p, control, { re: e.value, im: 0 }); addZ(m, control, { re: -e.value, im: 0 });
+        }
+      }
+      else if (e.type.startsWith('V_')) {
+        const phase = (e.modelParams?.sourcePhaseDeg ?? 0) * Math.PI / 180;
+        voltage(p, m, extraIndex.get(e.id)!, { re: e.type === 'V_AC' ? e.value * Math.cos(phase) : 0, im: e.type === 'V_AC' ? e.value * Math.sin(phase) : 0 });
+      }
       else if (e.type === 'OPAMP') {
         const q = extraIndex.get(e.id)!;
         voltage(p, undefined, q, zero());
@@ -137,8 +185,20 @@ export function solveACAnalysis(elements: CircuitElement[], wires: CircuitWire[]
       if (extraIndex.has(e.id)) return complexAt(extraIndex.get(e.id));
       const u = voltageOf(e);
       if (e.type === 'R') return { re: u.re / e.value, im: u.im / e.value };
+      if (transistorTypes.has(e.type)) {
+        const pins = ['1', '2', 'gate'];
+        const dc = e.transistorModel === 'small-signal' ? transistorBias(e) : pins.map(id => operatingPoint?.potentials.get(pin(e, id)) ?? 0) as [number, number, number];
+        const row = (e.transistorModel === 'small-signal' ? transistorCurrent(e, dc) : transistorAt(e, dc)).jacobian[0];
+        return pins.reduce((sum, id, index) => {
+          const value = nodeAt(pin(e, id));
+          return { re: sum.re + row[index] * value.re, im: sum.im + row[index] * value.im };
+        }, zero());
+      }
       if (e.type === 'C') return mul(u, { re: 0, im: omega * e.value });
       if (e.type === 'L') return mul(u, { re: 0, im: -1 / (omega * e.value) });
+      if (e.type === 'I_AC') { const phase = (e.modelParams?.sourcePhaseDeg ?? 0) * Math.PI / 180; return { re: e.value * Math.cos(phase), im: e.value * Math.sin(phase) }; }
+      if (e.type === 'VCCS') return mul(sub(nodeAt(pin(e, 'ctrl_pos')), nodeAt(pin(e, 'ctrl_neg'))), { re: e.value, im: 0 });
+      if (e.type === 'CCCS') return mul(complexAt(extraIndex.get(controlBranch(e, active).id)), { re: e.value, im: 0 });
       if (e.type === 'DIODE' || e.type === 'THYRISTOR' || e.type === 'SWITCH') {
         const resistance = operatingPoint?.states.get(e.id) === 1 ? e.modelParams?.onResistance ?? 0.01 : e.modelParams?.offResistance ?? 1e9;
         return { re: u.re / resistance, im: u.im / resistance };

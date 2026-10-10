@@ -256,10 +256,19 @@ export type ComponentType =
   | 'DIODE'       // Диод
   | 'THYRISTOR'   // Тиристор
   | 'SWITCH'      // Управляемый ключ / транзистор (VCK)
+  | 'NPN' | 'PNP' // Биполярный транзистор
+  | 'NMOS' | 'PMOS' // Полевой транзистор с изолированным затвором
   | 'V_DC'        // Источник постоянного напряжения
   | 'V_AC'        // Источник синусоидального напряжения
   | 'V_PULSE'     // Источник прямоугольных импульсов (ШИМ)
   | 'I_DC'        // Источник постоянного тока
+  | 'I_AC'        // Синусоидальный независимый источник тока
+  | 'I_PULSE'     // Прямоугольный независимый источник тока
+  | 'VCVS'        // ИНУН: напряжение управляется напряжением
+  | 'VCCS'        // ИТУН: ток управляется напряжением
+  | 'CCVS'        // ИНУТ: напряжение управляется током источника
+  | 'CCCS'        // ИТУТ: ток управляется током источника
+  | 'CHIP'        // Настраиваемый корпус микросхемы без расчётной модели
   | 'OPAMP'       // Операционный усилитель
   | 'COMPARATOR'  // Компаратор
   | 'NOT'         // Логический инвертор НЕ (NOT1)
@@ -298,6 +307,13 @@ export interface CircuitElement {
   secondaryValue?: number; // e.g. frequency 1000, dutyCycle 0.5, V_peak
   secondaryStr?: string;
   initialCondition?: number; // IC (начальное условие тока/напряжения)
+  /** Name of the independent voltage source whose branch current controls CCVS/CCCS. */
+  controlSource?: string;
+  /** Omitted in legacy projects: preserve their piecewise-linear diode. */
+  diodeModel?: 'ideal' | 'pwl';
+  transistorModel?: 'nonlinear' | 'small-signal';
+  /** Stable electrical IDs plus editable physical pin numbers and labels. */
+  chipPins?: Array<{ id: string; number: string; label: string; side: 'left' | 'right' }>;
   /** Parameters of the documented piecewise-linear semiconductor/control models. */
   modelParams?: {
     forwardVoltage?: number; // V, diode/thyristor conducting threshold
@@ -314,6 +330,22 @@ export interface CircuitElement {
     outputResistance?: number; // digital output's Thevenin resistance, Ohm
     propagationDelay?: number; // digital transition delay, s
     hysteresis?: number; // comparator differential hysteresis, V
+    sourceOffset?: number; // DC offset of a sinusoidal source
+    sourcePhaseDeg?: number; // sine phase in degrees
+    pulseLow?: number; // rectangular source low level
+    pulseHigh?: number; // rectangular source high level
+    pulseDelay?: number; // initial delay, s
+    pulseRise?: number; // linear rise time, s
+    pulseFall?: number; // linear fall time, s
+    saturationCurrent?: number; // A, BJT Ebers-Moll Is
+    betaForward?: number; // BJT forward beta
+    betaReverse?: number; // BJT reverse beta
+    thermalVoltage?: number; // V, BJT junction thermal voltage
+    thresholdVoltage?: number; // V, MOS threshold magnitude
+    transconductance?: number; // A/V², MOS Level-1 K
+    channelLengthModulation?: number; // 1/V, MOS lambda
+    biasControlVoltage?: number; // Vbe or Vgs at small-signal linearization
+    biasOutputVoltage?: number; // Vce or Vds at small-signal linearization
   };
   portName?: string;    // Name of port (e.g. "IN", "OUT", "GATE")
   textDirective?: string; // Text content for TEXT component
@@ -329,6 +361,8 @@ export interface CircuitWire {
   waypoints?: Array<{ x: number; y: number }>;
   /** Explicitly user-routed wire; also preserves a single straight 45-degree segment. */
   manual?: boolean;
+  /** A visible planned route with no electrical continuity. */
+  disabled?: boolean;
 }
 
 export interface TransientSignalConfig {

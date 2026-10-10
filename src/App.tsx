@@ -10,6 +10,7 @@ import type { ACSettings, CircuitElement, CircuitWire, CircuitSimulationResults,
 import { useModalFocus } from './hooks/useModalFocus';
 import { NapsLogo } from './components/NapsLogo';
 import { version as appVersion } from '../package.json';
+import { DEFAULT_PRINT_LAYOUT, type PrintLayout } from './utils/printLayout';
 
 const GraphWindow = lazy(() => import('./components/GraphWindow').then(m => ({ default: m.GraphWindow })));
 const ScmYamlModal = lazy(() => import('./components/ScmYamlModal').then(m => ({ default: m.ScmYamlModal })));
@@ -19,6 +20,7 @@ interface HistorySnapshot {
   wires: CircuitWire[];
   settings: TransientSettings;
   ac: ACSettings;
+  printLayout: PrintLayout;
   name: string;
   dirty: boolean;
 }
@@ -32,6 +34,7 @@ export default function App() {
   const [wires, setWires] = useState<CircuitWire[]>([]);
   const [settings, setSettings] = useState(newProjectSettings);
   const [ac, setAc] = useState(newACSettings);
+  const [printLayout, setPrintLayout] = useState<PrintLayout>(DEFAULT_PRINT_LAYOUT);
   const [name, setName] = useState('Новая схема');
   const [dirty, setDirty] = useState(false);
   const [results, setResults] = useState<CircuitSimulationResults | null>(null);
@@ -52,7 +55,7 @@ export default function App() {
   const worker = useRef<Worker | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const revision = useRef(0);
-  const currentSnapshot = useRef<HistorySnapshot>({ elements: [], wires: [], settings: newProjectSettings, ac: newACSettings, name: 'Новая схема', dirty: false });
+  const currentSnapshot = useRef<HistorySnapshot>({ elements: [], wires: [], settings: newProjectSettings, ac: newACSettings, printLayout: DEFAULT_PRINT_LAYOUT, name: 'Новая схема', dirty: false });
   const undoStack = useRef<HistorySnapshot[]>([]);
   const redoStack = useRef<HistorySnapshot[]>([]);
   const historyGroupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -105,7 +108,7 @@ export default function App() {
   const restoreSnapshot = useCallback((snapshot: HistorySnapshot, message: string) => {
     closeHistoryGroup(); stopCalculation(); revision.current += 1;
     const restored = cloneSnapshot(snapshot); currentSnapshot.current = restored;
-    setElements(restored.elements); setWires(restored.wires); setSettings(restored.settings); setAc(restored.ac); setName(restored.name); setDirty(restored.dirty);
+    setElements(restored.elements); setWires(restored.wires); setSettings(restored.settings); setAc(restored.ac); setPrintLayout(restored.printLayout); setName(restored.name); setDirty(restored.dirty);
     setResults(null); setGraphOpen(false); setSelected(null); setError(null); setViewRevision(value => value + 1);
     setStatus(message); setHistoryVersion(value => value + 1);
   }, [closeHistoryGroup, stopCalculation]);
@@ -196,20 +199,20 @@ export default function App() {
     } catch (cause) { stopCalculation(); setError(cause instanceof Error ? cause.message : 'Ошибка запуска частотного анализа.'); }
   }, [ac, elements, wires, stopCalculation]);
 
-  const replaceProject = (data: { elements: CircuitElement[]; wires: CircuitWire[]; transient: TransientSettings; ac?: ACSettings }, title: string, edited = false) => {
+  const replaceProject = (data: { elements: CircuitElement[]; wires: CircuitWire[]; transient: TransientSettings; ac?: ACSettings; printLayout?: PrintLayout }, title: string, edited = false) => {
     closeHistoryGroup(); undoStack.current = []; redoStack.current = [];
-    currentSnapshot.current = cloneSnapshot({ elements: data.elements, wires: data.wires, settings: data.transient, ac: data.ac ?? newACSettings, name: title, dirty: edited });
+    currentSnapshot.current = cloneSnapshot({ elements: data.elements, wires: data.wires, settings: data.transient, ac: data.ac ?? newACSettings, printLayout: data.printLayout ?? DEFAULT_PRINT_LAYOUT, name: title, dirty: edited });
     setHistoryVersion(value => value + 1);
     setViewRevision(value => value + 1);
     setFitRevision(value => value + 1);
-    markChanged(); setElements(data.elements); setWires(data.wires); setSettings(data.transient); setAc(data.ac ?? newACSettings);
+    markChanged(); setElements(data.elements); setWires(data.wires); setSettings(data.transient); setAc(data.ac ?? newACSettings); setPrintLayout(data.printLayout ?? DEFAULT_PRINT_LAYOUT);
     setName(title); setDirty(edited); setError(null); setGraphOpen(false); setStatus('Схема готова к расчёту');
   };
   const clearProject = () => {
     closeHistoryGroup(); beginHistoryChange();
     const emptySettings = { ...newProjectSettings, signals: [] };
-    currentSnapshot.current = { elements: [], wires: [], settings: emptySettings, ac: newACSettings, name: 'Новая схема', dirty: true };
-    markChanged(); setElements([]); setWires([]); setSettings(emptySettings); setAc(newACSettings); setName('Новая схема');
+    currentSnapshot.current = { elements: [], wires: [], settings: emptySettings, ac: newACSettings, printLayout: DEFAULT_PRINT_LAYOUT, name: 'Новая схема', dirty: true };
+    markChanged(); setElements([]); setWires([]); setSettings(emptySettings); setAc(newACSettings); setPrintLayout(DEFAULT_PRINT_LAYOUT); setName('Новая схема');
     setSelected(null); setError(null); setGraphOpen(false); setViewRevision(value => value + 1);
   };
   const confirmReplace = () => !dirty || window.confirm('В схеме есть несохранённые изменения. Заменить её?');
@@ -230,7 +233,7 @@ export default function App() {
   const saveCircuit = async () => {
     const savedRevision = revision.current;
     try {
-      const content = exportToYamlScm(elements, wires, settings, ac);
+      const content = exportToYamlScm(elements, wires, settings, ac, printLayout);
       const fileName = `${name.replace(/[<>:"/\\|?*]/g, '_')}.scm`;
       if (window.desktop) {
         const savedName = await window.desktop.saveCircuit(content, fileName);
@@ -288,7 +291,7 @@ export default function App() {
       </header>
       {error && <div className="error-banner" role="alert"><span>{error}</span><button onClick={() => setError(null)} aria-label="Закрыть сообщение"><X size={16} /></button></div>}
       <main className="workspace">
-        <SchematicEditor elements={elements} wires={wires} onElementsChange={changeElements} onWiresChange={changeWires}
+        <SchematicEditor elements={elements} wires={wires} printLayout={printLayout} onPrintLayoutChange={value => { beginHistoryChange(); currentSnapshot.current = { ...currentSnapshot.current, printLayout: value, dirty: true }; setPrintLayout(value); markChanged(); }} onElementsChange={changeElements} onWiresChange={changeWires}
           onBeginContinuousEdit={beginContinuousHistory} onEndContinuousEdit={endContinuousHistory}
           onSelectElement={() => {}} onOpenProperties={setSelected} onRunSimulation={runSimulation}
           onOpenTransientSettings={() => setSettingsOpen(true)} onLoadSample={loadSample} onClearProject={clearProject}
@@ -301,8 +304,14 @@ export default function App() {
         <span className="status-hint">Двойной щелчок — свойства · F9 — расчёт</span>
       </footer>
       {graphOpen && <div ref={graphDialogRef} className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Результаты расчёта"><div className="graph-dialog"><Suspense fallback={<div className="loading-panel">Загрузка графиков…</div>}><GraphWindow results={results} settings={settings} acSettings={ac} elements={elements} wires={wires} onOpenTransientSettings={() => results?.isAC ? setAcSettingsOpen(true) : setSettingsOpen(true)} onClose={() => setGraphOpen(false)} /></Suspense></div></div>}
-      <ElementPropertiesModal element={selected} existingNames={elements.filter(element => element.id !== selected?.id).map(element => element.name)} isOpen={!!selected} onClose={() => setSelected(null)} onSave={value => {
-        changeElements(elements.map(element => element.id === value.id ? value : element)); setSelected(null);
+      <ElementPropertiesModal element={selected} existingNames={elements.filter(element => element.id !== selected?.id).map(element => element.name)} controlSources={elements.filter(element => ['V_DC', 'V_AC', 'V_PULSE'].includes(element.type) && !element.isolation).map(element => element.name)} isOpen={!!selected} onClose={() => setSelected(null)} onSave={value => {
+        beginContinuousHistory();
+        changeElements(elements.map(element => element.id === value.id ? value : element));
+        if (value.type === 'CHIP') {
+          const valid = new Set(value.chipPins?.map(pin => pin.id));
+          changeWires(wires.filter(wire => (wire.fromCompId !== value.id || valid.has(wire.fromPinId)) && (wire.toCompId !== value.id || valid.has(wire.toPinId))));
+        }
+        endContinuousHistory(); setSelected(null);
       }} />
       <TransientSetupModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} settings={settings} elements={elements} onSave={value => {
         changeSettings(value);
@@ -311,7 +320,7 @@ export default function App() {
         beginHistoryChange(); currentSnapshot.current = { ...currentSnapshot.current, ac: value, dirty: true };
         setAc(value); markChanged(); setGraphOpen(false);
       }} />
-      {yamlOpen && <Suspense fallback={<div className="modal-backdrop"><div className="loading-panel">Загрузка редактора…</div></div>}><ScmYamlModal isOpen onClose={() => setYamlOpen(false)} elements={elements} wires={wires} transient={settings} ac={ac} onApplyYaml={data => {
+      {yamlOpen && <Suspense fallback={<div className="modal-backdrop"><div className="loading-panel">Загрузка редактора…</div></div>}><ScmYamlModal isOpen onClose={() => setYamlOpen(false)} elements={elements} wires={wires} transient={settings} ac={ac} printLayout={printLayout} onApplyYaml={data => {
         replaceProject(data, name, true); setYamlOpen(false);
       }} /></Suspense>}
       {helpOpen && <div ref={helpDialogRef} className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="help-title"><section className="help-dialog"><header><h2 id="help-title">Работа со схемой</h2><button onClick={() => setHelpOpen(false)} aria-label="Закрыть помощь"><X size={20} /></button></header><p>Элементы сгруппированы по числу полюсов. Удерживайте ЛКМ на миниатюре и перенесите её на схему; во время переноса колесо меняет элемент внутри группы. Стрелка справа открывает полный список.</p><p>Наведите на вывод, нажмите ЛКМ и протяните провод к другому выводу. Отдельный режим проводки не требуется. Кликами по пустому полю можно задать ручной маршрут, в том числе под 45°. Клик по существующему проводу создаёт видимый узел; простое пересечение линии не соединяет.</p><dl><dt>Выбрать и переместить элемент</dt><dd>Перетащите его за корпус</dd><dt>Изменить форму провода</dt><dd>Перетащите участок провода</dd><dt>Исключить элемент из расчёта</dt><dd>Выделите двухвыводный элемент и выберите «Разрыв» или «Замыкание»</dd><dt>Свойства элемента</dt><dd>Двойной щелчок, Enter или меню по правому клику</dd><dt>Повернуть элемент</dt><dd>Кнопки 90° и 45°, R или Shift+R</dd><dt>Копировать / вставить</dt><dd>Ctrl+C / Ctrl+V</dd><dt>Перебрать переносимый элемент</dt><dd>Колесо при удержании ЛКМ</dd><dt>Настроить клавиши</dt><dd>Кнопка «Клавиши» на панели схемы</dd><dt>Удалить выбранное</dt><dd>Delete</dd><dt>Отменить / повторить действие</dt><dd>Ctrl+Z / Ctrl+Y или Ctrl+Shift+Z</dd><dt>Отменить действие</dt><dd>Esc или правый клик по пустому полю</dd><dt>Рассчитать и показать график</dt><dd>F9</dd><dt>Открыть / сохранить</dt><dd>Ctrl+O / Ctrl+S</dd></dl><p>Начать можно с готовой схемы в меню «Примеры». Время расчёта и сигналы настраиваются кнопкой с шестерёнкой.</p><button className="primary-action" onClick={() => setHelpOpen(false)}>Понятно</button></section></div>}

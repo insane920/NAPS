@@ -12,7 +12,7 @@
     "preview": "vite preview",
     "electron:start": "install-electron && vite build && electron .",
     "dist:win": "install-electron && npm run lint && npm run test && npm run build && electron-builder --win nsis portable --x64",
-    "test": "tsx scripts/check-project.ts && tsx scripts/check-math.ts && tsx scripts/check-topology-math.ts && tsx scripts/check-ac-math.ts && tsx scripts/check-digital-math.ts",
+    "test": "tsx scripts/check-project.ts && tsx scripts/check-math.ts && tsx scripts/check-topology-math.ts && tsx scripts/check-ac-math.ts && tsx scripts/check-digital-math.ts && tsx scripts/check-transistor-math.ts && tsx scripts/audit-reference-circuits.ts",
     "test:browser": "node scripts/check-browser.cjs",
     "test:all": "npm run test && npm run test:browser",
     "lint": "tsc --noEmit",

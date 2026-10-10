@@ -5,6 +5,7 @@ import { buildCalculationReport } from '../src/math/calculationReport';
 import { validateSimulation } from '../src/math/validateSimulation';
 import { SAMPLE_CIRCUITS } from '../src/data/sampleCircuits';
 import type { CircuitElement, CircuitWire, ComponentType, TransientSettings } from '../src/types';
+import { sourceValue } from '../src/math/linearTransient';
 
 const e = (name: string, type: ComponentType, value = 0, extra: Partial<CircuitElement> = {}): CircuitElement => ({
   id: name, name, type, value, valueStr: String(value), unit: '', x: 0, y: 0, rotation: 0, ...extra,
@@ -20,6 +21,48 @@ const near = (actual: number, expected: number, tolerance = 1e-7) => assert.ok(
   `${actual} differs from ${expected}`,
 );
 
+const currentDrive = [e('IA', 'I_AC', 0.02, { secondaryValue: 50 }), e('RL', 'R', 100), e('G0', 'GND')];
+near(sourceValue(e('SIN', 'V_AC', 2, { secondaryValue: 50, modelParams: { sourceOffset: 3, sourcePhaseDeg: 90 } }), 0), 5);
+const rampPulse = e('PUL', 'I_PULSE', 1, { secondaryValue: 100, initialCondition: 0.5, modelParams: { pulseLow: -1, pulseHigh: 3, pulseDelay: 0.002, pulseRise: 0.001, pulseFall: 0.001 } });
+near(sourceValue(rampPulse, 0), -1);
+near(sourceValue(rampPulse, 0.0025), 1);
+near(sourceValue(rampPulse, 0.004), 3);
+near(sourceValue(rampPulse, 0.0065), 1);
+near(sourceValue(rampPulse, 0.007), -1);
+const currentDriveWires = [w('IA', '1', 'RL', '1'), w('IA', '2', 'RL', '2'), w('RL', '2', 'G0', '1')];
+const sineCurrent = solveCircuitTransient(currentDrive, currentDriveWires, settings(['I(IA)', 'U(RL)'], 0.02, 0.005));
+near(sineCurrent.signals['I(IA)'][1], 0.02);
+near(sineCurrent.signals['U(RL)'][1], -2);
+const pulseCurrent = solveCircuitTransient(currentDrive.map(item => item.id === 'IA' ? { ...item, type: 'I_PULSE', secondaryValue: 100, initialCondition: 0.25 } : item), currentDriveWires, settings(['I(IA)'], 0.01, 0.0025));
+near(pulseCurrent.signals['I(IA)'][0], 0.02);
+near(pulseCurrent.signals['I(IA)'][pulseCurrent.time.findIndex(t => t >= 0.0025)], 0);
+assert.throws(() => solveCircuitTransient(
+  currentDrive.map(item => item.id === 'IA' ? { ...item, type: 'I_PULSE', secondaryValue: 75, initialCondition: 0.5 } : item),
+  currentDriveWires, settings(['I(IA)'], 0.02, 0.02 / 19999),
+), /с учётом фронтов импульсов/, 'Pulse edges cannot be silently omitted at the 20,000-point limit');
+
+const controlledBase = [e('VCTL', 'V_DC', 2), e('RC', 'R', 100), e('G0', 'GND')];
+const controlledWires = [w('VCTL', '1', 'RC', '1'), w('RC', '2', 'G0', '1'), w('VCTL', '2', 'G0', '1')];
+const voltageControlled = [e('E1', 'VCVS', 3), e('LOAD', 'R', 100), ...controlledBase];
+const voltageControlledWires = [...controlledWires, w('E1', 'ctrl_pos', 'VCTL', '1'), w('E1', 'ctrl_neg', 'G0', '1'), w('E1', '1', 'LOAD', '1'), w('E1', '2', 'G0', '1'), w('LOAD', '2', 'G0', '1')];
+const vcResult = solveCircuitTransient(voltageControlled, voltageControlledWires, settings(['U(LOAD)']));
+near(vcResult.signals['U(LOAD)'][0], 6);
+assert.equal(validateSimulation(voltageControlled, voltageControlledWires, settings(['U(LOAD)']), vcResult).status, 'passed');
+const conductanceControlled = voltageControlled.map(item => item.id === 'E1' ? { ...item, type: 'VCCS' as const, value: 0.5 } : item);
+const vccsResult = solveCircuitTransient(conductanceControlled, voltageControlledWires, settings(['U(LOAD)', 'I(E1)']));
+near(vccsResult.signals['U(LOAD)'][0], -100);
+assert.equal(validateSimulation(conductanceControlled, voltageControlledWires, settings(['U(LOAD)', 'I(E1)']), vccsResult).status, 'passed');
+near(solveCircuitTransient(conductanceControlled, voltageControlledWires, settings(['I(E1)'])).signals['I(E1)'][0], 1);
+const currentControlled = [e('H1', 'CCVS', 50, { controlSource: 'VCTL' }), e('LOAD', 'R', 100), ...controlledBase];
+const currentControlledWires = [...controlledWires, w('H1', '1', 'LOAD', '1'), w('H1', '2', 'G0', '1'), w('LOAD', '2', 'G0', '1')];
+near(solveCircuitTransient(currentControlled, currentControlledWires, settings(['U(LOAD)'])).signals['U(LOAD)'][0], -1);
+const currentCurrent = currentControlled.map(item => item.id === 'H1' ? { ...item, type: 'CCCS' as const, value: 2 } : item);
+near(solveCircuitTransient(currentCurrent, currentControlledWires, settings(['U(LOAD)'])).signals['U(LOAD)'][0], 4);
+const savedControlled = parseYamlScm(exportToYamlScm(currentCurrent, currentControlledWires, settings(['U(LOAD)'])));
+assert.equal(savedControlled.elements.find(item => item.name === 'H1')?.controlSource, 'VCTL');
+near(solveCircuitTransient(savedControlled.elements, savedControlled.wires, savedControlled.transient).signals['U(LOAD)'][0], 4);
+assert.throws(() => solveCircuitTransient(currentCurrent.map(item => item.id === 'H1' ? { ...item, controlSource: 'missing' } : item), currentControlledWires, settings(['U(LOAD)'])), /управляющий источник/);
+
 const series = [e('V1', 'V_DC', 5), e('D1', 'DIODE'), e('R1', 'R', 100), e('G', 'GND'), e('OUT', 'PORT', 0, { portName: 'OUT' })];
 const seriesWires = [w('V1', '1', 'D1', '1'), w('D1', '2', 'R1', '1'), w('R1', '1', 'OUT', '1'), w('R1', '2', 'G', '1'), w('V1', '2', 'G', '1')];
 const selected = settings(['I(D1)', 'U(OUT)', 'P(R1)']);
@@ -28,6 +71,15 @@ assert.equal(diode.model, 'topology-mna');
 near(diode.signals['I(D1)'][0], (5 - 0.7) / 100.01);
 near(diode.signals['U(OUT)'][0], 100 * (5 - 0.7) / 100.01);
 near(diode.signals['P(R1)'][0], 100 * ((5 - 0.7) / 100.01) ** 2);
+const idealSeries = series.map(item => item.type === 'DIODE' ? { ...item, diodeModel: 'ideal' as const } : item);
+const idealForward = solveCircuitTransient(idealSeries, seriesWires, selected);
+near(idealForward.signals['I(D1)'][0], 5 / 100);
+near(idealForward.signals['U(OUT)'][0], 5);
+assert.equal(validateSimulation(idealSeries, seriesWires, selected, idealForward).status, 'passed');
+const idealReverse = solveCircuitTransient(idealSeries, [w('V1', '1', 'D1', '2'), w('D1', '1', 'R1', '1'), ...seriesWires.slice(2)], selected);
+near(idealReverse.signals['I(D1)'][0], 0);
+const savedIdeal = parseYamlScm(exportToYamlScm(idealSeries, seriesWires, selected));
+assert.equal(savedIdeal.elements.find(item => item.name === 'D1')?.diodeModel, 'ideal');
 const diodeReport = buildCalculationReport(series, seriesWires, selected, diode, 0);
 near(diodeReport.steps.find(row => row.name === 'I(D1)')!.value, diode.signals['I(D1)'][0]);
 near(diodeReport.steps.find(row => row.name === 'Узел 0: закон Кирхгофа')!.value, 0);

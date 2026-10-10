@@ -3,11 +3,14 @@ import { buildCircuitGraph, getCircuitPinIds } from './circuitSolver';
 import { solveDenseSystem, sourceValue } from './linearTransient';
 import { createMnaMatrix } from './mnaCore';
 import { digitalModel, digitalOutputPins, digitalTypes, evaluateDigital, inputLogic, type DigitalEvent, type Logic } from './digitalEvents';
+import { controlBranch, validateControlledSources } from './controlledSources';
+import { validateSourceModel } from './sourceModel';
+import { stampTransistor, transistorCurrent, transistorTypes, validateTransistor } from './transistorModel';
 
 /** Models supported by the topology-based transient solver. Other symbols are editor-only. */
 export const topologyTypes = new Set([
-  'R', 'L', 'C', 'V_DC', 'V_AC', 'V_PULSE', 'I_DC', 'DIODE',
-  'SWITCH', 'THYRISTOR', 'OPAMP', 'TR3', 'GND', 'PORT', 'JUNCTION', 'TEXT', ...digitalTypes,
+  'R', 'L', 'C', 'V_DC', 'V_AC', 'V_PULSE', 'I_DC', 'I_AC', 'I_PULSE', 'VCVS', 'VCCS', 'CCVS', 'CCCS', 'DIODE',
+  'SWITCH', 'THYRISTOR', 'OPAMP', 'TR3', 'GND', 'PORT', 'JUNCTION', 'TEXT', ...digitalTypes, ...transistorTypes,
 ]);
 
 type State = -1 | 0 | 1;
@@ -65,14 +68,17 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
   if (ids.size !== elements.length) throw new Error('Идентификаторы элементов должны быть уникальными.');
   const byId = new Map(elements.map(e => [e.id, e]));
   const active = elements.filter(e => !passive.has(e.type) && !e.isolation);
+  validateControlledSources(elements);
   const isolated = elements.filter(e => !passive.has(e.type) && e.isolation);
   if (!active.length) throw new Error('В схеме нет электрических компонентов.');
   if (new Set(elements.filter(e => !passive.has(e.type)).map(e => e.name.toUpperCase())).size !== elements.filter(e => !passive.has(e.type)).length) throw new Error('Имена электрических компонентов должны быть уникальными.');
   for (const wire of wires) for (const [id, pin] of [[wire.fromCompId, wire.fromPinId], [wire.toCompId, wire.toPinId]]) {
     const element = byId.get(id);
-    if (!element || !getCircuitPinIds(element.type).includes(pin)) throw new Error('Провод ссылается на отсутствующий элемент или вывод.');
+    if (!element || !getCircuitPinIds(element.type, element).includes(pin)) throw new Error('Провод ссылается на отсутствующий элемент или вывод.');
   }
   for (const e of active) {
+    validateSourceModel(e);
+    validateTransistor(e);
     if ((e.type === 'SWITCH' || e.type === 'THYRISTOR') && !wires.some(w => (w.fromCompId === e.id && w.fromPinId === 'gate') || (w.toCompId === e.id && w.toPinId === 'gate'))) {
       throw new Error(`${e.name}: подключите управляющий вывод gate к источнику управления.`);
     }
@@ -83,22 +89,27 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
       if (!Number.isFinite(ratio) || ratio <= 0 || !Number.isFinite(coupling) || coupling <= 0 || coupling >= 1) throw new Error(`${e.name}: коэффициент трансформации должен быть > 0, связь — от 0 до 1 (не включая 1).`);
     }
     if (e.initialCondition !== undefined && !Number.isFinite(e.initialCondition)) throw new Error(`${e.name}: неверное начальное условие.`);
-    if (['V_AC', 'V_PULSE'].includes(e.type) && (!Number.isFinite(e.secondaryValue ?? 50) || (e.secondaryValue ?? 50) <= 0)) throw new Error(`${e.name}: частота должна быть положительной.`);
-    if (e.type === 'V_PULSE' && ((e.initialCondition ?? 0.5) < 0 || (e.initialCondition ?? 0.5) > 1)) throw new Error(`${e.name}: коэффициент заполнения должен быть от 0 до 1.`);
+    if (['V_AC', 'V_PULSE', 'I_AC', 'I_PULSE'].includes(e.type) && (!Number.isFinite(e.secondaryValue ?? 50) || (e.secondaryValue ?? 50) <= 0)) throw new Error(`${e.name}: частота должна быть положительной.`);
+    if (['V_PULSE', 'I_PULSE'].includes(e.type) && ((e.initialCondition ?? 0.5) < 0 || (e.initialCondition ?? 0.5) > 1)) throw new Error(`${e.name}: коэффициент заполнения должен быть от 0 до 1.`);
   }
   const graph = buildCircuitGraph(elements, wires);
   const pin = (e: CircuitElement, id: string) => graph.pinToNode.get(`${e.id}_${id}`)!;
-  const used = [...new Set(active.flatMap(e => getCircuitPinIds(e.type).map(id => pin(e, id))))].filter(n => n !== 0);
+  const used = [...new Set(active.flatMap(e => getCircuitPinIds(e.type, e).map(id => pin(e, id))))].filter(n => n !== 0);
   const nodeIndex = new Map(used.map((n, i) => [n, i]));
   const models = new Map(active.map(e => [e.id, modelOf(e)]));
   const state = new Map<string, State>();
   for (const e of active) if (['DIODE', 'SWITCH', 'THYRISTOR', 'OPAMP'].includes(e.type)) state.set(e.id, 0);
   const time = Array.from({ length: count + 1 }, (_, k) => k * settings.tMax / count);
   // Pulse edges must be included even if the user's nominal step is longer than a pulse.
-  for (const e of active.filter(e => e.type === 'V_PULSE')) {
+  for (const e of active.filter(e => e.type === 'V_PULSE' || e.type === 'I_PULSE')) {
     const period = 1 / (e.secondaryValue ?? 50), duty = e.initialCondition ?? 0.5;
-    for (let n = 0; n * period <= settings.tMax && time.length < 20000; n++) {
-      for (const edge of [n * period, (n + duty) * period]) {
+    const delay = e.modelParams?.pulseDelay ?? 0, rise = e.modelParams?.pulseRise ?? 0, fall = e.modelParams?.pulseFall ?? 0;
+    const cycles = delay > settings.tMax ? 0 : Math.floor((settings.tMax - delay) / period) + 1;
+    if (!Number.isSafeInteger(cycles) || cycles > 20000) {
+      throw new Error('Более 20 000 периодов импульса. Уменьшите интервал расчёта или частоту.');
+    }
+    for (let n = 0; n < cycles; n++) {
+      for (const edge of [delay + n * period, delay + n * period + rise, delay + n * period + duty * period - fall, delay + n * period + duty * period]) {
         if (edge > 0 && edge < settings.tMax) time.push(edge);
       }
     }
@@ -110,7 +121,8 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
   for (const n of used) nodeVoltages[`node_${n}`] = [];
   const branchCurrents: Record<string, number[]> = {};
   const voltages: Record<string, number[]> = {};
-  for (const e of [...active, ...isolated]) { branchCurrents[e.name] = []; voltages[e.name] = []; if (e.type === 'TR3') branchCurrents[`${e.name}:secondary`] = []; }
+  const powers: Record<string, number[]> = {};
+  for (const e of [...active, ...isolated]) { branchCurrents[e.name] = []; voltages[e.name] = []; powers[e.name] = []; if (e.type === 'TR3') branchCurrents[`${e.name}:secondary`] = []; }
   const digitalElements = active.filter(e => digitalTypes.has(e.type));
   const digitalModels = new Map(digitalElements.map(e => [e.id, digitalModel(e)]));
   const logic = new Map<string, Logic>(digitalElements.map(e => [e.id, e.initialCondition === 1 ? 1 : 0]));
@@ -126,15 +138,16 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
     }
     const stepStartLogic = new Map(logic);
     const initial = k === 0, dt = initial ? 0 : time[k] - time[k - 1];
-    const extra = active.filter(e => e.type.startsWith('V_') || e.type === 'OPAMP' || e.type === 'TR3' || (initial ? e.type === 'C' : e.type === 'L'));
+    const extra = active.filter(e => e.type.startsWith('V_') || e.type === 'VCVS' || e.type === 'CCVS' || (e.type === 'DIODE' && e.diodeModel === 'ideal') || e.type === 'OPAMP' || e.type === 'TR3' || (initial ? e.type === 'C' : e.type === 'L'));
     const size = used.length + extra.length + active.filter(e => e.type === 'TR3').length;
     if (size > 160) throw new Error('Схема слишком велика для текущего решателя (более 160 неизвестных).');
     const extraIndex = new Map(extra.map((e, i) => [e.id, used.length + i]));
     const secondaryIndex = new Map(active.filter(e => e.type === 'TR3').map((e, i) => [e.id, used.length + extra.length + i]));
     let solution: number[] = [];
+    let guess = [...used.map(n => k ? nodeVoltages[`node_${n}`][k - 1] : 0), ...new Array<number>(size - used.length).fill(0)];
     let converged = false;
     const blockedThyristors = new Set<string>();
-    for (let iteration = 0; iteration < 40; iteration++) {
+    for (let iteration = 0; iteration < 80; iteration++) {
       const { a, b, add, current: stampI, conductance: stampG, voltage: addVoltage } = createMnaMatrix(size);
       const idx = (n: number) => n === 0 ? undefined : nodeIndex.get(n);
       const stampV = (e: CircuitElement, p: number | undefined, m: number | undefined, value: number) => {
@@ -146,7 +159,32 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
         const m = idx(e.type === 'OPAMP' ? 0 : pin(e, '2'));
         const mod = models.get(e.id)!;
         if (e.type === 'R') stampG(p, m, 1 / e.value);
-        else if (e.type === 'I_DC') stampI(p, m, e.value);
+        else if (transistorTypes.has(e.type)) {
+          const ids = ['1', '2', 'gate'].map(id => idx(pin(e, id)));
+          stampTransistor(e, ids.map(index => index === undefined ? 0 : guess[index]) as [number, number, number], ids, add, b);
+        }
+        else if (e.type === 'I_DC' || e.type === 'I_AC' || e.type === 'I_PULSE') stampI(p, m, sourceValue(e, time[k]));
+        else if (e.type === 'VCVS' || e.type === 'VCCS') {
+          const cp = idx(pin(e, 'ctrl_pos')), cm = idx(pin(e, 'ctrl_neg'));
+          if (e.type === 'VCVS') {
+            const q = extraIndex.get(e.id)!;
+            addVoltage(p, m, q, 0);
+            add(q, cp, -e.value); add(q, cm, e.value);
+          } else {
+            add(p, cp, e.value); add(p, cm, -e.value);
+            add(m, cp, -e.value); add(m, cm, e.value);
+          }
+        }
+        else if (e.type === 'CCVS' || e.type === 'CCCS') {
+          const control = extraIndex.get(controlBranch(e, active).id)!;
+          if (e.type === 'CCVS') {
+            const q = extraIndex.get(e.id)!;
+            addVoltage(p, m, q, 0);
+            add(q, control, -e.value);
+          } else {
+            add(p, control, e.value); add(m, control, -e.value);
+          }
+        }
         else if (e.type === 'C') {
           if (initial) stampV(e, p, m, e.initialCondition ?? 0);
           else { const g = e.value / dt; stampG(p, m, g, -g * voltages[e.name][k - 1]); }
@@ -191,6 +229,11 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
             stampG(idx(pin(e, output)), undefined, conduct, -conduct * target);
           }
         }
+        else if (e.type === 'DIODE' && e.diodeModel === 'ideal') {
+          const q = extraIndex.get(e.id)!;
+          if (state.get(e.id) === 1) addVoltage(p, m, q, 0);
+          else { a[q][q] = 1; b[q] = 0; }
+        }
         else if (e.type === 'DIODE' || e.type === 'THYRISTOR') {
           const on = state.get(e.id) === 1;
           stampG(p, m, on ? 1 / mod.ron : 1 / mod.roff, on ? -mod.vf / mod.ron : 0);
@@ -216,7 +259,9 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
         let after = before;
         if (e.type === 'DIODE') {
           const u = potential(pin(e, '1')) - potential(pin(e, '2'));
-          after = u > mod.vf + 1e-9 || (before === 1 && u >= mod.vf - 1e-9) ? 1 : 0;
+          after = e.diodeModel === 'ideal'
+            ? (before === 1 ? (solution[extraIndex.get(e.id)!] >= -1e-10 ? 1 : 0) : (u > 1e-10 ? 1 : 0))
+            : u > mod.vf + 1e-9 || (before === 1 && u >= mod.vf - 1e-9) ? 1 : 0;
         } else if (e.type === 'SWITCH') {
           const gate = potential(pin(e, 'gate')) - potential(pin(e, '2'));
           after = gate >= mod.gate ? 1 : 0;
@@ -257,9 +302,12 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
           }
         }
       }
-      if (!changes) { converged = true; break; }
+      const delta = transistorTypes.size && active.some(e => transistorTypes.has(e.type))
+        ? Math.max(0, ...used.map((_, index) => Math.abs(solution[index] - guess[index]))) : 0;
+      guess = solution;
+      if (!changes && delta <= 1e-8 * Math.max(1, ...solution.slice(0, used.length).map(Math.abs))) { converged = true; break; }
     }
-    if (!converged) throw new Error(`t=${time[k]} с: состояния нелинейных элементов не сошлись за 40 итераций. Уменьшите шаг или проверьте соединения и параметры.`);
+    if (!converged) throw new Error(`t=${time[k]} с: нелинейная схема не сошлась за 80 итераций. Уменьшите шаг или проверьте соединения и параметры.`);
     const potential = (n: number) => n === 0 ? 0 : solution[nodeIndex.get(n)!];
     nodeVoltages.node_0.push(0);
     for (const n of used) nodeVoltages[`node_${n}`].push(potential(n));
@@ -274,9 +322,13 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
       let current = 0;
       if (extraIndex.has(e.id)) current = solution[extraIndex.get(e.id)!];
       else if (e.type === 'R') current = u / e.value;
-      else if (e.type === 'I_DC') current = e.value;
+      else if (transistorTypes.has(e.type)) current = transistorCurrent(e, [potential(pin(e, '1')), potential(pin(e, '2')), potential(pin(e, 'gate'))]).currents[0];
+      else if (e.type === 'I_DC' || e.type === 'I_AC' || e.type === 'I_PULSE') current = sourceValue(e, time[k]);
+      else if (e.type === 'VCCS') current = e.value * (potential(pin(e, 'ctrl_pos')) - potential(pin(e, 'ctrl_neg')));
+      else if (e.type === 'CCCS') current = e.value * solution[extraIndex.get(controlBranch(e, active).id)!];
       else if (e.type === 'L') current = e.initialCondition ?? 0;
       else if (e.type === 'C') current = e.value * (u - voltages[e.name][k - 1]) / dt;
+      else if (e.type === 'DIODE' && e.diodeModel === 'ideal') current = state.get(e.id) === 1 ? solution[extraIndex.get(e.id)!] : 0;
       else if (e.type === 'DIODE' || e.type === 'THYRISTOR') current = state.get(e.id) === 1 ? (u - mod.vf) / mod.ron : u / mod.roff;
       else if (e.type === 'SWITCH') current = u / (state.get(e.id) === 1 ? mod.ron : mod.roff);
       else if (output) {
@@ -285,12 +337,21 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
         current = q === 'X' ? 0 : ((q === 1 ? model.high : model.low) - u) / model.resistance;
       }
       voltages[e.name].push(u); branchCurrents[e.name].push(current);
-      if (e.type === 'TR3') branchCurrents[`${e.name}:secondary`].push(solution[secondaryIndex.get(e.id)!]);
+      if (transistorTypes.has(e.type)) {
+        const terminalVoltages = [potential(pin(e, '1')), potential(pin(e, '2')), potential(pin(e, 'gate'))] as [number, number, number];
+        const terminalCurrents = transistorCurrent(e, terminalVoltages).currents;
+        powers[e.name].push(terminalVoltages.reduce((sum, value, index) => sum + value * terminalCurrents[index], 0));
+      } else if (e.type === 'TR3') {
+        const secondary = solution[secondaryIndex.get(e.id)!];
+        branchCurrents[`${e.name}:secondary`].push(secondary);
+        powers[e.name].push(u * current + (potential(pin(e, '3')) - potential(pin(e, '4'))) * secondary);
+      } else powers[e.name].push(u * current);
     }
     for (const e of isolated) {
       const first = graph.pinToNode.get(`${e.id}_1`), second = graph.pinToNode.get(`${e.id}_2`);
       const u = first === undefined || second === undefined ? NaN : (first === 0 || nodeIndex.has(first)) && (second === 0 || nodeIndex.has(second)) ? potential(first) - potential(second) : NaN;
       voltages[e.name].push(u); branchCurrents[e.name].push(0);
+      powers[e.name].push(0);
       if (e.type === 'TR3') branchCurrents[`${e.name}:secondary`].push(0);
     }
   }
@@ -306,7 +367,7 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
     const n = graph.namedNodes.get(target) ?? (/^\d+$/.test(target) ? Number(target) : undefined);
     let values = kind === 'U' ? (n !== undefined ? nodeVoltages[`node_${n}`] : e ? voltages[e.name] : undefined) : e ? branchCurrents[e.name] : undefined;
     if (kind === 'I' && !values) values = Object.entries(branchCurrents).find(([name]) => name.toUpperCase() === target)?.[1];
-    if (kind === 'P' && e) values = voltages[e.name].map((u, i) => u * branchCurrents[e.name][i]);
+    if (kind === 'P' && e) values = powers[e.name];
     if (!values) throw new Error(`Не найден сигнал ${sig.exprY}. Проверьте имя компонента, порта или номер узла.`);
     if (values.some(value => !Number.isFinite(value))) throw new Error(`${sig.exprY}: потенциал не определён.`);
     signals[sig.exprY] = values;

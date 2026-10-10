@@ -7,9 +7,42 @@ import { COMPONENT_CATALOG, terminalGroupForType } from '../src/components/Compo
 import { renderComponentSymbol } from '../src/components/ComponentSymbol';
 import { getComponentLabelLayout, getComponentValueLabel } from '../src/utils/componentLabels';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { buildStoredWireRoute, computeOrthogonalWirePoints, getComponentPins, isAllowedWireSegment, moveWireSegment, projectPointToWire, reanchorManualWires, snapManualWirePoint, splitWireRoute } from '../src/components/SchematicEditor';
+import { buildStoredWireRoute, computeOrthogonalWirePoints, getComponentPins, isAllowedWireSegment, moveWireSegment, projectPointToWire, reanchorManualWires, snapManualWirePoint, splitWireRoute, wireGapDashArray } from '../src/components/SchematicEditor';
 import { buildCircuitGraph } from '../src/math/circuitSolver';
 import { nextComponentName } from '../src/utils/componentNames';
+import { paperSize, parsePrintLayout, SCHEMATIC_UNITS_PER_MM } from '../src/utils/printLayout';
+import { rasterPagePdf } from '../src/utils/rasterPdf';
+import { DEFAULT_CHIP_PINS } from '../src/utils/chipPins';
+
+assert.deepEqual(paperSize({ format: 'A4', orientation: 'landscape', gridMm: 5 }), { widthMm: 297, heightMm: 210, width: 1188, height: 840 });
+assert.deepEqual(paperSize({ format: 'A3', orientation: 'portrait', gridMm: 5 }), { widthMm: 297, heightMm: 420, width: 1188, height: 1680 });
+assert.equal(20 / SCHEMATIC_UNITS_PER_MM, 5, 'One existing schematic grid cell is 5 mm');
+assert.deepEqual(parsePrintLayout(), { format: 'A4', orientation: 'landscape', gridMm: 5 }, 'Legacy SCM defaults to A4');
+assert.deepEqual(parseYamlScm(exportToYamlScm([], [], SAMPLE_CIRCUITS[0].transient, undefined, { format: 'A3', orientation: 'portrait', gridMm: 2.5 })).printLayout, { format: 'A3', orientation: 'portrait', gridMm: 2.5 });
+assert.throws(() => parsePrintLayout('A2', 'portrait'), /Формат листа/);
+const paperPdf = await rasterPagePdf(new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], { type: 'image/jpeg' }), 3508, 2480, 297, 210);
+const pdfText = await paperPdf.text();
+assert.ok(pdfText.startsWith('%PDF-1.4'));
+assert.match(pdfText, /\/MediaBox \[0 0 841\.889[0-9]* 595\.275[0-9]*\]/);
+assert.match(pdfText, /\/Width 3508 \/Height 2480/);
+for (const [format, orientation, widthPt, heightPt] of [
+  ['A4', 'portrait', 595.275, 841.889],
+  ['A3', 'landscape', 1190.551, 841.889],
+  ['A3', 'portrait', 841.889, 1190.551],
+] as const) {
+  const sheet = paperSize({ format, orientation, gridMm: 5 });
+  const pdf = await rasterPagePdf(new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], { type: 'image/jpeg' }), 100, 100, sheet.widthMm, sheet.heightMm);
+  assert.ok((await pdf.text()).includes(`/MediaBox [0 0 ${widthPt}`), `${format} ${orientation}: physical PDF width`);
+  assert.ok((await pdf.text()).includes(`${heightPt}`), `${format} ${orientation}: physical PDF height`);
+}
+const customChip = { id: 'CHIP1', type: 'CHIP' as const, name: 'DD1', x: 80, y: 80, rotation: 90, value: 0, valueStr: '', unit: '', chipPins: DEFAULT_CHIP_PINS.slice(0, 4).map((pin, index) => ({ ...pin, label: `A${index}`, number: String(index + 11) })) };
+const chipCircuit = [customChip, { id: 'R1', type: 'R' as const, name: 'R1', x: 160, y: 80, rotation: 0, value: 100, valueStr: '100', unit: 'Ом' }];
+const chipWire = [{ id: 'chip-wire', fromCompId: 'CHIP1', fromPinId: 'p1', toCompId: 'R1', toPinId: '1' }];
+const chipSaved = parseYamlScm(exportToYamlScm(chipCircuit, chipWire, SAMPLE_CIRCUITS[0].transient));
+assert.deepEqual(chipSaved.elements[0].chipPins, customChip.chipPins);
+assert.equal(chipSaved.wires[0].fromPinId, 'p1');
+assert.deepEqual(getComponentPins(chipSaved.elements[0]).map(pin => pin.id), customChip.chipPins.map(pin => pin.id));
+assert.throws(() => solveCircuitTransient(chipSaved.elements, chipSaved.wires, chipSaved.transient), /нет расчётной модели/i);
 
 assert.equal(formatEngValue(150e-6, 'с'), '150 мкс');
 assert.equal(formatEngValue(200, 'В'), '200 В');
@@ -59,6 +92,16 @@ const straightRoute = computeOrthogonalWirePoints({ x: 0, y: 0 }, { x: 120, y: 0
 const separatedRoute = computeOrthogonalWirePoints({ x: 0, y: 0 }, { x: 120, y: 0 }, { x: 30, y: 0 }, { x: -30, y: 0 }, undefined, undefined, 20);
 assert.notDeepEqual(separatedRoute, straightRoute, 'Parallel wires must support separate grid tracks');
 assert.ok(separatedRoute.slice(1).every((point, i) => point.x === separatedRoute[i].x || point.y === separatedRoute[i].y), 'Separated wire tracks must remain orthogonal');
+const fineRoute = computeOrthogonalWirePoints({ x: 0, y: 0 }, { x: 120, y: 80 }, undefined, undefined, undefined, undefined, 0, 10);
+const coarseRoute = computeOrthogonalWirePoints({ x: 0, y: 0 }, { x: 120, y: 80 }, undefined, undefined, undefined, undefined, 0, 40);
+assert.equal(fineRoute[1].x, 60, '2.5 mm grid controls automatic wire bends');
+assert.equal(coarseRoute[1].x, 80, '10 mm grid controls automatic wire bends');
+assert.deepEqual(projectPointToWire([{ x: 0, y: 0 }, { x: 120, y: 0 }], { x: 55, y: 2 }, 10)?.point, { x: 60, y: 0 }, 'Junction snaps to selected 2.5 mm grid');
+assert.deepEqual(projectPointToWire([{ x: 0, y: 0 }, { x: 120, y: 0 }], { x: 55, y: 2 }, 40)?.point, { x: 40, y: 0 }, 'Junction snaps to selected 10 mm grid');
+const rotatedStart = { x: 21.213, y: 21.213 };
+const exactTerminalRoute = computeOrthogonalWirePoints(rotatedStart, { x: 120.5, y: 80.5 }, undefined, undefined, undefined, undefined, 0, 10);
+assert.deepEqual(exactTerminalRoute[0], rotatedStart, '45-degree terminal must not be rounded away from its visible position');
+assert.deepEqual(exactTerminalRoute.at(-1), { x: 120.5, y: 80.5 });
 const editedRoute = moveWireSegment(straightRoute, 0, 20);
 assert.deepEqual(editedRoute[0], straightRoute[0]);
 assert.deepEqual(editedRoute.at(-1), straightRoute.at(-1));
@@ -84,6 +127,8 @@ assert.deepEqual(movedManual[0], { x: 20, y: 0 });
 assert.deepEqual(movedManual.at(-1), { x: 140, y: 120 });
 assert.ok(movedManual.slice(1).every((point, i) => isAllowedWireSegment(movedManual[i], point)), 'Moved endpoints must preserve an 8-way route');
 const anchorBefore = { id: 'A', type: 'R' as const, name: 'R1', x: 0, y: 0, rotation: 0, value: 1, valueStr: '1', unit: 'Ом' };
+const sourcePins = getComponentPins({ ...anchorBefore, type: 'V_DC' });
+assert.deepEqual(sourcePins.map(pin => [pin.id, pin.name, pin.label]), [['1', '+', '+'], ['2', '−', '−']], 'Source polarity must distinguish positive square and negative circle terminals');
 const anchorAfter = { ...anchorBefore, x: 40, y: 20, rotation: 90 };
 const anchoredWire = { id: 'w', fromCompId: 'A', fromPinId: '2', toCompId: 'B', toPinId: '1', manual: true, waypoints: [{ x: 60, y: 0 }, { x: 100, y: 0 }] };
 const reanchored = reanchorManualWires([anchoredWire], anchorBefore, anchorAfter)[0];
@@ -101,6 +146,13 @@ const crossingWires = [
 ];
 const crossingGraph = buildCircuitGraph(crossingElements, crossingWires);
 assert.notEqual(crossingGraph.pinToNode.get('A_2'), crossingGraph.pinToNode.get('C_2'), 'Crossing without junction must remain disconnected');
+assert.equal(wireGapDashArray([{ x: 0, y: 0 }, { x: 100, y: 0 }]), '44 12 44 101', 'Broken route has a visible middle gap');
+const brokenWire = { ...crossingWires[0], disabled: true };
+const brokenGraph = buildCircuitGraph(crossingElements, [brokenWire]);
+assert.notEqual(brokenGraph.pinToNode.get('A_2'), brokenGraph.pinToNode.get('B_1'), 'Broken visible wire must not merge electrical nodes');
+const restoredGraph = buildCircuitGraph(crossingElements, [crossingWires[0]]);
+assert.equal(restoredGraph.pinToNode.get('A_2'), restoredGraph.pinToNode.get('B_1'), 'Restored wire joins endpoints again');
+assert.equal(parseYamlScm(exportToYamlScm(crossingElements, [brokenWire], connectedSample.transient)).wires[0].disabled, true, 'Broken wire survives SCM');
 const crossingSaved = parseYamlScm(exportToYamlScm(crossingElements, crossingWires, connectedSample.transient));
 assert.deepEqual(crossingSaved.wires.map(w => w.waypoints), crossingWires.map(w => w.waypoints), 'Manual routes must survive SCM round trip');
 assert.ok(crossingSaved.wires.every(w => w.manual), 'Manual route mode must survive SCM round trip');
@@ -160,7 +212,7 @@ for (const type of auditedTypes) {
     const pins = getComponentPins({ ...element, rotation });
     assert.deepEqual(pins.map(pin => pin.id), expectedPins, `${type}: terminals at ${rotation}°`);
     assert.ok(pins.every(pin => Number.isFinite(pin.x) && Number.isFinite(pin.y)), `${type}: finite rotated terminals`);
-    assert.ok(pins.every(pin => Math.hypot(pin.x, pin.y) <= 40), `${type}: terminal stays inside shared symbol scale`);
+    assert.ok(pins.every(pin => Math.hypot(pin.x, pin.y) <= (type === 'CHIP' ? 60 : 40)), `${type}: terminal stays inside shared symbol scale`);
   }
   const restored = parseYamlScm(exportToYamlScm([element], [], connectedSample.transient)).elements[0];
   assert.equal(restored.type, type, `${type}: SCM symbol type`);

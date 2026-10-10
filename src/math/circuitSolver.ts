@@ -1,5 +1,6 @@
 import { isLinearCircuit, solveLinearTransient } from './linearTransient';
 import { solveTopologyTransient, topologyTypes } from './topologyTransient';
+import { DEFAULT_CHIP_PINS } from '../utils/chipPins';
 import { solveACAnalysis } from './acAnalysis';
 import {
   CircuitElement,
@@ -122,11 +123,13 @@ export interface CircuitGraph {
 }
 
 /** Pin IDs shared by the editor, SCM importer and electrical graph. */
-export function getCircuitPinIds(type: ComponentType): string[] {
+export function getCircuitPinIds(type: ComponentType, element?: CircuitElement): string[] {
   if (type === 'TEXT') return [];
+  if (type === 'CHIP') return (element?.chipPins ?? DEFAULT_CHIP_PINS).map(pin => pin.id);
   if (type === 'GND' || type === 'PORT' || type === 'JUNCTION') return ['1'];
   if (type === 'OPAMP' || type === 'COMPARATOR') return ['in_neg', 'in_pos', 'out'];
-  if (type === 'SWITCH' || type === 'THYRISTOR') return ['1', '2', 'gate'];
+  if (type === 'VCVS' || type === 'VCCS') return ['1', '2', 'ctrl_pos', 'ctrl_neg'];
+  if (type === 'SWITCH' || type === 'THYRISTOR' || ['NPN', 'PNP', 'NMOS', 'PMOS'].includes(type)) return ['1', '2', 'gate'];
   if (type === 'AND' || type === 'OR' || type === 'XOR') return ['1', '2', '3'];
   if (type === 'JK_FF') return ['1', '2', '3', '4', 'clk'];
   if (type === 'RS_FF' || type === 'D_FF' || type === 'TR3') return ['1', '2', '3', '4'];
@@ -162,7 +165,7 @@ export function buildCircuitGraph(
 
   // Все пины всех элементов
   for (const el of elements) {
-    for (const pin of getCircuitPinIds(el.type)) find(`${el.id}_${pin}`);
+    for (const pin of getCircuitPinIds(el.type, el)) find(`${el.id}_${pin}`);
     if (el.type === 'GND') union(`${el.id}_1`, '__GROUND__');
     if (el.type === 'PORT') union(`${el.id}_1`, `__PORT_${(el.portName || el.name || 'PORT').toUpperCase()}__`);
   }
@@ -172,6 +175,7 @@ export function buildCircuitGraph(
     if (el.isolation === 'short') union(`${el.id}_1`, `${el.id}_2`);
   }
   for (const wire of wires) {
+    if (wire.disabled) continue;
     const k1 = `${wire.fromCompId}_${wire.fromPinId}`;
     const k2 = `${wire.toCompId}_${wire.toPinId}`;
     union(k1, k2);

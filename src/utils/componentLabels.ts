@@ -55,17 +55,22 @@ export function getComponentValueLabel(element: CircuitElement): string {
   const parameter = (value: number) => normalizeEngNotation(String(value));
   switch (element.type) {
     case 'DIODE':
+      if (element.diodeModel === 'ideal') return 'идеальный';
     case 'THYRISTOR':
       return `${parameter(element.modelParams?.forwardVoltage ?? (element.value > 0 ? element.value : 0.7))}В`;
     case 'SWITCH':
       return `Rвкл=${parameter(element.modelParams?.onResistance ?? 0.01)}Ω`;
+    case 'NPN': case 'PNP':
+      return `${element.type} · β=${parameter(element.modelParams?.betaForward ?? 100)}`;
+    case 'NMOS': case 'PMOS':
+      return `${element.type} · Vth=${parameter(element.modelParams?.thresholdVoltage ?? 2)}В`;
     case 'COMPARATOR':
       return `Uпор=${parameter(element.modelParams?.logicThreshold ?? 2.5)}В`;
     case 'TR3':
       return `L1=${normalizeEngNotation(element.valueStr || String(element.value)).replace(/\s*(Гн|H)\s*$/iu, '')}Гн · n=${parameter(element.modelParams?.turnsRatio ?? element.secondaryValue ?? 1)}`;
     case 'NOT': case 'AND': case 'OR': case 'XOR':
     case 'RS_FF': case 'D_FF': case 'JK_FF':
-    case 'PORT': case 'GND': case 'JUNCTION': case 'TEXT':
+    case 'PORT': case 'GND': case 'JUNCTION': case 'TEXT': case 'CHIP':
       return '';
     default:
       return element.valueStr ? normalizeEngNotation(element.valueStr) : '';

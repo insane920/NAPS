@@ -2,10 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { CircuitElement } from '../types';
 import { parseEngValue, normalizeEngNotation } from '../math/circuitSolver';
 import { useModalFocus } from '../hooks/useModalFocus';
+import { chipPins, validateChipPins } from '../utils/chipPins';
+import { validateSourceModel } from '../math/sourceModel';
+import { transistorTypes, validateTransistor } from '../math/transistorModel';
 
 interface ElementPropertiesModalProps {
   element: CircuitElement | null;
   existingNames: string[];
+  controlSources: string[];
   isOpen: boolean;
   onClose: () => void;
   onSave: (updated: CircuitElement) => void;
@@ -21,6 +25,7 @@ function ElementPropertiesContent({
   onClose,
   onSave,
   existingNames,
+  controlSources,
 }: ElementPropertiesModalProps & { element: CircuitElement }) {
 
   const modelFields: Array<{ key: keyof NonNullable<CircuitElement['modelParams']>; label: string; unit: string; defaultValue: number }> =
@@ -32,6 +37,19 @@ function ElementPropertiesContent({
         { key: 'gateThreshold' as const, label: 'Порог затвора', unit: 'В', defaultValue: 2.5 },
         { key: 'holdingCurrent' as const, label: 'Ток удержания', unit: 'А', defaultValue: 0.01 },
       ] : []),
+    ] : element.type === 'NPN' || element.type === 'PNP' ? [
+      { key: 'saturationCurrent', label: 'Ток насыщения Is', unit: 'А', defaultValue: 1e-15 },
+      { key: 'betaForward', label: 'Усиление βF', unit: '', defaultValue: 100 },
+      { key: 'betaReverse', label: 'Усиление βR', unit: '', defaultValue: 1 },
+      { key: 'thermalVoltage', label: 'Тепловое напряжение', unit: 'В', defaultValue: 0.02585 },
+      { key: 'biasControlVoltage', label: 'Vbe для линейной', unit: 'В', defaultValue: 0.7 },
+      { key: 'biasOutputVoltage', label: 'Vce для линейной', unit: 'В', defaultValue: 5 },
+    ] : element.type === 'NMOS' || element.type === 'PMOS' ? [
+      { key: 'thresholdVoltage', label: 'Порог Vth', unit: 'В', defaultValue: 2 },
+      { key: 'transconductance', label: 'Параметр K', unit: 'А/В²', defaultValue: 0.001 },
+      { key: 'channelLengthModulation', label: 'Модуляция λ', unit: '1/В', defaultValue: 0.02 },
+      { key: 'biasControlVoltage', label: 'Vgs для линейной', unit: 'В', defaultValue: 3 },
+      { key: 'biasOutputVoltage', label: 'Vds для линейной', unit: 'В', defaultValue: 5 },
     ] : element.type === 'SWITCH' ? [
       { key: 'onResistance', label: 'Сопротивление открытого', unit: 'Ом', defaultValue: 0.01 },
       { key: 'offResistance', label: 'Сопротивление закрытого', unit: 'Ом', defaultValue: 1e9 },
@@ -41,6 +59,15 @@ function ElementPropertiesContent({
     ] : element.type === 'TR3' ? [
       { key: 'turnsRatio', label: 'Витки N2/N1', unit: '', defaultValue: element.secondaryValue ?? 1 },
       { key: 'couplingFactor', label: 'Связь k', unit: '', defaultValue: 0.999 },
+    ] : ['V_AC', 'I_AC'].includes(element.type) ? [
+      { key: 'sourceOffset', label: 'Постоянная составляющая', unit: element.type === 'V_AC' ? 'В' : 'А', defaultValue: 0 },
+      { key: 'sourcePhaseDeg', label: 'Начальная фаза', unit: '°', defaultValue: 0 },
+    ] : ['V_PULSE', 'I_PULSE'].includes(element.type) ? [
+      { key: 'pulseLow', label: 'Минимум', unit: element.type === 'V_PULSE' ? 'В' : 'А', defaultValue: 0 },
+      { key: 'pulseHigh', label: 'Максимум', unit: element.type === 'V_PULSE' ? 'В' : 'А', defaultValue: element.value },
+      { key: 'pulseDelay', label: 'Начальная задержка', unit: 'с', defaultValue: 0 },
+      { key: 'pulseRise', label: 'Время нарастания', unit: 'с', defaultValue: 0 },
+      { key: 'pulseFall', label: 'Время спада', unit: 'с', defaultValue: 0 },
     ] : ['NOT', 'AND', 'OR', 'XOR', 'COMPARATOR', 'RS_FF', 'D_FF', 'JK_FF'].includes(element.type) ? [
       { key: 'logicHigh', label: 'Высокий уровень', unit: 'В', defaultValue: 5 },
       { key: 'logicLow', label: 'Низкий уровень', unit: 'В', defaultValue: 0 },
@@ -59,6 +86,10 @@ function ElementPropertiesContent({
   const [icStr, setIcStr] = useState(String(element.initialCondition ?? 0));
   const [portName, setPortName] = useState(element.portName || element.name);
   const [directiveStr, setDirectiveStr] = useState(element.textDirective || '');
+  const [controlSource, setControlSource] = useState(element.controlSource || '');
+  const [diodeModel, setDiodeModel] = useState(element.diodeModel || 'pwl');
+  const [transistorModel, setTransistorModel] = useState(element.transistorModel || 'nonlinear');
+  const [editableChipPins, setEditableChipPins] = useState(() => chipPins(element).map(pin => ({ ...pin })));
   const [validationError, setValidationError] = useState('');
   const [modelInputs, setModelInputs] = useState<Record<string, string>>(modelDefaults);
   const dialogRef = useModalFocus<HTMLDivElement>(isOpen, '#element-name');
@@ -73,6 +104,10 @@ function ElementPropertiesContent({
     setIcStr(String(element.initialCondition ?? 0));
     setPortName(element.portName || element.name);
     setDirectiveStr(element.textDirective || '');
+    setControlSource(element.controlSource || '');
+    setDiodeModel(element.diodeModel || 'pwl');
+    setTransistorModel(element.transistorModel || 'nonlinear');
+    setEditableChipPins(chipPins(element).map(pin => ({ ...pin })));
     setValidationError('');
     setModelInputs(modelDefaults());
   }, [element]);
@@ -92,12 +127,21 @@ function ElementPropertiesContent({
         return 'Параметры: Тиристор';
       case 'SWITCH':
         return 'Параметры: Ключ';
+      case 'NPN': case 'PNP': return `Параметры: Биполярный транзистор ${element.type}`;
+      case 'NMOS': case 'PMOS': return `Параметры: Полевой транзистор ${element.type}`;
       case 'V_DC':
       case 'V_AC':
       case 'V_PULSE':
         return 'Параметры: Источник напряжения';
       case 'I_DC':
+      case 'I_AC':
+      case 'I_PULSE':
         return 'Параметры: Источник тока';
+      case 'VCVS': return 'Параметры: ИНУН (VCVS)';
+      case 'VCCS': return 'Параметры: ИТУН (VCCS)';
+      case 'CCVS': return 'Параметры: ИНУТ (CCVS)';
+      case 'CCCS': return 'Параметры: ИТУТ (CCCS)';
+      case 'CHIP': return 'Параметры: Микросхема';
       case 'OPAMP':
         return 'Параметры: Операционный усилитель';
       case 'TR3':
@@ -141,19 +185,31 @@ function ElementPropertiesContent({
       setValidationError('Укажите число с допустимой инженерной приставкой. Лишние символы недопустимы.');
       return;
     }
+    if ((element.type === 'CCVS' || element.type === 'CCCS') && !controlSources.includes(controlSource)) {
+      setValidationError('Выберите существующий независимый источник напряжения для управления.');
+      return;
+    }
+    if (element.type === 'CHIP') {
+      try { validateChipPins(editableChipPins); }
+      catch (error) { setValidationError(error instanceof Error ? error.message : 'Неверные выводы микросхемы.'); return; }
+    }
     if (['R', 'L', 'C', 'TR3'].includes(element.type) && parsedVal <= 0) {
       setValidationError('Номинал сопротивления, индуктивности или ёмкости должен быть больше нуля.');
       return;
     }
-    if (['V_AC', 'V_PULSE'].includes(element.type) && parsedSec !== undefined && parsedSec <= 0) {
+    if (['V_AC', 'V_PULSE', 'I_AC', 'I_PULSE'].includes(element.type) && parsedSec !== undefined && parsedSec <= 0) {
       setValidationError('Частота должна быть больше нуля.');
+      return;
+    }
+    if (['V_PULSE', 'I_PULSE'].includes(element.type) && (parsedIc < 0 || parsedIc > 1)) {
+      setValidationError('Коэффициент заполнения должен быть от 0 до 1.');
       return;
     }
     const modelParams: NonNullable<CircuitElement['modelParams']> = {};
     for (const field of modelFields) {
       const value = parseEngValue(modelInputs[field.key]);
-      const allowsZero = ['forwardVoltage', 'holdingCurrent', 'propagationDelay', 'hysteresis'].includes(field.key);
-      const allowsNegative = ['gateThreshold', 'logicHigh', 'logicLow', 'logicThreshold'].includes(field.key);
+      const allowsZero = ['forwardVoltage', 'holdingCurrent', 'propagationDelay', 'hysteresis', 'pulseDelay', 'pulseRise', 'pulseFall', 'channelLengthModulation'].includes(field.key);
+      const allowsNegative = ['gateThreshold', 'logicHigh', 'logicLow', 'logicThreshold', 'sourceOffset', 'sourcePhaseDeg', 'pulseLow', 'pulseHigh'].includes(field.key);
       if (!Number.isFinite(value) || (!allowsNegative && (allowsZero ? value < 0 : value <= 0))) {
         setValidationError(`${field.label}: укажите ${allowsNegative ? 'конечное' : allowsZero ? 'неотрицательное' : 'положительное'} число.`);
         return;
@@ -180,10 +236,16 @@ function ElementPropertiesContent({
       secondaryValue: parsedSec,
       secondaryStr: normalizeEngNotation(secValStr),
       initialCondition: parsedIc,
+      controlSource: element.type === 'CCVS' || element.type === 'CCCS' ? controlSource : undefined,
+      diodeModel: element.type === 'DIODE' ? diodeModel : undefined,
+      transistorModel: transistorTypes.has(element.type) ? transistorModel : undefined,
+      chipPins: element.type === 'CHIP' ? editableChipPins.map(pin => ({ ...pin, number: pin.number.trim(), label: pin.label.trim() })) : undefined,
       modelParams: modelFields.length ? modelParams : element.modelParams,
       portName: element.type === 'PORT' ? (portName.trim() || name.trim()) : undefined,
       textDirective: element.type === 'TEXT' ? directiveStr.trim() : undefined,
     };
+    try { validateSourceModel(updated); validateTransistor(updated); }
+    catch (error) { setValidationError(error instanceof Error ? error.message : 'Неверные параметры источника.'); return; }
 
     onSave(updated);
     onClose();
@@ -207,7 +269,7 @@ function ElementPropertiesContent({
         </div>
 
         {/* Тело формы */}
-        <form onSubmit={handleSave} className="p-5 bg-white flex flex-col gap-4">
+        <form onSubmit={handleSave} className="p-5 bg-white flex flex-col gap-4 max-h-[80vh] overflow-y-auto">
           {validationError && <p role="alert" className="text-rose-700 text-xs">{validationError}</p>}
           {/* Идентификатор (стр. 6: "Идентификатор: L_res") */}
           <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
@@ -248,7 +310,7 @@ function ElementPropertiesContent({
           )}
 
           {/* Основное значение номинала с размерностью */}
-          {element.type !== 'PORT' && element.type !== 'GND' && element.type !== 'JUNCTION' && element.type !== 'TEXT' && !['DIODE', 'THYRISTOR', 'SWITCH', 'NOT', 'AND', 'OR', 'XOR', 'RS_FF', 'D_FF', 'JK_FF', 'COMPARATOR'].includes(element.type) && (
+          {element.type !== 'PORT' && element.type !== 'GND' && element.type !== 'JUNCTION' && element.type !== 'TEXT' && element.type !== 'CHIP' && !['DIODE', 'THYRISTOR', 'SWITCH', 'NPN', 'PNP', 'NMOS', 'PMOS', 'NOT', 'AND', 'OR', 'XOR', 'RS_FF', 'D_FF', 'JK_FF', 'COMPARATOR'].includes(element.type) && (
             <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
               <label htmlFor="element-value" title="Номинал без пробелов: 1к, 10м, 2.2мк. Латинские и русские приставки равнозначны." className="text-right font-medium text-slate-700">
                 {element.type === 'R'
@@ -261,6 +323,9 @@ function ElementPropertiesContent({
                   ? 'Коэф. усиления (K):'
                   : element.type === 'TR3'
                   ? 'Индуктивность L1:'
+                  : element.type === 'VCCS' ? 'Крутизна (g):'
+                  : element.type === 'CCVS' ? 'Транссопротивление (Rm):'
+                  : element.type === 'VCVS' || element.type === 'CCCS' ? 'Коэффициент (K):'
                   : 'Номинал / Напряжение:'}
               </label>
               <div>
@@ -281,7 +346,11 @@ function ElementPropertiesContent({
             </div>
           )}
 
-          {modelFields.map(field => (
+          {transistorTypes.has(element.type) && <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
+            <label htmlFor="transistor-model" className="text-right font-medium text-slate-700">Модель:</label>
+            <select id="transistor-model" value={transistorModel} onChange={event => setTransistorModel(event.target.value as 'nonlinear' | 'small-signal')} className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 text-xs"><option value="nonlinear">Нелинейная I–V</option><option value="small-signal">Линейная около заданной точки</option></select>
+          </div>}
+          {modelFields.filter(field => !(element.type === 'DIODE' && diodeModel === 'ideal') || !['forwardVoltage', 'onResistance', 'offResistance'].includes(field.key)).map(field => (
             <div key={field.key} className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
               <label htmlFor={`model-${field.key}`} className="text-right font-medium text-slate-700">{field.label}:</label>
               <input
@@ -294,9 +363,42 @@ function ElementPropertiesContent({
               <span className="text-slate-600 font-mono">{field.unit}</span>
             </div>
           ))}
+          {element.type === 'DIODE' && <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
+            <label htmlFor="diode-model" className="text-right font-medium text-slate-700">Модель диода:</label>
+            <select id="diode-model" value={diodeModel} onChange={event => setDiodeModel(event.target.value as 'ideal' | 'pwl')} className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 text-xs"><option value="pwl">Кусочно-линейная</option><option value="ideal">Идеальная (0 В / разрыв)</option></select>
+          </div>}
+          {element.type === 'CHIP' && <div className="flex flex-col gap-2 rounded border border-slate-200 p-3">
+            <label htmlFor="chip-pin-count" className="font-semibold">Количество выводов (2–32)</label>
+            <input id="chip-pin-count" type="number" min={2} max={32} value={editableChipPins.length} onChange={event => {
+              const count = Number(event.target.value);
+              if (!Number.isInteger(count) || count < 2 || count > 32) return;
+              setEditableChipPins(previous => {
+                if (count < previous.length) return previous.slice(0, count);
+                const next = [...previous];
+                let index = Math.max(0, ...previous.map(pin => Number(pin.id.slice(1)) || 0));
+                while (next.length < count) { index++; next.push({ id: `p${index}`, number: String(index), label: '', side: next.length % 2 ? 'right' : 'left' }); }
+                return next;
+              });
+            }} className="w-24 rounded border border-slate-400 p-1" />
+            <p className="text-xs text-slate-500">Корпус хранит выводы и соединения. Без расчётной модели микросхема не участвует в симуляции.</p>
+            {editableChipPins.map((pin, index) => <div key={pin.id} className="grid grid-cols-[2rem_4rem_1fr_6rem] gap-2 items-center">
+              <span className="font-mono text-xs">{pin.id}</span>
+              <input aria-label={`Номер вывода ${index + 1}`} value={pin.number} onChange={event => setEditableChipPins(previous => previous.map(item => item.id === pin.id ? { ...item, number: event.target.value } : item))} className="min-w-0 rounded border border-slate-300 p-1 text-xs" />
+              <input aria-label={`Имя вывода ${index + 1}`} value={pin.label} onChange={event => setEditableChipPins(previous => previous.map(item => item.id === pin.id ? { ...item, label: event.target.value } : item))} className="min-w-0 rounded border border-slate-300 p-1 text-xs" placeholder="Имя сигнала" />
+              <select aria-label={`Сторона вывода ${index + 1}`} value={pin.side} onChange={event => setEditableChipPins(previous => previous.map(item => item.id === pin.id ? { ...item, side: event.target.value as 'left' | 'right' } : item))} className="rounded border border-slate-300 p-1 text-xs"><option value="left">Слева</option><option value="right">Справа</option></select>
+            </div>)}
+          </div>}
+          {(element.type === 'CCVS' || element.type === 'CCCS') && <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
+            <label htmlFor="control-source" className="text-right font-medium text-slate-700">Управляющая ветвь:</label>
+            <select id="control-source" value={controlSource} onChange={event => setControlSource(event.target.value)} className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 text-xs">
+              <option value="">Выберите источник напряжения</option>
+              {controlSources.map(source => <option key={source} value={source}>I({source}), вывод 1 → 2</option>)}
+            </select>
+            <span className="text-slate-600 font-mono">А</span>
+          </div>}
 
           {/* Дополнительные параметры источников (Частота, скважность) */}
-          {(element.type === 'V_AC' || element.type === 'V_PULSE') && (
+          {(['V_AC', 'V_PULSE', 'I_AC', 'I_PULSE'].includes(element.type)) && (
             <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
               <label htmlFor="element-frequency" className="text-right font-medium text-slate-700">
                 Частота (f):
@@ -317,6 +419,11 @@ function ElementPropertiesContent({
               </div>
             </div>
           )}
+          {(['V_PULSE', 'I_PULSE'].includes(element.type)) && <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
+            <label htmlFor="source-duty" className="text-right font-medium text-slate-700">Коэф. заполнения:</label>
+            <input id="source-duty" type="text" value={icStr} onChange={event => setIcStr(event.target.value)} className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 font-mono text-xs focus:border-blue-600 focus:outline-none" />
+            <span className="text-slate-600 font-mono">0…1</span>
+          </div>}
 
           {/* Начальные условия (IC) по стр. 6 */}
           {(element.type === 'L' || element.type === 'C' || ['RS_FF', 'D_FF', 'JK_FF'].includes(element.type)) && (

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import type { CircuitElement, CircuitSimulationResults } from '../types';
+import { transistorTypes } from '../math/transistorModel';
 
 interface Props { elements: CircuitElement[]; results: CircuitSimulationResults }
 const num = (value: number) => Number(value.toPrecision(8)).toString();
@@ -19,8 +20,9 @@ export function ACCalculationDetails({ elements, results }: Props) {
       return `L1=${num(e.value)} Гн; L2=L1·(N2/N1)²=${num(e.value * ratio * ratio)} Гн; M=k√(L1L2)=${num(k * e.value * ratio)} Гн`;
     }
     if (e.type === 'DIODE' || e.type === 'SWITCH' || e.type === 'THYRISTOR') return 'Малосигнальная проводимость 1/Ron или 1/Roff определяется DC-рабочей точкой.';
+    if (transistorTypes.has(e.type)) return `${e.type}: комплексный ток = J(Vраб)·ṽ; J — якобиан ${e.type === 'NPN' || e.type === 'PNP' ? 'модели Эберса — Молла' : 'MOS Level 1'} ${e.transistorModel === 'small-signal' ? 'в заданной точке линеаризации' : 'в DC-рабочей точке'}. Паразитные ёмкости не учитываются.`;
     if (e.type === 'OPAMP') return 'Выходное AC-напряжение равно K·(V+−V−), если рабочая точка не насыщена.';
-    if (e.type === 'V_AC') return `AC-фазор источника: ${num(e.value)} + j0 В (амплитуда, косинусная опора)`;
+    if (e.type === 'V_AC' || e.type === 'I_AC') return `AC-фазор источника: ${num(e.value)}·(cosφ + j·sinφ), φ=${num(e.modelParams?.sourcePhaseDeg ?? 0)}° (пиковая амплитуда, синусная опора)`;
     if (e.type === 'V_DC' || e.type === 'V_PULSE') return 'Малосигнальное AC-напряжение источника равно 0.';
     return 'Узловой расчёт по электрическим соединениям.';
   };

@@ -3,6 +3,7 @@ import { useModalFocus } from '../hooks/useModalFocus';
 import { X, Copy, Check, Download, Upload, AlertCircle, FileCode } from 'lucide-react';
 import { exportToYamlScm, parseYamlScm } from '../utils/yamlScm';
 import { CircuitElement, CircuitWire, TransientSettings, ACSettings } from '../types';
+import type { PrintLayout } from '../utils/printLayout';
 
 interface ScmYamlModalProps {
   isOpen: boolean;
@@ -11,11 +12,13 @@ interface ScmYamlModalProps {
   wires: CircuitWire[];
   transient: TransientSettings;
   ac?: ACSettings;
+  printLayout: PrintLayout;
   onApplyYaml: (data: {
     elements: CircuitElement[];
     wires: CircuitWire[];
     transient: TransientSettings;
     ac?: ACSettings;
+    printLayout: PrintLayout;
   }) => void;
 }
 
@@ -26,6 +29,7 @@ export function ScmYamlModal({
   wires,
   transient,
   ac,
+  printLayout,
   onApplyYaml,
 }: ScmYamlModalProps) {
   const [yamlText, setYamlText] = useState('');
@@ -35,12 +39,12 @@ export function ScmYamlModal({
 
   useEffect(() => {
     if (isOpen) {
-      const generated = exportToYamlScm(elements, wires, transient, ac);
+      const generated = exportToYamlScm(elements, wires, transient, ac, printLayout);
       setYamlText(generated);
       setParseError(null);
       setCopied(false);
     }
-  }, [isOpen, elements, wires, transient, ac]);
+  }, [isOpen, elements, wires, transient, ac, printLayout]);
 
   if (!isOpen) return null;
 

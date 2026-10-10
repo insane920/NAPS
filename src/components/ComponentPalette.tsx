@@ -18,7 +18,7 @@ export interface ComponentDefinition {
   type: ComponentType;
   name: string;
   code: string;
-  category: 'passive' | 'semiconductor' | 'source' | 'logic' | 'nodes';
+  category: 'passive' | 'semiconductor' | 'source' | 'logic' | 'nodes' | 'chip';
   description: string;
   defaultVal: string;
 }
@@ -31,10 +31,10 @@ export const TERMINAL_GROUPS: { id: TerminalGroup; label: string }[] = [
   { id: 'multi', label: 'Многополюсники' },
 ];
 export function terminalGroupForType(type: ComponentType): TerminalGroup | null {
-  if (['R', 'C', 'L', 'DIODE', 'V_DC', 'V_AC', 'V_PULSE', 'I_DC', 'NOT'].includes(type)) return 'two';
-  if (['THYRISTOR', 'SWITCH', 'OPAMP', 'COMPARATOR', 'AND', 'OR', 'XOR'].includes(type)) return 'three';
-  if (['RS_FF', 'D_FF', 'TR3'].includes(type)) return 'four';
-  if (type === 'JK_FF') return 'multi';
+  if (['R', 'C', 'L', 'DIODE', 'V_DC', 'V_AC', 'V_PULSE', 'I_DC', 'I_AC', 'I_PULSE', 'CCVS', 'CCCS', 'NOT'].includes(type)) return 'two';
+  if (['THYRISTOR', 'SWITCH', 'NPN', 'PNP', 'NMOS', 'PMOS', 'OPAMP', 'COMPARATOR', 'AND', 'OR', 'XOR'].includes(type)) return 'three';
+  if (['RS_FF', 'D_FF', 'TR3', 'VCVS', 'VCCS'].includes(type)) return 'four';
+  if (type === 'JK_FF' || type === 'CHIP') return 'multi';
   return null;
 }
 
@@ -98,6 +98,10 @@ export const COMPONENT_CATALOG: ComponentDefinition[] = [
     description: 'Управляемый вентиль VCK (транзистор/IGBT)',
     defaultVal: '20 кГц',
   },
+  { type: 'NPN', name: 'Транзистор NPN', code: 'VT', category: 'semiconductor', description: 'Биполярный NPN, модель Эберса — Молла', defaultVal: 'β = 100' },
+  { type: 'PNP', name: 'Транзистор PNP', code: 'VT', category: 'semiconductor', description: 'Биполярный PNP, модель Эберса — Молла', defaultVal: 'β = 100' },
+  { type: 'NMOS', name: 'MOSFET N-канал', code: 'VT', category: 'semiconductor', description: 'Полевой N-MOS, модель Level 1', defaultVal: 'Vth = 2 В' },
+  { type: 'PMOS', name: 'MOSFET P-канал', code: 'VT', category: 'semiconductor', description: 'Полевой P-MOS, модель Level 1', defaultVal: 'Vth = 2 В' },
   {
     type: 'OPAMP',
     name: 'Опер. усилитель',
@@ -148,6 +152,13 @@ export const COMPONENT_CATALOG: ComponentDefinition[] = [
     description: 'Источник постоянного тока (А)',
     defaultVal: '1 А',
   },
+  { type: 'I_AC', name: 'Источник тока ~', code: 'I_sin', category: 'source', description: 'Независимый синусоидальный источник тока', defaultVal: '1 А, 50 Гц' },
+  { type: 'I_PULSE', name: 'Импульсный ток', code: 'I_pulse', category: 'source', description: 'Независимый прямоугольный источник тока', defaultVal: '1 А, 1 кГц' },
+  { type: 'VCVS', name: 'Зависимое напряжение от U', code: 'E', category: 'source', description: 'ИНУН: Uвых = K·(U+ − U−) на управляющих выводах', defaultVal: 'K = 1' },
+  { type: 'VCCS', name: 'Зависимый ток от U', code: 'G', category: 'source', description: 'ИТУН: Iвых = g·(U+ − U−) на управляющих выводах', defaultVal: 'g = 1 См' },
+  { type: 'CCVS', name: 'Зависимое напряжение от I', code: 'H', category: 'source', description: 'ИНУТ: Uвых = Rm·I(управляющего источника напряжения)', defaultVal: 'Rm = 1 Ом' },
+  { type: 'CCCS', name: 'Зависимый ток от I', code: 'F', category: 'source', description: 'ИТУТ: Iвых = β·I(управляющего источника напряжения)', defaultVal: 'β = 1' },
+  { type: 'CHIP', name: 'Микросхема', code: 'DD', category: 'chip', description: 'Настраиваемый корпус с 2–32 выводами; расчёт доступен только при наличии модели', defaultVal: '8 выводов' },
 
   // 4. Логика и управление
   {
@@ -240,6 +251,7 @@ export const SUBTYPE_TABS = [
   { id: 'three', label: 'Трёхполюсники', icon: Cpu },
   { id: 'four', label: 'Четырёхполюсники', icon: Zap },
   { id: 'multi', label: 'Многополюсники', icon: Share2 },
+  { id: 'chips', label: 'Микросхемы', icon: Cpu },
 ] as const;
 
 export type SubtypeCategory = typeof SUBTYPE_TABS[number]['id'];
@@ -259,7 +271,7 @@ export function ComponentPalette({ selectedType, onSelectType, className = '' }:
   const matchesQuery = (item: ComponentDefinition) =>
     `${item.name} ${item.code} ${item.type} ${item.description}`.toLocaleLowerCase('ru').includes(normalizedQuery);
   const selectable = COMPONENT_CATALOG.filter(item => terminalGroupForType(item.type));
-  const items = selectable.filter(item => (category === 'all' || terminalGroupForType(item.type) === category) && matchesQuery(item));
+  const items = selectable.filter(item => (category === 'all' || (category === 'chips' ? item.type === 'CHIP' : terminalGroupForType(item.type) === category)) && matchesQuery(item));
   const focused = items.find(item => item.type === focusedType) || items[0];
   const activeCategory = SUBTYPE_TABS.find(tab => tab.id === category)!;
   return (
@@ -275,7 +287,7 @@ export function ComponentPalette({ selectedType, onSelectType, className = '' }:
           <span className="library-eyebrow">КАТЕГОРИИ</span>
           {SUBTYPE_TABS.map(tab => {
             const Icon = tab.icon;
-            const count = selectable.filter(item => (tab.id === 'all' || terminalGroupForType(item.type) === tab.id) && matchesQuery(item)).length;
+            const count = selectable.filter(item => (tab.id === 'all' || (tab.id === 'chips' ? item.type === 'CHIP' : terminalGroupForType(item.type) === tab.id)) && matchesQuery(item)).length;
             return <button key={tab.id} aria-pressed={category === tab.id} onClick={() => setCategory(tab.id)}>
               <Icon size={16} /><span>{tab.label === 'Все' ? 'Все компоненты' : tab.label}</span><small>{count}</small>
             </button>;

@@ -1,6 +1,7 @@
 import type { CircuitElement, CircuitWire, CircuitSimulationResults, TransientSettings } from '../types';
 import { buildCircuitGraph, type CircuitGraph } from './circuitSolver';
 import { createMnaMatrix } from './mnaCore';
+import { validateSourceModel } from './sourceModel';
 
 export const linearTypes = new Set(['R', 'L', 'C', 'V_DC', 'V_AC', 'V_PULSE', 'I_DC', 'GND', 'PORT', 'JUNCTION', 'TEXT']);
 export const isLinearCircuit = (elements: CircuitElement[]) => elements.every(e => linearTypes.has(e.type));
@@ -16,9 +17,23 @@ export function pulseIsHigh(t: number, period: number, duty: number): boolean {
 }
 
 export function sourceValue(e: CircuitElement, t: number): number {
-  if (e.type === 'V_AC') return e.value * Math.sin(2 * Math.PI * (e.secondaryValue ?? 50) * t);
-  if (e.type === 'V_PULSE') {
-    return pulseIsHigh(t, 1 / (e.secondaryValue ?? 50), e.initialCondition ?? 0.5) ? e.value : 0;
+  if (e.type === 'V_AC' || e.type === 'I_AC') return (e.modelParams?.sourceOffset ?? 0) + e.value * Math.sin(2 * Math.PI * (e.secondaryValue ?? 50) * t + (e.modelParams?.sourcePhaseDeg ?? 0) * Math.PI / 180);
+  if (e.type === 'V_PULSE' || e.type === 'I_PULSE') {
+    const low = e.modelParams?.pulseLow ?? 0;
+    const high = e.modelParams?.pulseHigh ?? e.value;
+    const delay = e.modelParams?.pulseDelay ?? 0;
+    const rise = e.modelParams?.pulseRise ?? 0;
+    const fall = e.modelParams?.pulseFall ?? 0;
+    const period = 1 / (e.secondaryValue ?? 50);
+    const duty = e.initialCondition ?? 0.5;
+    if (t < delay) return low;
+    if (!rise && !fall) return pulseIsHigh(t - delay, period, duty) ? high : low;
+    const phase = (t - delay) % period;
+    const onTime = duty * period;
+    if (phase >= onTime) return low;
+    if (rise && phase < rise) return low + (high - low) * phase / rise;
+    if (fall && phase > onTime - fall) return high - (high - low) * (phase - (onTime - fall)) / fall;
+    return high;
   }
   return e.value;
 }
@@ -33,6 +48,7 @@ export function assembleLinearSystem(branches: CircuitElement[], graph: CircuitG
   if (size > 160) throw new Error('Схема слишком велика для текущего решателя (более 160 неизвестных).');
   const { a, b, add, current: stampI, conductance: stampG, voltage: stampV } = createMnaMatrix(size);
   for (const e of branches) {
+    validateSourceModel(e);
     const p = index.get(node(e, '1')), m = index.get(node(e, '2'));
     let g = 0;
     if (e.type === 'R') g = 1 / e.value;

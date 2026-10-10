@@ -2,6 +2,7 @@ import type { CircuitElement, CircuitSimulationResults, CircuitWire, TransientSe
 import { buildCircuitGraph } from './circuitSolver';
 import { sourceValue } from './linearTransient';
 import { solveTopologyTransient } from './topologyTransient';
+import { transistorCurrent, transistorTypes } from './transistorModel';
 
 /** Independently checks KCL and each configured device equation at every sample. */
 export function validateTopologySimulation(elements: CircuitElement[], wires: CircuitWire[], settings: TransientSettings, result: CircuitSimulationResults) {
@@ -30,16 +31,43 @@ export function validateTopologySimulation(elements: CircuitElement[], wires: Ci
         balance.set(node, (balance.get(node) ?? 0) + sign * i);
         magnitude.set(node, (magnitude.get(node) ?? 0) + Math.abs(i));
       }
+      if (transistorTypes.has(e.type)) {
+        const model = transistorCurrent(e, [vp, vm, v(pin(e, 'gate'), k)]);
+        const base = pin(e, 'gate');
+        balance.set(m, (balance.get(m) ?? 0) + model.currents[1] + i);
+        balance.set(base, (balance.get(base) ?? 0) + model.currents[2]);
+        magnitude.set(m, (magnitude.get(m) ?? 0) + Math.abs(model.currents[1]));
+        magnitude.set(base, (magnitude.get(base) ?? 0) + Math.abs(model.currents[2]));
+      }
       let actual = i, expected = i, absolute = 1e-8;
       if (e.type === 'R') expected = u / e.value;
-      else if (e.type === 'I_DC') expected = e.value;
+      else if (transistorTypes.has(e.type)) expected = transistorCurrent(e, [vp, vm, v(pin(e, 'gate'), k)]).currents[0];
+      else if (e.type === 'I_DC' || e.type === 'I_AC' || e.type === 'I_PULSE') expected = sourceValue(e, time[k]);
       else if (e.type.startsWith('V_')) { actual = u; expected = sourceValue(e, time[k]); absolute = 1e-6; }
+      else if (e.type === 'VCVS' || e.type === 'VCCS') {
+        const control = v(pin(e, 'ctrl_pos'), k) - v(pin(e, 'ctrl_neg'), k);
+        actual = e.type === 'VCVS' ? u : i;
+        expected = e.value * control;
+        absolute = e.type === 'VCVS' ? 1e-6 : 1e-8;
+      }
+      else if (e.type === 'CCVS' || e.type === 'CCCS') {
+        const controlName = Object.keys(result.branchCurrents).find(name => name.toLocaleUpperCase() === e.controlSource?.toLocaleUpperCase());
+        const control = controlName ? result.branchCurrents[controlName][k] : undefined;
+        if (!Number.isFinite(control)) return fail(`${e.name}: отсутствует ток управляющей ветви.`);
+        actual = e.type === 'CCVS' ? u : i;
+        expected = e.value * control;
+        absolute = e.type === 'CCVS' ? 1e-6 : 1e-8;
+      }
       else if (e.type === 'C') {
         if (!k) { actual = u; expected = e.initialCondition ?? 0; absolute = 1e-6; }
         else expected = e.value * (u - (v(p, k - 1) - v(m, k - 1))) / (time[k] - time[k - 1]);
       } else if (e.type === 'L') {
         if (!k) expected = e.initialCondition ?? 0;
         else { actual = u; expected = e.value * (i - result.branchCurrents[e.name][k - 1]) / (time[k] - time[k - 1]); absolute = 1e-6; }
+      } else if (e.type === 'DIODE' && e.diodeModel === 'ideal') {
+        actual = Math.max(0, u, -i, Math.abs(u * i));
+        expected = 0;
+        absolute = 1e-7;
       } else if (e.type === 'DIODE' || e.type === 'THYRISTOR') {
         const vf = e.modelParams?.forwardVoltage ?? (e.value > 0 ? e.value : 0.7), ron = e.modelParams?.onResistance ?? 0.01, roff = e.modelParams?.offResistance ?? 1e9;
         const on = (u - vf) / ron, off = u / roff;

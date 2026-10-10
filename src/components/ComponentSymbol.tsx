@@ -1,6 +1,7 @@
 import React from 'react';
 import type { CircuitElement, ComponentType } from '../types';
 import { SYMBOL_METRICS } from './symbolMetrics';
+import { chipPins } from '../utils/chipPins';
 
 export function renderComponentSymbol(el: CircuitElement, selected = false, showEmbeddedLabel = true) {
   const stroke = selected ? '#dc2626' : '#1e293b';
@@ -97,6 +98,22 @@ export function renderComponentSymbol(el: CircuitElement, selected = false, show
           <path d="M 0 25 V 12 M 0 9 V 4" fill="none" stroke={stroke} strokeWidth={strokeW} strokeDasharray="3 2" />
         </g>
       );
+
+    case 'NPN':
+    case 'PNP':
+      return <g fill="none" stroke={stroke} strokeWidth={strokeW}>
+        <path d="M -30 0 H -11 L -3 -5 M 30 0 H 11 L 3 5 M 0 25 V 8 M -11 -7 L 11 7" />
+        <path d={el.type === 'NPN' ? 'M 5 6 L 11 0 L 3 0' : 'M 5 6 L -1 8 L 4 12'} fill={stroke} stroke="none" />
+        <circle cx={0} cy={0} r={14} />
+      </g>;
+
+    case 'NMOS':
+    case 'PMOS':
+      return <g fill="none" stroke={stroke} strokeWidth={strokeW}>
+        <path d="M -30 0 H -13 M 13 0 H 30 M -13 -9 V 9 M 13 -9 V 9 M -13 0 H 13 M 0 25 V 12 M -9 11 H 9" />
+        {el.type === 'PMOS' && <circle cx={0} cy={10} r={2.4} fill="white" />}
+        <circle cx={0} cy={0} r={15} />
+      </g>;
 
     case 'NOT':
       // Прямоугольный функциональный символ с указателем инверсии на выходе.
@@ -278,7 +295,43 @@ export function renderComponentSymbol(el: CircuitElement, selected = false, show
       );
 
     case 'I_DC':
-      return <g fill="none" stroke={stroke} strokeWidth={strokeW}><path d="M -30 0 H -14 M 14 0 H 30" /><circle r={14} fill="white" /><path d="M -8 0 H 8 M 3 -5 L 8 0 L 3 5" /></g>;
+    case 'I_AC':
+    case 'I_PULSE':
+      return <g fill="none" stroke={stroke} strokeWidth={strokeW}><path d="M -30 0 H -14 M 14 0 H 30" /><circle r={14} fill="white" />{el.type === 'I_DC' ? <path d="M -8 0 H 8 M 3 -5 L 8 0 L 3 5" /> : el.type === 'I_AC' ? <path d="M -8 0 Q -4 -7 0 0 Q 4 7 8 0" /> : <path d="M -8 4 H -4 V -4 H 4 V 4 H 8" />}</g>;
+
+    case 'VCVS':
+    case 'VCCS':
+    case 'CCVS':
+    case 'CCCS': {
+      const voltageOutput = el.type === 'VCVS' || el.type === 'CCVS';
+      const voltageControl = el.type === 'VCVS' || el.type === 'VCCS';
+      return <g fill="none" stroke={stroke} strokeWidth={strokeW}>
+        <path d="M -30 0 H -14 M 14 0 H 30" />
+        {voltageControl && <path d="M 0 -30 V -14 M 0 14 V 30" />}
+        <path d="M 0 -14 L 14 0 L 0 14 L -14 0 Z" fill="white" />
+        {voltageOutput ? <path d="M -8 0 H -2 M -5 -3 V 3 M 3 0 H 9" /> : <path d="M -8 0 H 8 M 3 -4 L 8 0 L 3 4" />}
+      </g>;
+    }
+
+    case 'CHIP': {
+      const pins = chipPins(el);
+      const left = pins.filter(pin => pin.side === 'left');
+      const right = pins.filter(pin => pin.side === 'right');
+      const rows = Math.max(left.length, right.length, 2);
+      const top = -Math.max(rows - 1, 1) * 10 - 12;
+      const height = -2 * top;
+      return <g stroke={stroke} strokeWidth={strokeW} fill="none">
+        <rect x={-25} y={top} width={50} height={height} fill="white" />
+        {([['left', left], ['right', right]] as const).flatMap(([side, group]) => group.map((pin, index) => {
+          const y = (index - (group.length - 1) / 2) * 20;
+          return <g key={pin.id}>
+            <path d={side === 'left' ? `M -40 ${y} H -25` : `M 25 ${y} H 40`} />
+            <text x={side === 'left' ? -22 : 22} y={y + 3} textAnchor={side === 'left' ? 'start' : 'end'} fontSize={7} fill={stroke} stroke="none">{pin.label || pin.number}</text>
+          </g>;
+        }))}
+        <text x={0} y={4} textAnchor="middle" fontSize={10} fontWeight="bold" fill={stroke} stroke="none">{el.name || 'DD'}</text>
+      </g>;
+    }
 
     case 'COMPARATOR':
       return <g stroke={stroke} strokeWidth={strokeW}>
@@ -355,5 +408,5 @@ export function renderComponentSymbol(el: CircuitElement, selected = false, show
 }
 
 export function ComponentSymbol({ type, className = '' }: { type: ComponentType; className?: string }) {
-  return <svg viewBox={type === 'TEXT' ? '-60 -34 180 68' : '-44 -34 88 68'} className={className} aria-hidden="true" focusable="false">{renderComponentSymbol({ id: 'preview', type, name: type === 'PORT' ? 'OUT' : '', x: 0, y: 0, rotation: 0, value: 0, valueStr: '', unit: '', textDirective: 'Текст' })}</svg>;
+  return <svg viewBox={type === 'TEXT' ? '-60 -34 180 68' : type === 'CHIP' ? '-45 -55 90 110' : '-44 -34 88 68'} className={className} aria-hidden="true" focusable="false">{renderComponentSymbol({ id: 'preview', type, name: type === 'PORT' ? 'OUT' : '', x: 0, y: 0, rotation: 0, value: 0, valueStr: '', unit: '', textDirective: 'Текст' })}</svg>;
 }

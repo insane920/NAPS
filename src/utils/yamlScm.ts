@@ -1,5 +1,7 @@
 import { CircuitElement, CircuitWire, TransientSettings, ACSettings } from '../types';
 import { getCircuitPinIds, parseEngValue } from '../math/circuitSolver';
+import { DEFAULT_PRINT_LAYOUT, parsePrintLayout, type PrintLayout } from './printLayout';
+import { validateChipPins } from './chipPins';
 
 /**
  * ТЗ Секция 5: Формат файла проекта YAML (.scm)
@@ -23,6 +25,7 @@ export interface YamlScmWire {
   To: { ID: number; Pin: string | number };
   Waypoints?: Array<{ x: number; y: number }>;
   Manual?: boolean;
+  Disabled?: boolean;
 }
 
 export interface YamlScmAnalysis {
@@ -59,7 +62,8 @@ export function exportToYamlScm(
   elements: CircuitElement[],
   wires: CircuitWire[],
   transient: TransientSettings,
-  ac?: ACSettings
+  ac?: ACSettings,
+  printLayout: PrintLayout = DEFAULT_PRINT_LAYOUT
 ): string {
   // Карта строковых ID в числовые индексы ID (1, 2, 3...)
   const idMap = new Map<string, number>();
@@ -81,7 +85,10 @@ export function exportToYamlScm(
     } else if (el.type === 'V_PULSE') {
       params['U'] = el.valueStr || `${el.value}`;
       params['f'] = el.secondaryStr || `${el.secondaryValue || 100000} Гц`;
-      params['Duty'] = '50%';
+      params['Duty'] = `${(el.initialCondition ?? 0.5) * 100}%`;
+    } else if (el.type === 'I_DC' || el.type === 'I_AC' || el.type === 'I_PULSE') {
+      params['I'] = el.valueStr || `${el.value}`;
+      if (el.type !== 'I_DC') params['f'] = el.secondaryStr || `${el.secondaryValue || 50} Гц`;
     } else if (el.type === 'SWITCH') {
       params['Type'] = 'VCK';
       params['Ron'] = '10m';
@@ -95,6 +102,10 @@ export function exportToYamlScm(
     params['ValueText'] = el.valueStr;
     params['Unit'] = el.unit;
     if (el.isolation) params['Isolation'] = el.isolation;
+    if (el.controlSource) params['ControlSource'] = el.controlSource;
+    if (el.type === 'DIODE' && el.diodeModel) params['DiodeModel'] = el.diodeModel;
+    if (el.transistorModel) params['TransistorModel'] = el.transistorModel;
+    if (el.type === 'CHIP' && el.chipPins) { validateChipPins(el.chipPins); params['ChipPins'] = JSON.stringify(el.chipPins); }
     if (el.secondaryValue !== undefined) params['SecondaryValue'] = String(el.secondaryValue);
     if (el.secondaryStr !== undefined) params['SecondaryText'] = el.secondaryStr;
     if (el.initialCondition !== undefined) params['IC'] = String(el.initialCondition);
@@ -122,8 +133,8 @@ export function exportToYamlScm(
     const from = elements.find(el => el.id === w.fromCompId);
     const to = elements.find(el => el.id === w.toCompId);
     if (!fromId || !toId || !from || !to ||
-        !getCircuitPinIds(from.type).includes(w.fromPinId) ||
-        !getCircuitPinIds(to.type).includes(w.toPinId)) {
+        !getCircuitPinIds(from.type, from).includes(w.fromPinId) ||
+        !getCircuitPinIds(to.type, to).includes(w.toPinId)) {
       throw new Error(`Провод ${w.id}: указан отсутствующий элемент или вывод. Схема не сохранена.`);
     }
     scmWires.push({
@@ -131,11 +142,12 @@ export function exportToYamlScm(
       To: { ID: toId, Pin: isNaN(Number(w.toPinId)) ? w.toPinId : Number(w.toPinId) },
       Waypoints: w.waypoints,
       Manual: w.manual,
+      Disabled: w.disabled,
     });
   }
 
   // Сборка текста в чистом YAML
-  let yaml = `scm:\n  MajorVersion: 6\n  MinorVersion: 0\n\nObjects:\n`;
+  let yaml = `scm:\n  MajorVersion: 6\n  MinorVersion: 0\n\nPage:\n  Format: ${printLayout.format}\n  Orientation: ${printLayout.orientation}\n  GridMm: ${printLayout.gridMm}\n\nObjects:\n`;
   for (const obj of objects) {
     yaml += `  - ID: ${obj.ID}\n`;
     yaml += `    Type: "${obj.Type}"\n`;
@@ -157,6 +169,7 @@ export function exportToYamlScm(
     yaml += `    To:   { ID: ${w.To.ID}, Pin: ${JSON.stringify(w.To.Pin)} }\n`;
     if (w.Waypoints) yaml += `    Waypoints: ${JSON.stringify(w.Waypoints)}\n`;
     if (w.Manual) yaml += `    Manual: true\n`;
+    if (w.Disabled) yaml += `    Disabled: true\n`;
   }
 
   yaml += `\nAnalysis:\n  Transient:\n`;
@@ -194,10 +207,18 @@ function mapTypeToYaml(type: string): string {
     case 'DIODE': return 'Diode';
     case 'THYRISTOR': return 'Thyristor';
     case 'SWITCH': return 'Switch';
+    case 'NPN': case 'PNP': case 'NMOS': case 'PMOS': return type;
     case 'V_DC': return 'DC_Voltage';
     case 'V_AC': return 'AC_Voltage';
     case 'V_PULSE': return 'Pulse_Generator';
     case 'I_DC': return 'DC_Current';
+    case 'I_AC': return 'AC_Current';
+    case 'I_PULSE': return 'Pulse_Current';
+    case 'VCVS': return 'VCVS';
+    case 'VCCS': return 'VCCS';
+    case 'CCVS': return 'CCVS';
+    case 'CCCS': return 'CCCS';
+    case 'CHIP': return 'Microchip';
     case 'OPAMP': return 'OpAmp';
     case 'COMPARATOR': return 'Comparator';
     case 'NOT': return 'NOT';
@@ -220,11 +241,16 @@ function mapYamlToType(type: string): CircuitElement['type'] {
   if (t.includes('resistor') || t === 'r') return 'R';
   if (t.includes('inductor') || t === 'l') return 'L';
   if (t.includes('capacitor') || t === 'c') return 'C';
+  if (t === 'vcvs' || t === 'vccs' || t === 'ccvs' || t === 'cccs') return t.toUpperCase() as CircuitElement['type'];
+  if (t === 'npn' || t === 'pnp' || t === 'nmos' || t === 'pmos') return t.toUpperCase() as CircuitElement['type'];
+  if (t === 'microchip' || t === 'chip') return 'CHIP';
   if (t.includes('diode') || t === 'vd') return 'DIODE';
   if (t.includes('thyristor') || t === 'vs') return 'THYRISTOR';
   if (t.includes('switch') || t.includes('vck')) return 'SWITCH';
   if (t.includes('dc_voltage') || t === 'v_dc' || t === 'udc') return 'V_DC';
   if (t.includes('ac_voltage') || t === 'v_ac' || t === 'uac') return 'V_AC';
+  if (t === 'ac_current' || t === 'i_ac') return 'I_AC';
+  if (t === 'pulse_current' || t === 'i_pulse') return 'I_PULSE';
   if (t.includes('pulse') || t.includes('pwm') || t === 'v_pulse') return 'V_PULSE';
   if (t.includes('current') || t === 'i_dc') return 'I_DC';
   if (t.includes('opamp') || t.includes('оу')) return 'OPAMP';
@@ -262,12 +288,16 @@ export function parseYamlScm(yamlText: string): {
   wires: CircuitWire[];
   transient: TransientSettings;
   ac?: ACSettings;
+  printLayout: PrintLayout;
 } {
   const lines = yamlText.split('\n');
   const elements: CircuitElement[] = [];
   const wires: CircuitWire[] = [];
 
-  let currentSection: 'none' | 'objects' | 'wires' | 'transient' | 'ac' = 'none';
+  let currentSection: 'none' | 'page' | 'objects' | 'wires' | 'transient' | 'ac' = 'none';
+  let pageFormat: string | undefined;
+  let pageOrientation: string | undefined;
+  let gridMm: number | undefined;
   let currentObj: Partial<YamlScmObject> | null = null;
   let pendingFrom: RegExpMatchArray | null = null;
   const numIdToElemId = new Map<number, string>();
@@ -290,6 +320,7 @@ export function parseYamlScm(yamlText: string): {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
 
+    if (trimmed === 'Page:') { currentSection = 'page'; continue; }
     if (trimmed === 'AC:') {
       hasAc = true;
       currentSection = 'ac';
@@ -314,7 +345,11 @@ export function parseYamlScm(yamlText: string): {
       continue;
     }
 
-    if (currentSection === 'objects') {
+    if (currentSection === 'page') {
+      if (trimmed.startsWith('Format:')) pageFormat = readScalar(trimmed.slice(7));
+      else if (trimmed.startsWith('Orientation:')) pageOrientation = readScalar(trimmed.slice(12));
+      else if (trimmed.startsWith('GridMm:')) gridMm = finiteScmNumber(trimmed.slice(7), 'GridMm');
+    } else if (currentSection === 'objects') {
       if (trimmed.startsWith('- ID:')) {
         if (currentObj && currentObj.ID) {
           commitCurrentObject(currentObj, elements, numIdToElemId);
@@ -348,6 +383,7 @@ export function parseYamlScm(yamlText: string): {
         }
       }
     } else if (currentSection === 'wires') {
+      if (trimmed === 'Disabled: true' && wires.length) { wires[wires.length - 1].disabled = true; continue; }
       if (trimmed === 'Manual: true' && wires.length) {
         wires[wires.length - 1].manual = true;
         continue;
@@ -377,8 +413,8 @@ export function parseYamlScm(yamlText: string): {
         const fromElement = elements.find(el => el.id === fromElemId);
         const toElement = elements.find(el => el.id === toElemId);
         if (!fromElement || !toElement ||
-            !getCircuitPinIds(fromElement.type).includes(fromPin) ||
-            !getCircuitPinIds(toElement.type).includes(toPin)) {
+            !getCircuitPinIds(fromElement.type, fromElement).includes(fromPin) ||
+            !getCircuitPinIds(toElement.type, toElement).includes(toPin)) {
           throw new Error(`Провод ${wires.length + 1}: элемент или вывод не найден (${fromId}:${fromPin} → ${toId}:${toPin}).`);
         }
         wires.push({
@@ -473,6 +509,7 @@ export function parseYamlScm(yamlText: string): {
   return {
     elements,
     wires,
+    printLayout: parsePrintLayout(pageFormat, pageOrientation, gridMm),
     ac: hasAc ? { fMin, fMax, fMinStr, fMaxStr, points: acPoints, scaleType: acScale,
       signals: acExpressions.map((s, i) => ({ id: `ac_${i}`, plotIndex: s.Plot === 2 ? 2 : 1, exprX: s.X, exprY: s.Y, color: s.Color || '#2563eb', enabled: s.Enabled ?? true })) } : undefined,
     transient: {
@@ -520,6 +557,10 @@ function commitCurrentObject(
     valStr = params['U'];
     val = parseEngValue(valStr);
     unit = 'В';
+  } else if (params['I']) {
+    valStr = params['I'];
+    val = parseEngValue(valStr);
+    unit = 'А';
   }
 
   const value = params['Value'] !== undefined ? finiteScmNumber(params['Value'], `Value элемента ${raw.ID}`) : val;
@@ -528,16 +569,21 @@ function commitCurrentObject(
     : params['f'] ? parseEngValue(params['f']) : undefined;
   const initialCondition = params['IC'] !== undefined ? finiteScmNumber(params['IC'], `IC элемента ${raw.ID}`) : undefined;
   const modelParams: NonNullable<CircuitElement['modelParams']> = {};
-  for (const key of ['forwardVoltage', 'onResistance', 'offResistance', 'gateThreshold', 'holdingCurrent', 'outputLimit', 'turnsRatio', 'couplingFactor', 'logicHigh', 'logicLow', 'logicThreshold', 'outputResistance', 'propagationDelay', 'hysteresis'] as const) {
+  for (const key of ['forwardVoltage', 'onResistance', 'offResistance', 'gateThreshold', 'holdingCurrent', 'outputLimit', 'turnsRatio', 'couplingFactor', 'logicHigh', 'logicLow', 'logicThreshold', 'outputResistance', 'propagationDelay', 'hysteresis', 'sourceOffset', 'sourcePhaseDeg', 'pulseLow', 'pulseHigh', 'pulseDelay', 'pulseRise', 'pulseFall', 'saturationCurrent', 'betaForward', 'betaReverse', 'thermalVoltage', 'thresholdVoltage', 'transconductance', 'channelLengthModulation', 'biasControlVoltage', 'biasOutputVoltage'] as const) {
     const stored = params[`Model_${key}`];
     if (stored !== undefined) modelParams[key] = finiteScmNumber(stored, `${key} элемента ${raw.ID}`);
   }
   if (!Number.isFinite(value) || (secondaryValue !== undefined && !Number.isFinite(secondaryValue))) {
     throw new Error(`Элемент ${raw.ID}: некорректное числовое значение.`);
   }
+  let storedChipPins: CircuitElement['chipPins'];
+  if (type === 'CHIP' && params['ChipPins']) {
+    try { storedChipPins = JSON.parse(params['ChipPins']); validateChipPins(storedChipPins!); }
+    catch { throw new Error(`Микросхема ${raw.ID}: некорректная конфигурация выводов.`); }
+  }
   if (['R', 'L', 'C'].includes(type) && value <= 0) throw new Error(`Элемент ${raw.ID}: номинал должен быть больше нуля.`);
   const visibleValue = params['ValueText'] ?? valStr;
-  if (['R', 'L', 'C', 'V_DC', 'V_AC', 'I_DC'].includes(type) && visibleValue) {
+  if (['R', 'L', 'C', 'V_DC', 'V_AC', 'I_DC', 'I_AC', 'I_PULSE'].includes(type) && visibleValue) {
     const labelValue = parseEngValue(visibleValue);
     if (!Number.isFinite(labelValue) || Math.abs(labelValue - value) > 1e-9 * Math.max(1, Math.abs(value))) {
       throw new Error(`Элемент ${raw.ID}: видимый номинал не соответствует числовому значению.`);
@@ -560,6 +606,10 @@ function commitCurrentObject(
     secondaryValue,
     secondaryStr: params['SecondaryText'] ?? params['f'],
     initialCondition,
+    controlSource: params['ControlSource'] || undefined,
+    diodeModel: type === 'DIODE' && params['DiodeModel'] === 'ideal' ? 'ideal' : undefined,
+    transistorModel: params['TransistorModel'] === 'small-signal' ? 'small-signal' : ['NPN', 'PNP', 'NMOS', 'PMOS'].includes(type) ? 'nonlinear' : undefined,
+    chipPins: storedChipPins,
     modelParams: Object.keys(modelParams).length ? modelParams : undefined,
     portName: params['Label'] || (type === 'PORT' ? raw.Name : undefined),
     textDirective: params['Directive'],

@@ -16,6 +16,19 @@ const near = (actual: number, expected: number, tolerance = 1e-10) => assert.ok(
 assert.equal(pulseIsHigh(100 * 6e-7, 1e-5, 0.5), true);
 assert.equal(pulseIsHigh(6.5e-5, 1e-5, 0.5), false);
 assert.equal(pulseIsHigh(0, 1e-5, 0), false);
+const linearPulse = [
+  { ...element('VP', 'V_PULSE', 5), secondaryValue: 75, initialCondition: 0.5 },
+  element('RL', 'R', 100), element('GP', 'GND', 0),
+];
+const linearPulseWires = [wire('VP', '1', 'RL', '1'), wire('VP', '2', 'GP', '1'), wire('RL', '2', 'GP', '1')];
+const pulseSettings = settings(['U(RL)'], 0.01, 0.02);
+const linearPulseResult = solveCircuitTransient(linearPulse, linearPulseWires, pulseSettings);
+const fallingEdge = linearPulseResult.time.findIndex(t => Math.abs(t - 1 / 150) < 1e-12);
+assert.equal(linearPulseResult.model, 'linear-mna');
+assert.ok(fallingEdge >= 0, 'Linear transient must include a pulse edge between nominal time steps');
+near(linearPulseResult.signals['U(RL)'][0], 5);
+near(linearPulseResult.signals['U(RL)'][fallingEdge], 0);
+assert.throws(() => solveCircuitTransient(linearPulse, linearPulseWires, settings(['U(RL)'], 0.02 / 19999, 0.02)), /с учётом фронтов импульсов/);
 for (const [input, expected] of [['0,5 мкФ', 0.5e-6], ['.5m', 0.0005], ['2.2µF', 2.2e-6], ['10 мОм', 0.01], ['1MΩ', 1e6], ['1mA', 0.001], ['20 kHz', 20000], ['3 Гн', 3], ['1e-3', 0.001]] as const) near(parseEngValue(input), expected, Math.abs(expected) * 1e-12);
 for (const invalid of ['1кк', '1garbage', '1k/2', 'Infinity', '', '1e999', '0x10']) {
   assert.ok(Number.isNaN(parseEngValue(invalid)), `${invalid}: invalid nominal must not be partially parsed`);

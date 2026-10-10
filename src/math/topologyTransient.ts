@@ -4,7 +4,7 @@ import { solveDenseSystem, sourceValue } from './linearTransient';
 import { createMnaMatrix } from './mnaCore';
 import { digitalModel, digitalOutputPins, digitalTypes, evaluateDigital, inputLogic, type DigitalEvent, type Logic } from './digitalEvents';
 import { controlBranch, validateControlledSources } from './controlledSources';
-import { validateSourceModel } from './sourceModel';
+import { transientTimeGrid, validateSourceModel } from './sourceModel';
 import { stampTransistor, transistorCurrent, transistorTypes, validateTransistor } from './transistorModel';
 
 /** Models supported by the topology-based transient solver. Other symbols are editor-only. */
@@ -99,24 +99,7 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
   const models = new Map(active.map(e => [e.id, modelOf(e)]));
   const state = new Map<string, State>();
   for (const e of active) if (['DIODE', 'SWITCH', 'THYRISTOR', 'OPAMP'].includes(e.type)) state.set(e.id, 0);
-  const time = Array.from({ length: count + 1 }, (_, k) => k * settings.tMax / count);
-  // Pulse edges must be included even if the user's nominal step is longer than a pulse.
-  for (const e of active.filter(e => e.type === 'V_PULSE' || e.type === 'I_PULSE')) {
-    const period = 1 / (e.secondaryValue ?? 50), duty = e.initialCondition ?? 0.5;
-    const delay = e.modelParams?.pulseDelay ?? 0, rise = e.modelParams?.pulseRise ?? 0, fall = e.modelParams?.pulseFall ?? 0;
-    const cycles = delay > settings.tMax ? 0 : Math.floor((settings.tMax - delay) / period) + 1;
-    if (!Number.isSafeInteger(cycles) || cycles > 20000) {
-      throw new Error('Более 20 000 периодов импульса. Уменьшите интервал расчёта или частоту.');
-    }
-    for (let n = 0; n < cycles; n++) {
-      for (const edge of [delay + n * period, delay + n * period + rise, delay + n * period + duty * period - fall, delay + n * period + duty * period]) {
-        if (edge > 0 && edge < settings.tMax) time.push(edge);
-      }
-    }
-  }
-  time.sort((a, b) => a - b);
-  for (let i = time.length - 1; i > 0; i--) if (time[i] - time[i - 1] <= 1e-13 * Math.max(1, time[i])) time.splice(i, 1);
-  if (time.length > 20000) throw new Error('Более 20 000 точек с учётом фронтов импульсов.');
+  const time = transientTimeGrid(settings.tMax, settings.step, active);
   const nodeVoltages: Record<string, number[]> = { node_0: [] };
   for (const n of used) nodeVoltages[`node_${n}`] = [];
   const branchCurrents: Record<string, number[]> = {};

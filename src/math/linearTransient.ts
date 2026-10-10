@@ -1,7 +1,7 @@
 import type { CircuitElement, CircuitWire, CircuitSimulationResults, TransientSettings } from '../types';
 import { buildCircuitGraph, type CircuitGraph } from './circuitSolver';
 import { createMnaMatrix } from './mnaCore';
-import { validateSourceModel } from './sourceModel';
+import { transientTimeGrid, validateSourceModel } from './sourceModel';
 
 export const linearTypes = new Set(['R', 'L', 'C', 'V_DC', 'V_AC', 'V_PULSE', 'I_DC', 'GND', 'PORT', 'JUNCTION', 'TEXT']);
 export const isLinearCircuit = (elements: CircuitElement[]) => elements.every(e => linearTypes.has(e.type));
@@ -130,7 +130,7 @@ export function solveLinearTransient(elements: CircuitElement[], wires: CircuitW
   const node = (e: CircuitElement, pin: string) => graph.pinToNode.get(`${e.id}_${pin}`)!;
   const used = [...new Set(branches.flatMap(e => [node(e, '1'), node(e, '2')]))].filter(n => n !== 0);
   const index = new Map(used.map((n, i) => [n, i]));
-  const time = Array.from({ length: count + 1 }, (_, k) => k * settings.tMax / count);
+  const time = transientTimeGrid(settings.tMax, settings.step, branches);
   const nodeVoltages: Record<string, number[]> = { node_0: [] };
   for (const n of used) nodeVoltages[`node_${n}`] = [];
   const branchCurrents: Record<string, number[]> = {};

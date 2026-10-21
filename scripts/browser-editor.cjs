@@ -26,6 +26,7 @@ const fs = require('node:fs/promises');
   const combo = page.getByRole('combobox', { name: 'Двухполюсники: выбрать элемент' });
   await combo.selectOption({ label: 'Индуктивность' });
   await page.mouse.click(rect.x + 560, rect.y + 220);
+  await page.keyboard.press('Escape');
   assert.equal(await page.locator('#schematic-world > g[transform^="translate"]').count(), 2);
   console.log('placed transforms', await page.locator('#schematic-world > g[transform^="translate"]').evaluateAll(nodes => nodes.map(node => node.getAttribute('transform'))));
   const firstComponent = page.locator('#schematic-world > g[transform^="translate"]').first();

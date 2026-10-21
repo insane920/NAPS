@@ -13,7 +13,13 @@ const fs = require('node:fs/promises');
     const bounds = await canvas.boundingBox();
     await page.getByRole('combobox', { name: 'Шаг сетки в миллиметрах' }).selectOption('0.5');
     await page.getByRole('button', { name: 'Резистор', exact: true }).first().click();
-    await page.mouse.click(bounds.x + 50 + 134, bounds.y + 30 + 122);
+    const placementPoint = await page.locator('#schematic-world').evaluate(world => {
+      const point = world.ownerSVGElement.createSVGPoint();
+      point.x = 134; point.y = 122;
+      const screen = point.matrixTransform(world.getScreenCTM());
+      return { x: screen.x, y: screen.y };
+    });
+    await page.mouse.click(placementPoint.x, placementPoint.y);
     const component = page.locator('[data-component-id]').first();
     assert.equal(await component.getAttribute('transform'), 'translate(134, 122)', 'changing grid updates pointer snapping immediately');
     await page.getByRole('combobox', { name: 'Шаг сетки в миллиметрах' }).selectOption('10');

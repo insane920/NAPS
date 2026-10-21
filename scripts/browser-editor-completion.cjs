@@ -82,8 +82,19 @@ const { version } = require('../package.json');
     await page.keyboard.press('Enter');
     assert.equal(await dialog.locator('#passive-model').inputValue(), 'nonlinear', 'redo restores the nonlinear model');
     await dialog.getByRole('button', { name: 'Отмена' }).click();
+    await page.getByRole('button', { name: 'Резистор' }).first().click();
+    const placementModel = page.getByLabel('Вариант размещаемого элемента');
+    await placementModel.selectOption('linear');
+    await page.mouse.move(bounds.x + 520, bounds.y + 320);
+    await page.mouse.wheel(0, 80);
+    assert.equal(await placementModel.inputValue(), 'nonlinear', 'wheel selects the nonlinear variant before placement');
+    await page.mouse.click(bounds.x + 520, bounds.y + 320);
+    await page.mouse.click(bounds.x + 630, bounds.y + 320);
+    const [variantScm] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
+    const variantText = await fs.readFile(await variantScm.path(), 'utf8');
+    assert.ok((variantText.match(/PassiveModel: "nonlinear"/g) || []).length >= 3, 'repeated placement keeps the chosen nonlinear model');
     assert.deepEqual(errors, []);
-    console.log('PASS: focused library, editing, 45°/90° rotation and nonlinear model save/undo/redo.');
+    console.log('PASS: focused library, editing, rotation and nonlinear model placement/save/undo/redo.');
   } finally {
     await browser.close();
   }

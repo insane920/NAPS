@@ -18,15 +18,20 @@ const fs = require('node:fs/promises');
     for (const x of [220, 420, 620]) await page.mouse.click(canvas.x + x, canvas.y + 220);
     assert.equal(await components.count(), 3, 'placement stays active for repeated components');
     await page.keyboard.press('Escape');
-
-    await page.mouse.move(canvas.x + 170, canvas.y + 180);
+    const origin = index => components.nth(index).evaluate(group => {
+      const point = group.ownerSVGElement.createSVGPoint();
+      const screen = point.matrixTransform(group.getScreenCTM());
+      return { x: screen.x, y: screen.y };
+    });
+    const marqueeFirst = await origin(0), marqueeSecond = await origin(1);
+    await page.mouse.move(marqueeFirst.x - 50, marqueeFirst.y - 40);
     await page.mouse.down();
-    await page.mouse.move(canvas.x + 470, canvas.y + 260, { steps: 6 });
+    await page.mouse.move(marqueeSecond.x + 50, marqueeSecond.y + 40, { steps: 6 });
     await page.mouse.up();
     const before = await components.evaluateAll(nodes => nodes.map(node => node.getAttribute('transform')));
-    await page.mouse.move(canvas.x + 220, canvas.y + 220);
+    await page.mouse.move(marqueeFirst.x, marqueeFirst.y);
     await page.mouse.down();
-    await page.mouse.move(canvas.x + 260, canvas.y + 240, { steps: 6 });
+    await page.mouse.move(marqueeFirst.x + 40, marqueeFirst.y + 20, { steps: 6 });
     await page.mouse.up();
     const after = await components.evaluateAll(nodes => nodes.map(node => node.getAttribute('transform')));
     assert.notEqual(after[0], before[0], 'first selected component moves');
@@ -37,11 +42,6 @@ const fs = require('node:fs/promises');
     assert.equal(await components.count(), 1, 'Delete removes the selected group');
     await page.keyboard.press('Control+z');
     assert.equal(await components.count(), 3, 'Undo restores group deletion');
-    const origin = index => components.nth(index).evaluate(group => {
-      const point = group.ownerSVGElement.createSVGPoint();
-      const screen = point.matrixTransform(group.getScreenCTM());
-      return { x: screen.x, y: screen.y };
-    });
     const first = await origin(0), second = await origin(1);
     await page.keyboard.down('Shift'); await page.mouse.click(first.x, first.y); await page.keyboard.up('Shift');
     await page.keyboard.down('Control'); await page.mouse.click(second.x, second.y); await page.keyboard.up('Control');

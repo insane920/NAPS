@@ -918,6 +918,7 @@ export function SchematicEditor({
 
   // Режим размещения нового элемента
   const [pendingComponentType, setPendingComponentType] = useState<ComponentType | null>(null);
+  const [placementPassiveModels, setPlacementPassiveModels] = useState<Record<'R' | 'C' | 'L', 'linear' | 'nonlinear'>>({ R: 'linear', C: 'linear', L: 'linear' });
   const [quickTypes, setQuickTypes] = useState<Partial<Record<TerminalGroup, ComponentType>>>({ two: 'R', three: 'THYRISTOR', four: 'TR3' });
   const [paletteDragGroup, setPaletteDragGroup] = useState<TerminalGroup | null>(null);
   useEffect(() => {
@@ -971,6 +972,11 @@ export function SchematicEditor({
     const onWheel = (event: WheelEvent) => {
       if (pendingComponentType && !paletteDragGroup && !event.ctrlKey && !event.metaKey) {
         event.preventDefault();
+        if (['R', 'C', 'L'].includes(pendingComponentType) && !event.shiftKey) {
+          const family = pendingComponentType as 'R' | 'C' | 'L';
+          setPlacementPassiveModels(models => ({ ...models, [family]: models[family] === 'linear' ? 'nonlinear' : 'linear' }));
+          return;
+        }
         const group = terminalGroupForType(pendingComponentType);
         const variants = PLACEMENT_CATALOG.filter(item => group && terminalGroupForType(item.type) === group);
         if (variants.length > 1) {
@@ -1421,6 +1427,10 @@ export function SchematicEditor({
       initialCondition: type === 'V_PULSE' || type === 'I_PULSE' ? 0.5 : undefined,
       chipPins: type === 'CHIP' ? DEFAULT_CHIP_PINS.map(pin => ({ ...pin })) : undefined,
       transistorModel: ['NPN', 'PNP', 'NMOS', 'PMOS'].includes(type) ? 'nonlinear' : undefined,
+      passiveModel: ['R', 'C', 'L'].includes(type) ? placementPassiveModels[type as 'R' | 'C' | 'L'] : undefined,
+      modelParams: ['R', 'C', 'L'].includes(type) && placementPassiveModels[type as 'R' | 'C' | 'L'] === 'nonlinear'
+        ? { cubicCoefficient: type === 'R' ? 1e-12 : type === 'C' ? 1e-9 : 1e-3 }
+        : undefined,
       portName,
       textDirective: type === 'TEXT' ? '.define Rload = 100;' : undefined,
     };
@@ -2283,6 +2293,15 @@ export function SchematicEditor({
               </div>;
             })}
             <button type="button" onClick={() => { wiringFromRef.current = null; setWiringFrom(null); setWiringCursor(null); setWiringWaypoints([]); setPendingComponentType('GND'); }} className="shrink-0 whitespace-nowrap rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100" title="Поставить опорный потенциал 0 В">⏚ 0 В</button>
+            {pendingComponentType && ['R', 'C', 'L'].includes(pendingComponentType) && <select
+              aria-label="Вариант размещаемого элемента"
+              value={placementPassiveModels[pendingComponentType as 'R' | 'C' | 'L']}
+              onChange={event => setPlacementPassiveModels(models => ({ ...models, [pendingComponentType as 'R' | 'C' | 'L']: event.target.value as 'linear' | 'nonlinear' }))}
+              className="rounded border border-slate-300 bg-white px-1 py-1 text-xs text-slate-700"
+              title="Колесо над схемой переключает этот вариант"
+            >
+              <option value="linear">Линейный</option><option value="nonlinear">Нелинейный</option>
+            </select>}
 
             {/* Кнопка открытия полной библиотеки компонентов */}
             <button
@@ -2487,7 +2506,7 @@ export function SchematicEditor({
         {pendingComponentType && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 bg-blue-600 text-white px-4 py-1.5 rounded-full shadow-lg text-xs font-semibold flex items-center gap-2 animate-in fade-in slide-in-from-top-2 duration-150">
             <span className="w-2 h-2 rounded-full bg-amber-300 animate-ping" />
-            <span>Размещайте элементы кликами; колесо — вариант, Esc или ПКМ — выход</span>
+            <span>Размещайте элементы кликами; колесо — вариант{['R', 'C', 'L'].includes(pendingComponentType) ? ', Shift+колесо — тип' : ''}, Esc или ПКМ — выход</span>
             <button
               type="button"
               onClick={() => setPendingComponentType(null)}

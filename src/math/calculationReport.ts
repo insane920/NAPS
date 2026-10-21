@@ -2,6 +2,7 @@ import type { CalculationStep, CircuitElement, CircuitSimulationResults, Circuit
 import { buildCircuitGraph } from './circuitSolver';
 import { assembleLinearSystem, electricalElements, sourceValue } from './linearTransient';
 import { transistorCurrent, transistorTypes } from './transistorModel';
+import { passiveLaw } from './passiveModel';
 
 export const numberText = (value: number | undefined) => value === undefined ? '—' : Number.isFinite(value) ? String(Number(value.toPrecision(10))) : String(value);
 export interface CalculationReport {
@@ -35,6 +36,7 @@ export function buildCalculationReport(elements: CircuitElement[], wires: Circui
     ] : topology ? [
       'Система построена по фактическим соединениям. Узловые потенциалы, токи идеальных источников и ОУ определяются методом модифицированного узлового анализа.',
       'Конденсаторы и катушки интегрируются неявным методом Эйлера. Идеальный диод использует условия U≤0, I≥0, U·I=0; кусочно-линейный — Vf + Ron / Roff. Для ключа используется Ron / Roff.',
+      'Для нелинейных R/C/L применяются заданные кубические зависимости I(U), Q(U) и Ψ(I), а не линейные номиналы; производные используются в итерациях Ньютона.',
       'Биполярные транзисторы: модель Эберса — Молла; MOS: модель длинного канала Level 1 без паразитных ёмкостей. Нелинейные уравнения решаются итерациями Ньютона; малосигнальный режим линеаризуется около заданной точки.',
       'ОУ моделируется источником напряжения с конечным усилением и симметричным ограничением выхода. Эти идеализированные модели не заменяют паспортные характеристики устройств.',
     ] : [...(results.derivation?.notes ?? ['Подробная запись шагов для этого режима отсутствует.'])],
@@ -112,12 +114,15 @@ export function buildCalculationReport(elements: CircuitElement[], wires: Circui
         balance.set(base, (balance.get(base) ?? 0) + model.currents[2]);
       }
       add(`U(${e.name})`, `U = V(${p}) − V(${m})`, `${n(potential(p))} − (${n(potential(m))})`, u, 'В');
-      if (e.type === 'R') add(`I(${e.name})`, 'I = U/R', `${n(u)}/${n(e.value)}`, i, 'А');
+      if (e.type === 'R') add(`I(${e.name})`, e.passiveModel === 'nonlinear' ? 'I = U/R + kU³' : 'I = U/R',
+        e.passiveModel === 'nonlinear' ? `${n(u)}/${n(e.value)} + ${n(e.modelParams?.cubicCoefficient)}·(${n(u)})³` : `${n(u)}/${n(e.value)}`, i, 'А');
       else if (e.type === 'C') {
         if (!k) add(`${e.name}: начальное условие`, 'U_C[0] = IC', n(e.initialCondition ?? 0), u, 'В');
-        add(`I(${e.name})`, k ? 'I_C[k] = C·(U_C[k]−U_C[k−1])/h' : 'I_C[0] определяется уравнениями Кирхгофа', k ? `${n(e.value)}·(${n(u)}−${n(results.elementVoltages?.[e.name]?.[k - 1])})/${n(h)}` : `I_C[0]=${n(i)}`, i, 'А');
+        const oldU = results.elementVoltages?.[e.name]?.[k - 1] ?? 0;
+        add(`I(${e.name})`, k ? e.passiveModel === 'nonlinear' ? 'I_C[k] = (Q(U_C[k])−Q(U_C[k−1]))/h; Q(U)=CU+kU³' : 'I_C[k] = C·(U_C[k]−U_C[k−1])/h' : 'I_C[0] определяется уравнениями Кирхгофа', k ? e.passiveModel === 'nonlinear' ? `(${n(passiveLaw(e, u).value)}−${n(passiveLaw(e, oldU).value)})/${n(h)}` : `${n(e.value)}·(${n(u)}−${n(oldU)})/${n(h)}` : `I_C[0]=${n(i)}`, i, 'А');
       } else if (e.type === 'L') {
-        if (k) add(`${e.name}: уравнение ветви`, 'U_L[k] = L·(I_L[k]−I_L[k−1])/h', `${n(e.value)}·(${n(i)}−${n(results.branchCurrents[e.name][k - 1])})/${n(h)}`, u, 'В');
+        if (k) add(`${e.name}: уравнение ветви`, e.passiveModel === 'nonlinear' ? 'U_L[k] = (Ψ(I_L[k])−Ψ(I_L[k−1]))/h; Ψ(I)=LI+kI³' : 'U_L[k] = L·(I_L[k]−I_L[k−1])/h',
+          e.passiveModel === 'nonlinear' ? `(${n(passiveLaw(e, i).value)}−${n(passiveLaw(e, results.branchCurrents[e.name][k - 1]).value)})/${n(h)}` : `${n(e.value)}·(${n(i)}−${n(results.branchCurrents[e.name][k - 1])})/${n(h)}`, u, 'В');
         add(`I(${e.name})`, k ? 'I_L[k] — ток, решённый системой Кирхгофа' : 'I_L[0] = IC', k ? `I_L[k]=${n(i)}` : `IC=${n(e.initialCondition ?? 0)}`, i, 'А');
       }
       else if (e.type === 'I_DC' || e.type === 'I_AC' || e.type === 'I_PULSE') add(`I(${e.name})`, e.type === 'I_DC' ? 'I = I_DC' : e.type === 'I_AC' ? 'I(t)=Ioffset+A·sin(2πft+φ)' : 'I(t)=Imin + прямоугольный импульс до Imax с задержкой, фронтами и заполнением D', `t=${n(t)}, f=${n(e.secondaryValue)}, D=${n(e.initialCondition)}, I_source=${n(sourceValue(e, t))}`, i, 'А');

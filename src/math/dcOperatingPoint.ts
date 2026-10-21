@@ -5,18 +5,20 @@ import { solveDenseSystem } from './linearTransient';
 import { controlBranch, validateControlledSources } from './controlledSources';
 import { stampTransistor, transistorTypes, validateTransistor } from './transistorModel';
 import { sourceValue } from './linearTransient';
+import { passiveLaw, validatePassiveModel } from './passiveModel';
 
 export type DeviceState = -1 | 0 | 1;
 export interface OperatingPoint {
   potentials: Map<number, number>;
   states: Map<string, DeviceState>;
+  branchCurrents: Map<string, number>;
 }
 const passive = new Set(['GND', 'PORT', 'JUNCTION', 'TEXT']);
 
 /** DC active-set operating point. Capacitors are open, inductors are shorts. */
 export function solveDCOperatingPoint(elements: CircuitElement[], wires: CircuitWire[]): OperatingPoint {
   const active = elements.filter(e => !passive.has(e.type) && !e.isolation);
-  active.forEach(validateTransistor);
+  active.forEach(e => { validateTransistor(e); validatePassiveModel(e); });
   validateControlledSources(elements);
   const graph = buildCircuitGraph(elements, wires);
   const pin = (e: CircuitElement, p: string) => graph.pinToNode.get(`${e.id}_${p}`)!;
@@ -35,7 +37,11 @@ export function solveDCOperatingPoint(elements: CircuitElement[], wires: Circuit
       const p = idx(pin(e, e.type === 'OPAMP' ? 'out' : '1'));
       const m = e.type === 'OPAMP' ? undefined : idx(pin(e, '2'));
       const params = e.modelParams;
-      if (e.type === 'R') conductance(p, m, 1 / e.value);
+      if (e.type === 'R') {
+        const u = (p === undefined ? 0 : guess[p]) - (m === undefined ? 0 : guess[m]);
+        const law = passiveLaw(e, u);
+        conductance(p, m, law.derivative, law.value - law.derivative * u);
+      }
       else if (transistorTypes.has(e.type)) {
         const terminalNodes = ['1', '2', 'gate'].map(id => idx(pin(e, id)));
         stampTransistor(e, terminalNodes.map(index => index === undefined ? 0 : guess[index]) as [number, number, number], terminalNodes, add, b);
@@ -111,9 +117,12 @@ export function solveDCOperatingPoint(elements: CircuitElement[], wires: Circuit
       }
       if (after !== before) { states.set(e.id, after); changes++; }
     }
-    const delta = active.some(e => transistorTypes.has(e.type)) ? Math.max(0, ...used.map((_, i) => Math.abs(answer[i] - guess[i]))) : 0;
+    const delta = active.some(e => transistorTypes.has(e.type) || e.passiveModel === 'nonlinear')
+      ? Math.max(0, ...answer.map((value, i) => Math.abs(value - guess[i]))) : 0;
     guess = answer;
-    if (!changes && delta <= 1e-8 * Math.max(1, ...answer.slice(0, used.length).map(Math.abs))) return { potentials, states };
+    if (!changes && delta <= 1e-8 * Math.max(1, ...answer.map(Math.abs))) {
+      return { potentials, states, branchCurrents: new Map(active.filter(e => e.type === 'L').map(e => [e.id, answer[extraIndex.get(e.id)!]])) };
+    }
   }
   throw new Error('DC-рабочая точка: нелинейная схема не сошлась за 80 итераций.');
 }

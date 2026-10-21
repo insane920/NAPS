@@ -1,5 +1,6 @@
 const { chromium } = require('playwright-core');
 const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
 const { version } = require('../package.json');
 
 (async () => {
@@ -62,8 +63,27 @@ const { version } = require('../package.json');
     assert.deepEqual(angles.map(value => Number(value.match(/rotate\((\d+)/)[1])), [90, 180, 270, 0], 'R cycles through all cardinal orientations');
     await page.keyboard.press('Shift+r');
     assert.match(await rotation(), /rotate\(45\)/, 'Shift+R rotates by 45 degrees');
+    await page.keyboard.press('Enter');
+    await dialog.locator('#passive-model').selectOption('nonlinear');
+    await dialog.locator('#model-cubicCoefficient').fill('0.001');
+    await dialog.getByRole('button', { name: 'OK' }).click();
+    const [saved] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
+    const savedScm = await fs.readFile(await saved.path(), 'utf8');
+    assert.match(savedScm, /PassiveModel: "nonlinear"/);
+    assert.match(savedScm, /Model_cubicCoefficient: "0\.001"/);
+    await page.keyboard.press('Control+z');
+    await page.mouse.click(copyCenter.x, copyCenter.y);
+    await page.keyboard.press('Enter');
+    assert.equal(await dialog.locator('#passive-model').inputValue(), 'linear', 'undo restores the linear model');
+    await dialog.getByRole('button', { name: 'Отмена' }).click();
+    await page.mouse.click(copyCenter.x, copyCenter.y);
+    await page.keyboard.press('Control+y');
+    await page.mouse.click(copyCenter.x, copyCenter.y);
+    await page.keyboard.press('Enter');
+    assert.equal(await dialog.locator('#passive-model').inputValue(), 'nonlinear', 'redo restores the nonlinear model');
+    await dialog.getByRole('button', { name: 'Отмена' }).click();
     assert.deepEqual(errors, []);
-    console.log('PASS: focused two-terminal library, Ctrl+C/V, arrow movement, Enter properties, editable nominal, undo/redo and 45°/90° rotation.');
+    console.log('PASS: focused library, editing, 45°/90° rotation and nonlinear model save/undo/redo.');
   } finally {
     await browser.close();
   }

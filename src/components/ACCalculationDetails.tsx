@@ -11,6 +11,9 @@ export function ACCalculationDetails({ elements, results }: Props) {
   const f = results.frequency?.[index] ?? 0;
   const omega = 2 * Math.PI * f;
   const model = (e: CircuitElement) => {
+    if (e.passiveModel === 'nonlinear' && e.type === 'R') return 'Y = dI/dU|DC = 1/R + 3k·Uраб²; I(U)=U/R+kU³.';
+    if (e.passiveModel === 'nonlinear' && e.type === 'C') return 'Y = jω·dQ/dU|DC; Q(U)=CU+kU³.';
+    if (e.passiveModel === 'nonlinear' && e.type === 'L') return 'Y = 1/(jω·dΨ/dI|DC); Ψ(I)=LI+kI³.';
     if (e.type === 'R') return `Y = 1/R = ${num(1 / e.value)} См`;
     if (e.type === 'C') return `Y = jωC = j${num(omega * e.value)} См`;
     if (e.type === 'L') return `Y = 1/(jωL) = −j${num(1 / (omega * e.value))} См`;

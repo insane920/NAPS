@@ -5,6 +5,7 @@ import { createMnaMatrix } from './mnaCore';
 import { solveDCOperatingPoint } from './dcOperatingPoint';
 import { controlBranch, validateControlledSources } from './controlledSources';
 import { validateSourceModel } from './sourceModel';
+import { passiveLaw, validatePassiveModel } from './passiveModel';
 import { transistorAt, transistorBias, transistorCurrent, transistorTypes, validateTransistor } from './transistorModel';
 
 type Complex = { re: number; im: number };
@@ -41,6 +42,7 @@ export function solveACAnalysis(elements: CircuitElement[], wires: CircuitWire[]
   for (const e of active) {
     validateSourceModel(e);
     validateTransistor(e);
+    validatePassiveModel(e);
     if (!Number.isFinite(e.value) || (['R', 'L', 'C', 'TR3'].includes(e.type) && e.value <= 0)) throw new Error(`${e.name}: недопустимый номинал.`);
     if (['DIODE', 'THYRISTOR', 'SWITCH'].includes(e.type)) {
       const ron = e.modelParams?.onResistance ?? 0.01, roff = e.modelParams?.offResistance ?? 1e9;
@@ -54,7 +56,7 @@ export function solveACAnalysis(elements: CircuitElement[], wires: CircuitWire[]
     }
   }
   const graph = buildCircuitGraph(elements, wires);
-  const operatingPoint = active.some(e => ['DIODE', 'SWITCH', 'THYRISTOR', 'OPAMP'].includes(e.type) || transistorTypes.has(e.type))
+  const operatingPoint = active.some(e => ['DIODE', 'SWITCH', 'THYRISTOR', 'OPAMP'].includes(e.type) || transistorTypes.has(e.type) || e.passiveModel === 'nonlinear')
     ? solveDCOperatingPoint(elements, wires) : undefined;
   const pin = (e: CircuitElement, p: string) => graph.pinToNode.get(`${e.id}_${p}`)!;
   const used = [...new Set(active.flatMap(e => getCircuitPinIds(e.type, e).map(p => pin(e, p))))].filter(n => n !== 0);
@@ -102,7 +104,10 @@ export function solveACAnalysis(elements: CircuitElement[], wires: CircuitWire[]
     for (const e of active) {
       const p = idx(pin(e, e.type === 'OPAMP' ? 'out' : '1'));
       const m = e.type === 'OPAMP' ? undefined : idx(pin(e, '2'));
-      if (e.type === 'R') admittance(p, m, { re: 1 / e.value, im: 0 });
+      if (e.type === 'R') {
+        const bias = (operatingPoint?.potentials.get(pin(e, '1')) ?? 0) - (operatingPoint?.potentials.get(pin(e, '2')) ?? 0);
+        admittance(p, m, { re: passiveLaw(e, bias).derivative, im: 0 });
+      }
       else if (transistorTypes.has(e.type)) {
         const pins = ['1', '2', 'gate'];
         const terminals = pins.map(id => idx(pin(e, id)));
@@ -110,8 +115,14 @@ export function solveACAnalysis(elements: CircuitElement[], wires: CircuitWire[]
         const model = e.transistorModel === 'small-signal' ? transistorCurrent(e, dc) : transistorAt(e, dc);
         for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) addZ(terminals[row], terminals[col], { re: model.jacobian[row][col], im: 0 });
       }
-      else if (e.type === 'C') admittance(p, m, { re: 0, im: omega * e.value });
-      else if (e.type === 'L') admittance(p, m, { re: 0, im: -1 / (omega * e.value) });
+      else if (e.type === 'C') {
+        const bias = (operatingPoint?.potentials.get(pin(e, '1')) ?? 0) - (operatingPoint?.potentials.get(pin(e, '2')) ?? 0);
+        admittance(p, m, { re: 0, im: omega * passiveLaw(e, bias).derivative });
+      }
+      else if (e.type === 'L') {
+        const bias = operatingPoint?.branchCurrents.get(e.id) ?? 0;
+        admittance(p, m, { re: 0, im: -1 / (omega * passiveLaw(e, bias).derivative) });
+      }
       else if (e.type === 'DIODE' && e.diodeModel === 'ideal') {
         const q = extraIndex.get(e.id)!;
         if (operatingPoint?.states.get(e.id) === 1) voltage(p, m, q, zero());
@@ -184,7 +195,10 @@ export function solveACAnalysis(elements: CircuitElement[], wires: CircuitWire[]
       if (e.type === 'TR3') return complexAt(extraIndex.get(`${e.id}:primary`));
       if (extraIndex.has(e.id)) return complexAt(extraIndex.get(e.id));
       const u = voltageOf(e);
-      if (e.type === 'R') return { re: u.re / e.value, im: u.im / e.value };
+      if (e.type === 'R') {
+        const bias = (operatingPoint?.potentials.get(pin(e, '1')) ?? 0) - (operatingPoint?.potentials.get(pin(e, '2')) ?? 0);
+        return mul(u, { re: passiveLaw(e, bias).derivative, im: 0 });
+      }
       if (transistorTypes.has(e.type)) {
         const pins = ['1', '2', 'gate'];
         const dc = e.transistorModel === 'small-signal' ? transistorBias(e) : pins.map(id => operatingPoint?.potentials.get(pin(e, id)) ?? 0) as [number, number, number];
@@ -194,8 +208,11 @@ export function solveACAnalysis(elements: CircuitElement[], wires: CircuitWire[]
           return { re: sum.re + row[index] * value.re, im: sum.im + row[index] * value.im };
         }, zero());
       }
-      if (e.type === 'C') return mul(u, { re: 0, im: omega * e.value });
-      if (e.type === 'L') return mul(u, { re: 0, im: -1 / (omega * e.value) });
+      if (e.type === 'C') {
+        const bias = (operatingPoint?.potentials.get(pin(e, '1')) ?? 0) - (operatingPoint?.potentials.get(pin(e, '2')) ?? 0);
+        return mul(u, { re: 0, im: omega * passiveLaw(e, bias).derivative });
+      }
+      if (e.type === 'L') return mul(u, { re: 0, im: -1 / (omega * passiveLaw(e, operatingPoint?.branchCurrents.get(e.id) ?? 0).derivative) });
       if (e.type === 'I_AC') { const phase = (e.modelParams?.sourcePhaseDeg ?? 0) * Math.PI / 180; return { re: e.value * Math.cos(phase), im: e.value * Math.sin(phase) }; }
       if (e.type === 'VCCS') return mul(sub(nodeAt(pin(e, 'ctrl_pos')), nodeAt(pin(e, 'ctrl_neg'))), { re: e.value, im: 0 });
       if (e.type === 'CCCS') return mul(complexAt(extraIndex.get(controlBranch(e, active).id)), { re: e.value, im: 0 });

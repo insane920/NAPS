@@ -3,6 +3,7 @@ import { buildCircuitGraph } from './circuitSolver';
 import { sourceValue } from './linearTransient';
 import { solveTopologyTransient } from './topologyTransient';
 import { transistorCurrent, transistorTypes } from './transistorModel';
+import { passiveLaw } from './passiveModel';
 
 /** Independently checks KCL and each configured device equation at every sample. */
 export function validateTopologySimulation(elements: CircuitElement[], wires: CircuitWire[], settings: TransientSettings, result: CircuitSimulationResults) {
@@ -40,7 +41,7 @@ export function validateTopologySimulation(elements: CircuitElement[], wires: Ci
         magnitude.set(base, (magnitude.get(base) ?? 0) + Math.abs(model.currents[2]));
       }
       let actual = i, expected = i, absolute = 1e-8;
-      if (e.type === 'R') expected = u / e.value;
+      if (e.type === 'R') expected = passiveLaw(e, u).value;
       else if (transistorTypes.has(e.type)) expected = transistorCurrent(e, [vp, vm, v(pin(e, 'gate'), k)]).currents[0];
       else if (e.type === 'I_DC' || e.type === 'I_AC' || e.type === 'I_PULSE') expected = sourceValue(e, time[k]);
       else if (e.type.startsWith('V_')) { actual = u; expected = sourceValue(e, time[k]); absolute = 1e-6; }
@@ -60,10 +61,10 @@ export function validateTopologySimulation(elements: CircuitElement[], wires: Ci
       }
       else if (e.type === 'C') {
         if (!k) { actual = u; expected = e.initialCondition ?? 0; absolute = 1e-6; }
-        else expected = e.value * (u - (v(p, k - 1) - v(m, k - 1))) / (time[k] - time[k - 1]);
+        else expected = (passiveLaw(e, u).value - passiveLaw(e, v(p, k - 1) - v(m, k - 1)).value) / (time[k] - time[k - 1]);
       } else if (e.type === 'L') {
         if (!k) expected = e.initialCondition ?? 0;
-        else { actual = u; expected = e.value * (i - result.branchCurrents[e.name][k - 1]) / (time[k] - time[k - 1]); absolute = 1e-6; }
+        else { actual = u; expected = (passiveLaw(e, i).value - passiveLaw(e, result.branchCurrents[e.name][k - 1]).value) / (time[k] - time[k - 1]); absolute = 1e-6; }
       } else if (e.type === 'DIODE' && e.diodeModel === 'ideal') {
         actual = Math.max(0, u, -i, Math.abs(u * i));
         expected = 0;

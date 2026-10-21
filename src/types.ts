@@ -312,10 +312,14 @@ export interface CircuitElement {
   /** Omitted in legacy projects: preserve their piecewise-linear diode. */
   diodeModel?: 'ideal' | 'pwl';
   transistorModel?: 'nonlinear' | 'small-signal';
+  /** Legacy R/C/L elements default to the original linear model. */
+  passiveModel?: 'linear' | 'nonlinear';
   /** Stable electrical IDs plus editable physical pin numbers and labels. */
   chipPins?: Array<{ id: string; number: string; label: string; side: 'left' | 'right' }>;
   /** Parameters of the documented piecewise-linear semiconductor/control models. */
   modelParams?: {
+    /** Cubic term in I(U), Q(U), or Ψ(I). Units: A/V³, C/V³, or Wb/A³. */
+    cubicCoefficient?: number;
     forwardVoltage?: number; // V, diode/thyristor conducting threshold
     onResistance?: number; // Ohm
     offResistance?: number; // Ohm

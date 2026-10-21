@@ -117,6 +117,7 @@ export function exportToYamlScm(
     if (el.controlSource) params['ControlSource'] = el.controlSource;
     if (el.type === 'DIODE' && el.diodeModel) params['DiodeModel'] = el.diodeModel;
     if (el.transistorModel) params['TransistorModel'] = el.transistorModel;
+    if (['R', 'C', 'L'].includes(el.type) && el.passiveModel) params['PassiveModel'] = el.passiveModel;
     if (el.type === 'CHIP' && el.chipPins) { validateChipPins(el.chipPins); params['ChipPins'] = JSON.stringify(el.chipPins); }
     if (el.secondaryValue !== undefined) params['SecondaryValue'] = String(el.secondaryValue);
     if (el.secondaryStr !== undefined) params['SecondaryText'] = el.secondaryStr;
@@ -634,7 +635,7 @@ function commitCurrentObject(
     : params['f'] ? parseEngValue(params['f']) : undefined;
   const initialCondition = params['IC'] !== undefined ? finiteScmNumber(params['IC'], `IC элемента ${raw.ID}`) : undefined;
   const modelParams: NonNullable<CircuitElement['modelParams']> = {};
-  for (const key of ['forwardVoltage', 'onResistance', 'offResistance', 'gateThreshold', 'holdingCurrent', 'outputLimit', 'turnsRatio', 'couplingFactor', 'logicHigh', 'logicLow', 'logicThreshold', 'outputResistance', 'propagationDelay', 'hysteresis', 'sourceOffset', 'sourcePhaseDeg', 'pulseLow', 'pulseHigh', 'pulseDelay', 'pulseRise', 'pulseFall', 'saturationCurrent', 'betaForward', 'betaReverse', 'thermalVoltage', 'thresholdVoltage', 'transconductance', 'channelLengthModulation', 'biasControlVoltage', 'biasOutputVoltage'] as const) {
+  for (const key of ['cubicCoefficient', 'forwardVoltage', 'onResistance', 'offResistance', 'gateThreshold', 'holdingCurrent', 'outputLimit', 'turnsRatio', 'couplingFactor', 'logicHigh', 'logicLow', 'logicThreshold', 'outputResistance', 'propagationDelay', 'hysteresis', 'sourceOffset', 'sourcePhaseDeg', 'pulseLow', 'pulseHigh', 'pulseDelay', 'pulseRise', 'pulseFall', 'saturationCurrent', 'betaForward', 'betaReverse', 'thermalVoltage', 'thresholdVoltage', 'transconductance', 'channelLengthModulation', 'biasControlVoltage', 'biasOutputVoltage'] as const) {
     const stored = params[`Model_${key}`];
     if (stored !== undefined) modelParams[key] = finiteScmNumber(stored, `${key} элемента ${raw.ID}`);
   }
@@ -647,6 +648,13 @@ function commitCurrentObject(
     catch { throw new Error(`Микросхема ${raw.ID}: некорректная конфигурация выводов.`); }
   }
   if (['R', 'L', 'C'].includes(type) && value <= 0) throw new Error(`Элемент ${raw.ID}: номинал должен быть больше нуля.`);
+  if (params['PassiveModel'] && (!['R', 'L', 'C'].includes(type) || !['linear', 'nonlinear'].includes(params['PassiveModel']))) {
+    throw new Error(`Элемент ${raw.ID}: неизвестная модель пассивного элемента.`);
+  }
+  if (params['PassiveModel'] === 'nonlinear' &&
+      (!Number.isFinite(modelParams.cubicCoefficient) || (modelParams.cubicCoefficient ?? 0) <= 0)) {
+    throw new Error(`Элемент ${raw.ID}: некорректный коэффициент нелинейной модели.`);
+  }
   const visibleValue = params['ValueText'] ?? valStr;
   if (['R', 'L', 'C', 'V_DC', 'V_AC', 'I_DC', 'I_AC', 'I_PULSE'].includes(type) && visibleValue) {
     const labelValue = parseEngValue(visibleValue);
@@ -674,6 +682,7 @@ function commitCurrentObject(
     controlSource: params['ControlSource'] || undefined,
     diodeModel: type === 'DIODE' && params['DiodeModel'] === 'ideal' ? 'ideal' : undefined,
     transistorModel: params['TransistorModel'] === 'small-signal' ? 'small-signal' : ['NPN', 'PNP', 'NMOS', 'PMOS'].includes(type) ? 'nonlinear' : undefined,
+    passiveModel: ['R', 'C', 'L'].includes(type) && params['PassiveModel'] ? params['PassiveModel'] as 'linear' | 'nonlinear' : undefined,
     chipPins: storedChipPins,
     modelParams: Object.keys(modelParams).length ? modelParams : undefined,
     portName: params['Label'] || (type === 'PORT' ? raw.Name : undefined),

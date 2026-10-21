@@ -4,7 +4,8 @@ import { createMnaMatrix } from './mnaCore';
 import { transientTimeGrid, validateSourceModel } from './sourceModel';
 
 export const linearTypes = new Set(['R', 'L', 'C', 'V_DC', 'V_AC', 'V_PULSE', 'I_DC', 'GND', 'PORT', 'JUNCTION', 'TEXT']);
-export const isLinearCircuit = (elements: CircuitElement[]) => elements.every(e => linearTypes.has(e.type));
+export const isLinearCircuit = (elements: CircuitElement[]) =>
+  elements.every(e => linearTypes.has(e.type) && e.passiveModel !== 'nonlinear');
 const passive = new Set(['GND', 'PORT', 'JUNCTION', 'TEXT']);
 export const electricalElements = (elements: CircuitElement[]) => elements.filter(e => !passive.has(e.type) && !e.isolation);
 

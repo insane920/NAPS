@@ -5,6 +5,7 @@ import { useModalFocus } from '../hooks/useModalFocus';
 import { chipPins, validateChipPins } from '../utils/chipPins';
 import { validateSourceModel } from '../math/sourceModel';
 import { transistorTypes, validateTransistor } from '../math/transistorModel';
+import { validatePassiveModel } from '../math/passiveModel';
 
 interface ElementPropertiesModalProps {
   element: CircuitElement | null;
@@ -29,7 +30,11 @@ function ElementPropertiesContent({
 }: ElementPropertiesModalProps & { element: CircuitElement }) {
 
   const modelFields: Array<{ key: keyof NonNullable<CircuitElement['modelParams']>; label: string; unit: string; defaultValue: number }> =
-    element.type === 'DIODE' || element.type === 'THYRISTOR' ? [
+    ['R', 'C', 'L'].includes(element.type) ? [
+      { key: 'cubicCoefficient', label: 'Кубический коэффициент',
+        unit: element.type === 'R' ? 'А/В³' : element.type === 'C' ? 'Кл/В³' : 'Вб/А³',
+        defaultValue: element.type === 'C' ? 1e-6 : 1e-3 },
+    ] : element.type === 'DIODE' || element.type === 'THYRISTOR' ? [
       { key: 'forwardVoltage', label: 'Порог открытия', unit: 'В', defaultValue: element.value > 0 ? element.value : 0.7 },
       { key: 'onResistance', label: 'Сопротивление открытого', unit: 'Ом', defaultValue: 0.01 },
       { key: 'offResistance', label: 'Сопротивление закрытого', unit: 'Ом', defaultValue: 1e9 },
@@ -89,6 +94,7 @@ function ElementPropertiesContent({
   const [controlSource, setControlSource] = useState(element.controlSource || '');
   const [diodeModel, setDiodeModel] = useState(element.diodeModel || 'pwl');
   const [transistorModel, setTransistorModel] = useState(element.transistorModel || 'nonlinear');
+  const [passiveModel, setPassiveModel] = useState(element.passiveModel || 'linear');
   const [editableChipPins, setEditableChipPins] = useState(() => chipPins(element).map(pin => ({ ...pin })));
   const [validationError, setValidationError] = useState('');
   const [modelInputs, setModelInputs] = useState<Record<string, string>>(modelDefaults);
@@ -107,6 +113,7 @@ function ElementPropertiesContent({
     setControlSource(element.controlSource || '');
     setDiodeModel(element.diodeModel || 'pwl');
     setTransistorModel(element.transistorModel || 'nonlinear');
+    setPassiveModel(element.passiveModel || 'linear');
     setEditableChipPins(chipPins(element).map(pin => ({ ...pin })));
     setValidationError('');
     setModelInputs(modelDefaults());
@@ -207,6 +214,7 @@ function ElementPropertiesContent({
     }
     const modelParams: NonNullable<CircuitElement['modelParams']> = {};
     for (const field of modelFields) {
+      if (field.key === 'cubicCoefficient' && passiveModel !== 'nonlinear') continue;
       const value = parseEngValue(modelInputs[field.key]);
       const allowsZero = ['forwardVoltage', 'holdingCurrent', 'propagationDelay', 'hysteresis', 'pulseDelay', 'pulseRise', 'pulseFall', 'channelLengthModulation'].includes(field.key);
       const allowsNegative = ['gateThreshold', 'logicHigh', 'logicLow', 'logicThreshold', 'sourceOffset', 'sourcePhaseDeg', 'pulseLow', 'pulseHigh'].includes(field.key);
@@ -239,12 +247,13 @@ function ElementPropertiesContent({
       controlSource: element.type === 'CCVS' || element.type === 'CCCS' ? controlSource : undefined,
       diodeModel: element.type === 'DIODE' ? diodeModel : undefined,
       transistorModel: transistorTypes.has(element.type) ? transistorModel : undefined,
+      passiveModel: ['R', 'C', 'L'].includes(element.type) ? passiveModel : undefined,
       chipPins: element.type === 'CHIP' ? editableChipPins.map(pin => ({ ...pin, number: pin.number.trim(), label: pin.label.trim() })) : undefined,
       modelParams: modelFields.length ? modelParams : element.modelParams,
       portName: element.type === 'PORT' ? (portName.trim() || name.trim()) : undefined,
       textDirective: element.type === 'TEXT' ? directiveStr.trim() : undefined,
     };
-    try { validateSourceModel(updated); validateTransistor(updated); }
+    try { validateSourceModel(updated); validateTransistor(updated); validatePassiveModel(updated); }
     catch (error) { setValidationError(error instanceof Error ? error.message : 'Неверные параметры источника.'); return; }
 
     onSave(updated);
@@ -350,7 +359,14 @@ function ElementPropertiesContent({
             <label htmlFor="transistor-model" className="text-right font-medium text-slate-700">Модель:</label>
             <select id="transistor-model" value={transistorModel} onChange={event => setTransistorModel(event.target.value as 'nonlinear' | 'small-signal')} className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 text-xs"><option value="nonlinear">Нелинейная I–V</option><option value="small-signal">Линейная около заданной точки</option></select>
           </div>}
-          {modelFields.filter(field => !(element.type === 'DIODE' && diodeModel === 'ideal') || !['forwardVoltage', 'onResistance', 'offResistance'].includes(field.key)).map(field => (
+          {['R', 'C', 'L'].includes(element.type) && <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
+            <label htmlFor="passive-model" className="text-right font-medium text-slate-700">Модель:</label>
+            <select id="passive-model" value={passiveModel} onChange={event => setPassiveModel(event.target.value as 'linear' | 'nonlinear')} className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 text-xs">
+              <option value="linear">Линейная</option><option value="nonlinear">Нелинейная кубическая</option>
+            </select>
+          </div>}
+          {passiveModel === 'nonlinear' && ['R', 'C', 'L'].includes(element.type) && <p className="rounded bg-blue-50 p-2 text-xs text-blue-900">{element.type === 'R' ? 'I = U/R + kU³' : element.type === 'C' ? 'Q = CU + kU³; I = dQ/dt' : 'Ψ = LI + kI³; U = dΨ/dt'}. Коэффициент k задаётся ниже.</p>}
+          {modelFields.filter(field => (field.key !== 'cubicCoefficient' || passiveModel === 'nonlinear') && (!(element.type === 'DIODE' && diodeModel === 'ideal') || !['forwardVoltage', 'onResistance', 'offResistance'].includes(field.key))).map(field => (
             <div key={field.key} className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
               <label htmlFor={`model-${field.key}`} className="text-right font-medium text-slate-700">{field.label}:</label>
               <input

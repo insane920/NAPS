@@ -6,6 +6,7 @@ import { digitalModel, digitalOutputPins, digitalTypes, evaluateDigital, inputLo
 import { controlBranch, validateControlledSources } from './controlledSources';
 import { transientTimeGrid, validateSourceModel } from './sourceModel';
 import { stampTransistor, transistorCurrent, transistorTypes, validateTransistor } from './transistorModel';
+import { passiveLaw, validatePassiveModel } from './passiveModel';
 
 /** Models supported by the topology-based transient solver. Other symbols are editor-only. */
 export const topologyTypes = new Set([
@@ -79,6 +80,7 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
   for (const e of active) {
     validateSourceModel(e);
     validateTransistor(e);
+    validatePassiveModel(e);
     if ((e.type === 'SWITCH' || e.type === 'THYRISTOR') && !wires.some(w => (w.fromCompId === e.id && w.fromPinId === 'gate') || (w.toCompId === e.id && w.toPinId === 'gate'))) {
       throw new Error(`${e.name}: подключите управляющий вывод gate к источнику управления.`);
     }
@@ -141,7 +143,11 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
         const p = idx(pin(e, e.type === 'OPAMP' ? 'out' : '1'));
         const m = idx(e.type === 'OPAMP' ? 0 : pin(e, '2'));
         const mod = models.get(e.id)!;
-        if (e.type === 'R') stampG(p, m, 1 / e.value);
+        if (e.type === 'R') {
+          const u0 = (p === undefined ? 0 : guess[p]) - (m === undefined ? 0 : guess[m]);
+          const law = passiveLaw(e, u0);
+          stampG(p, m, law.derivative, law.value - law.derivative * u0);
+        }
         else if (transistorTypes.has(e.type)) {
           const ids = ['1', '2', 'gate'].map(id => idx(pin(e, id)));
           stampTransistor(e, ids.map(index => index === undefined ? 0 : guess[index]) as [number, number, number], ids, add, b);
@@ -170,14 +176,23 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
         }
         else if (e.type === 'C') {
           if (initial) stampV(e, p, m, e.initialCondition ?? 0);
-          else { const g = e.value / dt; stampG(p, m, g, -g * voltages[e.name][k - 1]); }
+          else {
+            const u0 = (p === undefined ? 0 : guess[p]) - (m === undefined ? 0 : guess[m]);
+            const law = passiveLaw(e, u0);
+            const previousCharge = passiveLaw(e, voltages[e.name][k - 1]).value;
+            stampG(p, m, law.derivative / dt,
+              (law.value - previousCharge - law.derivative * u0) / dt);
+          }
         } else if (e.type === 'L') {
           if (initial) stampI(p, m, e.initialCondition ?? 0);
           else {
             stampV(e, p, m, 0);
             const q = extraIndex.get(e.id)!;
-            a[q][q] = -e.value / dt;
-            b[q] = -e.value / dt * branchCurrents[e.name][k - 1];
+            const currentGuess = guess[q];
+            const law = passiveLaw(e, currentGuess);
+            const previousFlux = passiveLaw(e, branchCurrents[e.name][k - 1]).value;
+            a[q][q] = -law.derivative / dt;
+            b[q] = (law.value - previousFlux - law.derivative * currentGuess) / dt;
           }
         } else if (e.type.startsWith('V_')) stampV(e, p, m, sourceValue(e, time[k]));
         else if (e.type === 'TR3') {
@@ -285,10 +300,10 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
           }
         }
       }
-      const delta = transistorTypes.size && active.some(e => transistorTypes.has(e.type))
-        ? Math.max(0, ...used.map((_, index) => Math.abs(solution[index] - guess[index]))) : 0;
+      const delta = active.some(e => transistorTypes.has(e.type) || e.passiveModel === 'nonlinear')
+        ? Math.max(0, ...solution.map((value, index) => Math.abs(value - guess[index]))) : 0;
       guess = solution;
-      if (!changes && delta <= 1e-8 * Math.max(1, ...solution.slice(0, used.length).map(Math.abs))) { converged = true; break; }
+      if (!changes && delta <= 1e-8 * Math.max(1, ...solution.map(Math.abs))) { converged = true; break; }
     }
     if (!converged) throw new Error(`t=${time[k]} с: нелинейная схема не сошлась за 80 итераций. Уменьшите шаг или проверьте соединения и параметры.`);
     const potential = (n: number) => n === 0 ? 0 : solution[nodeIndex.get(n)!];
@@ -304,13 +319,13 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
       const u = output ? potential(pin(e, output)) : e.type === 'OPAMP' ? potential(pin(e, 'out')) : potential(pin(e, '1')) - potential(pin(e, '2'));
       let current = 0;
       if (extraIndex.has(e.id)) current = solution[extraIndex.get(e.id)!];
-      else if (e.type === 'R') current = u / e.value;
+      else if (e.type === 'R') current = passiveLaw(e, u).value;
       else if (transistorTypes.has(e.type)) current = transistorCurrent(e, [potential(pin(e, '1')), potential(pin(e, '2')), potential(pin(e, 'gate'))]).currents[0];
       else if (e.type === 'I_DC' || e.type === 'I_AC' || e.type === 'I_PULSE') current = sourceValue(e, time[k]);
       else if (e.type === 'VCCS') current = e.value * (potential(pin(e, 'ctrl_pos')) - potential(pin(e, 'ctrl_neg')));
       else if (e.type === 'CCCS') current = e.value * solution[extraIndex.get(controlBranch(e, active).id)!];
       else if (e.type === 'L') current = e.initialCondition ?? 0;
-      else if (e.type === 'C') current = e.value * (u - voltages[e.name][k - 1]) / dt;
+      else if (e.type === 'C') current = (passiveLaw(e, u).value - passiveLaw(e, voltages[e.name][k - 1]).value) / dt;
       else if (e.type === 'DIODE' && e.diodeModel === 'ideal') current = state.get(e.id) === 1 ? solution[extraIndex.get(e.id)!] : 0;
       else if (e.type === 'DIODE' || e.type === 'THYRISTOR') current = state.get(e.id) === 1 ? (u - mod.vf) / mod.ron : u / mod.roff;
       else if (e.type === 'SWITCH') current = u / (state.get(e.id) === 1 ? mod.ron : mod.roff);

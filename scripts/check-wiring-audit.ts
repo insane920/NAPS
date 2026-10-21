@@ -6,6 +6,7 @@ import {
   isAllowedWireSegment,
   moveFreeWireSegment,
   moveSelectedElements,
+  materializeWireCrossings,
   projectPointToWire,
   simplifyPoints,
   snapManualWirePoint,
@@ -94,8 +95,38 @@ const directRestored = parseYamlScm(directScm);
 assert.equal(directRestored.wires[0].routeMode, 'direct', 'direct mode survives SCM reload');
 assert.deepEqual(topology(directRestored.elements, directRestored.wires), original, 'direct geometry leaves electrical topology unchanged');
 assert.throws(() => parseYamlScm(directScm.replace('RouteMode: direct', 'RouteMode: unknown')), /Некорректный режим/, 'invalid route mode is rejected');
-assert.throws(() => parseYamlScm(directScm.replace('Unit: mm', 'Unit: px')), /SCM 7 требует/, 'unknown coordinate units cannot silently scale a project');
-assert.throws(() => parseYamlScm(directScm.replace('MajorVersion: 7', 'MajorVersion: 8')), /Неподдерживаемая версия/, 'future formats are rejected');
+assert.throws(() => parseYamlScm(directScm.replace('Unit: mm', 'Unit: px')), /SCM 7\/8 требует/, 'unknown coordinate units cannot silently scale a project');
+assert.throws(() => parseYamlScm(directScm.replace('MajorVersion: 7', 'MajorVersion: 9')), /Неподдерживаемая версия/, 'future formats are rejected');
+assert.equal(directRestored.crossingMode, 'explicit', 'old SCM keeps explicit-junction semantics');
+const crossingElements = sample.elements.slice(0, 4).map((element, index) => ({ ...element, id: `cross_${index}`, name: `R${index + 1}` }));
+const crossingWires = [
+  { id: 'horizontal', fromCompId: 'cross_0', fromPinId: '1', toCompId: 'cross_1', toPinId: '1', routeMode: 'direct' as const },
+  { id: 'vertical', fromCompId: 'cross_2', fromPinId: '1', toCompId: 'cross_3', toPinId: '1', routeMode: 'direct' as const },
+];
+const oldCrossing = parseYamlScm(exportToYamlScm(crossingElements, crossingWires, sample.transient));
+assert.notEqual(buildCircuitGraph(oldCrossing.elements, oldCrossing.wires).pinToNode.get(`${oldCrossing.elements[0].id}_1`),
+  buildCircuitGraph(oldCrossing.elements, oldCrossing.wires).pinToNode.get(`${oldCrossing.elements[2].id}_1`), 'old visual crossing remains separate');
+const newCrossing = materializeWireCrossings(crossingElements, crossingWires, [
+  { wire: crossingWires[0], points: [{ x: -100, y: 0 }, { x: 100, y: 0 }] },
+  { wire: crossingWires[1], points: [{ x: 0, y: -100 }, { x: 0, y: 100 }] },
+], 'vertical');
+assert.equal(newCrossing.elements.filter(element => element.type === 'JUNCTION').length, 1, 'crossing creates a single explicit junction');
+assert.equal(newCrossing.wires.length, 4, 'both crossing wires are split');
+assert.equal(buildCircuitGraph(newCrossing.elements, newCrossing.wires).pinToNode.get('cross_0_1'),
+  buildCircuitGraph(newCrossing.elements, newCrossing.wires).pinToNode.get('cross_2_1'), 'crossing connects both nets');
+const newScm = exportToYamlScm(newCrossing.elements, newCrossing.wires, sample.transient, undefined, undefined, 'current', 'connect');
+assert.match(newScm, /MajorVersion: 8/);
+const newRestored = parseYamlScm(newScm);
+assert.equal(newRestored.crossingMode, 'connect');
+assert.equal(buildCircuitGraph(newRestored.elements, newRestored.wires).pinToNode.get(`${newRestored.elements[0].id}_1`),
+  buildCircuitGraph(newRestored.elements, newRestored.wires).pinToNode.get(`${newRestored.elements[2].id}_1`), 'v8 SCM preserves crossing connectivity');
+const overlap = materializeWireCrossings(crossingElements, crossingWires, [
+  { wire: crossingWires[0], points: [{ x: -100, y: 0 }, { x: 100, y: 0 }] },
+  { wire: crossingWires[1], points: [{ x: -50, y: 0 }, { x: 150, y: 0 }] },
+], 'vertical');
+assert.equal(overlap.elements.filter(element => element.type === 'JUNCTION').length, 1, 'overlapping conductors create a junction');
+assert.equal(buildCircuitGraph(overlap.elements, overlap.wires).pinToNode.get('cross_0_1'),
+  buildCircuitGraph(overlap.elements, overlap.wires).pinToNode.get('cross_2_1'), 'overlapping conductors unite their nets');
 assert.throws(() => exportToYamlScm(sample.elements, directWires, sample.transient, undefined, undefined, 'legacy'), /не поддерживает произвольные углы/, 'legacy export never silently changes a free-angle route');
 const legacyScm = exportToYamlScm(moved, sample.wires, sample.transient, undefined, undefined, 'legacy');
 assert.match(legacyScm, /MajorVersion: 6/);

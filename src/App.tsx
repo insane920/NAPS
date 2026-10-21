@@ -6,7 +6,7 @@ import { TransientSetupModal } from './components/TransientSetupModal';
 import { ACSetupModal } from './components/ACSetupModal';
 import { SAMPLE_CIRCUITS, type SampleCircuit } from './data/sampleCircuits';
 import { exportToYamlScm, parseYamlScm } from './utils/yamlScm';
-import type { ACSettings, CircuitElement, CircuitWire, CircuitSimulationResults, TransientSettings } from './types';
+import type { ACSettings, CircuitElement, CircuitWire, CircuitSimulationResults, TransientSettings, WireCrossingMode } from './types';
 import { useModalFocus } from './hooks/useModalFocus';
 import { NapsLogo } from './components/NapsLogo';
 import { version as appVersion } from '../package.json';
@@ -22,6 +22,7 @@ interface HistorySnapshot {
   settings: TransientSettings;
   ac: ACSettings;
   printLayout: PrintLayout;
+  crossingMode: WireCrossingMode;
   name: string;
   dirty: boolean;
 }
@@ -36,6 +37,7 @@ export default function App() {
   const [settings, setSettings] = useState(newProjectSettings);
   const [ac, setAc] = useState(newACSettings);
   const [printLayout, setPrintLayout] = useState<PrintLayout>(DEFAULT_PRINT_LAYOUT);
+  const [crossingMode, setCrossingMode] = useState<WireCrossingMode>('connect');
   const [name, setName] = useState('Новая схема');
   const [dirty, setDirty] = useState(false);
   const [recoveryCopy, setRecoveryCopy] = useState<RecoveryCopy | null>(() => {
@@ -60,7 +62,7 @@ export default function App() {
   const worker = useRef<Worker | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const revision = useRef(0);
-  const currentSnapshot = useRef<HistorySnapshot>({ elements: [], wires: [], settings: newProjectSettings, ac: newACSettings, printLayout: DEFAULT_PRINT_LAYOUT, name: 'Новая схема', dirty: false });
+  const currentSnapshot = useRef<HistorySnapshot>({ elements: [], wires: [], settings: newProjectSettings, ac: newACSettings, printLayout: DEFAULT_PRINT_LAYOUT, crossingMode: 'connect', name: 'Новая схема', dirty: false });
   const undoStack = useRef<HistorySnapshot[]>([]);
   const redoStack = useRef<HistorySnapshot[]>([]);
   const historyGroupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -113,7 +115,7 @@ export default function App() {
   const restoreSnapshot = useCallback((snapshot: HistorySnapshot, message: string) => {
     closeHistoryGroup(); stopCalculation(); revision.current += 1;
     const restored = cloneSnapshot(snapshot); currentSnapshot.current = restored;
-    setElements(restored.elements); setWires(restored.wires); setSettings(restored.settings); setAc(restored.ac); setPrintLayout(restored.printLayout); setName(restored.name); setDirty(restored.dirty);
+    setElements(restored.elements); setWires(restored.wires); setSettings(restored.settings); setAc(restored.ac); setPrintLayout(restored.printLayout); setCrossingMode(restored.crossingMode); setName(restored.name); setDirty(restored.dirty);
     setResults(null); setGraphOpen(false); setSelected(null); setError(null); setViewRevision(value => value + 1);
     setStatus(message); setHistoryVersion(value => value + 1);
   }, [closeHistoryGroup, stopCalculation]);
@@ -146,7 +148,7 @@ export default function App() {
       try {
         const snapshot = currentSnapshot.current;
         writeRecovery(localStorage, { version: 1, name: snapshot.name, savedAt: Date.now(),
-          content: exportToYamlScm(snapshot.elements, snapshot.wires, snapshot.settings, snapshot.ac, snapshot.printLayout) });
+          content: exportToYamlScm(snapshot.elements, snapshot.wires, snapshot.settings, snapshot.ac, snapshot.printLayout, 'current', snapshot.crossingMode) });
         setRecoveryError(null);
       } catch { setRecoveryError('Автосохранение недоступно. Сохраните схему в файл.'); }
     };
@@ -222,21 +224,21 @@ export default function App() {
     } catch (cause) { stopCalculation(); setError(cause instanceof Error ? cause.message : 'Ошибка запуска частотного анализа.'); }
   }, [ac, elements, wires, stopCalculation]);
 
-  const replaceProject = (data: { elements: CircuitElement[]; wires: CircuitWire[]; transient: TransientSettings; ac?: ACSettings; printLayout?: PrintLayout }, title: string, edited = false) => {
+  const replaceProject = (data: { elements: CircuitElement[]; wires: CircuitWire[]; transient: TransientSettings; ac?: ACSettings; printLayout?: PrintLayout; crossingMode?: WireCrossingMode }, title: string, edited = false) => {
     closeHistoryGroup(); undoStack.current = []; redoStack.current = [];
     setSelected(null);
-    currentSnapshot.current = cloneSnapshot({ elements: data.elements, wires: data.wires, settings: data.transient, ac: data.ac ?? newACSettings, printLayout: data.printLayout ?? DEFAULT_PRINT_LAYOUT, name: title, dirty: edited });
+    currentSnapshot.current = cloneSnapshot({ elements: data.elements, wires: data.wires, settings: data.transient, ac: data.ac ?? newACSettings, printLayout: data.printLayout ?? DEFAULT_PRINT_LAYOUT, crossingMode: data.crossingMode ?? 'explicit', name: title, dirty: edited });
     setHistoryVersion(value => value + 1);
     setViewRevision(value => value + 1);
     setFitRevision(value => value + 1);
-    markChanged(); setElements(data.elements); setWires(data.wires); setSettings(data.transient); setAc(data.ac ?? newACSettings); setPrintLayout(data.printLayout ?? DEFAULT_PRINT_LAYOUT);
+    markChanged(); setElements(data.elements); setWires(data.wires); setSettings(data.transient); setAc(data.ac ?? newACSettings); setPrintLayout(data.printLayout ?? DEFAULT_PRINT_LAYOUT); setCrossingMode(data.crossingMode ?? 'explicit');
     setName(title); setDirty(edited); setError(null); setGraphOpen(false); setStatus('Схема готова к расчёту');
   };
   const clearProject = () => {
     closeHistoryGroup(); beginHistoryChange();
     const emptySettings = { ...newProjectSettings, signals: [] };
-    currentSnapshot.current = { elements: [], wires: [], settings: emptySettings, ac: newACSettings, printLayout: DEFAULT_PRINT_LAYOUT, name: 'Новая схема', dirty: true };
-    markChanged(); setElements([]); setWires([]); setSettings(emptySettings); setAc(newACSettings); setPrintLayout(DEFAULT_PRINT_LAYOUT); setName('Новая схема');
+    currentSnapshot.current = { elements: [], wires: [], settings: emptySettings, ac: newACSettings, printLayout: DEFAULT_PRINT_LAYOUT, crossingMode: 'connect', name: 'Новая схема', dirty: true };
+    markChanged(); setElements([]); setWires([]); setSettings(emptySettings); setAc(newACSettings); setPrintLayout(DEFAULT_PRINT_LAYOUT); setCrossingMode('connect'); setName('Новая схема');
     setSelected(null); setError(null); setGraphOpen(false); setViewRevision(value => value + 1);
   };
   const confirmReplace = () => !dirty || window.confirm('В схеме есть несохранённые изменения. Заменить её?');
@@ -257,9 +259,9 @@ export default function App() {
   const saveCircuit = async (format: 'current' | 'legacy' = 'current') => {
     const savedRevision = revision.current;
     try {
-      const content = exportToYamlScm(elements, wires, settings, ac, printLayout, format);
-      const baseName = name.replace(/-(scm7|0\.6\.0)$/i, '').replace(/[<>:"/\\|?*]/g, '_');
-      const fileName = `${baseName}-${format === 'current' ? 'scm7' : '0.6.0'}.scm`;
+      const content = exportToYamlScm(elements, wires, settings, ac, printLayout, format, crossingMode);
+      const baseName = name.replace(/-(scm7|scm8|0\.6\.0)$/i, '').replace(/[<>:"/\\|?*]/g, '_');
+      const fileName = `${baseName}-${format === 'current' ? (crossingMode === 'connect' ? 'scm8' : 'scm7') : '0.6.0'}.scm`;
       if (window.desktop) {
         const savedName = await window.desktop.saveCircuit(content, fileName);
         if (!savedName) return;
@@ -301,7 +303,7 @@ export default function App() {
           <button onClick={undo} disabled={!undoStack.current.length} title="Отменить (Ctrl+Z)" aria-label="Отменить"><Undo2 size={16} /></button>
           <button onClick={redo} disabled={!redoStack.current.length} title="Повторить (Ctrl+Y)" aria-label="Повторить"><Redo2 size={16} /></button>
           <button onClick={openCircuit} title="Открыть схему (Ctrl+O)"><FolderOpen size={16} /><span>Открыть</span></button>
-          <button onClick={() => void saveCircuit()} title="Сохранить SCM 7 с координатами в мм (Ctrl+S). Для старой версии используйте копию 0.6.0."><Save size={16} /><span>Сохранить</span></button>
+          <button onClick={() => void saveCircuit()} title={`Сохранить SCM ${crossingMode === 'connect' ? '8' : '7'} с координатами в мм (Ctrl+S). Для старой версии используйте копию 0.6.0.`}><Save size={16} /><span>Сохранить</span></button>
           <button onClick={() => void saveCircuit('legacy')} title="Сохранить отдельную копию для NAPS 0.6.0. Произвольные углы и сетка 0,5 мм несовместимы."><span>Копия 0.6.0</span></button>
           <button onClick={runAC} title="Рассчитать АЧХ и ФЧХ"><Activity size={16} /><span>АЧХ/ФЧХ</span></button>
           <button onClick={() => setAcSettingsOpen(true)} title="Параметры частотного анализа" aria-label="Параметры частотного анализа"><SlidersHorizontal size={16} /></button>
@@ -315,7 +317,7 @@ export default function App() {
           catch (cause) { setError(cause instanceof Error ? cause.message : 'Ошибка чтения файла.'); }
         }} />
       </header>
-      <div className="px-3 py-1 text-[11px] text-slate-500">Сохранение: SCM 7, координаты в мм. Старые версии NAPS не поддерживают этот формат — для них доступна «Копия 0.6.0».</div>
+      <div className="px-3 py-1 text-[11px] text-slate-500">Сохранение: SCM {crossingMode === 'connect' ? '8 (пересечения соединяются)' : '7 (узлы только явные)'}, координаты в мм. Для старых версий доступна «Копия 0.6.0».</div>
       {error && <div className="error-banner" role="alert"><span>{error}</span><button onClick={() => setError(null)} aria-label="Закрыть сообщение"><X size={16} /></button></div>}
       {recoveryCopy && <div role="status" className="flex flex-wrap items-center gap-3 bg-amber-50 px-3 py-2 text-sm text-amber-950">
         <span>Есть резервная копия «{recoveryCopy.name}» от {new Date(recoveryCopy.savedAt).toLocaleString('ru-RU')}.</span>
@@ -334,7 +336,7 @@ export default function App() {
         <SchematicEditor elements={elements} wires={wires} printLayout={printLayout} onPrintLayoutChange={value => { beginHistoryChange(); currentSnapshot.current = { ...currentSnapshot.current, printLayout: value, dirty: true }; setPrintLayout(value); markChanged(); }} onElementsChange={changeElements} onWiresChange={changeWires}
           onBeginContinuousEdit={beginContinuousHistory} onEndContinuousEdit={endContinuousHistory}
           onSelectElement={() => {}} onOpenProperties={setSelected} onRunSimulation={runSimulation}
-          onOpenTransientSettings={() => setSettingsOpen(true)} onLoadSample={loadSample} onClearProject={clearProject}
+          onOpenTransientSettings={() => setSettingsOpen(true)} onLoadSample={loadSample} onClearProject={clearProject} crossingMode={crossingMode}
           onBuildPlot={runSimulation} isGraphOpen={graphOpen} isSimulating={busy} shortcutsEnabled={!modalOpen} viewRevision={viewRevision} fitRevision={fitRevision} onHoverStatus={setHoverStatus} />
       </main>
       <footer className="status-bar">
@@ -360,7 +362,7 @@ export default function App() {
         beginHistoryChange(); currentSnapshot.current = { ...currentSnapshot.current, ac: value, dirty: true };
         setAc(value); markChanged(); setGraphOpen(false);
       }} />
-      {yamlOpen && <Suspense fallback={<div className="modal-backdrop"><div className="loading-panel">Загрузка редактора…</div></div>}><ScmYamlModal isOpen onClose={() => setYamlOpen(false)} elements={elements} wires={wires} transient={settings} ac={ac} printLayout={printLayout} onApplyYaml={data => {
+      {yamlOpen && <Suspense fallback={<div className="modal-backdrop"><div className="loading-panel">Загрузка редактора…</div></div>}><ScmYamlModal isOpen onClose={() => setYamlOpen(false)} elements={elements} wires={wires} transient={settings} ac={ac} printLayout={printLayout} crossingMode={crossingMode} onApplyYaml={data => {
         replaceProject(data, name, true); setYamlOpen(false);
       }} /></Suspense>}
       {helpOpen && <div ref={helpDialogRef} className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="help-title"><section className="help-dialog"><header><h2 id="help-title">Работа со схемой</h2><button onClick={() => setHelpOpen(false)} aria-label="Закрыть помощь"><X size={20} /></button></header><p>Элементы сгруппированы по числу полюсов. Удерживайте ЛКМ на миниатюре и перенесите её на схему; колесо меняет вариант внутри группы. После размещения можно поставить ещё элементы того же типа. Esc или ПКМ завершает размещение. Стрелка справа открывает полный список.</p><p>Наведите на вывод, нажмите ЛКМ и протяните провод к другому выводу. Отдельный режим проводки не требуется. Кликами по пустому полю можно задать ручной маршрут, в том числе под 45°. Клик по существующему проводу создаёт видимый узел; простое пересечение линии не соединяет.</p><dl><dt>Выбрать и переместить элемент</dt><dd>Перетащите его за корпус</dd><dt>Выделить группу</dt><dd>Рамка на пустом поле или Shift/Ctrl + щелчок по элементам</dd><dt>Изменить форму провода</dt><dd>Перетащите участок провода</dd><dt>Исключить элемент из расчёта</dt><dd>Выделите двухвыводный элемент и выберите «Разрыв» или «Замыкание»</dd><dt>Свойства элемента</dt><dd>Двойной щелчок, Enter или меню по правому клику</dd><dt>Повернуть элемент</dt><dd>Кнопки 90° и 45°, R или Shift+R</dd><dt>Копировать / вставить</dt><dd>Ctrl+C / Ctrl+V</dd><dt>Перебрать переносимый элемент</dt><dd>Колесо при удержании ЛКМ</dd><dt>Настроить клавиши</dt><dd>Кнопка «Клавиши» на панели схемы</dd><dt>Удалить выбранное</dt><dd>Delete</dd><dt>Отменить / повторить действие</dt><dd>Ctrl+Z / Ctrl+Y или Ctrl+Shift+Z</dd><dt>Отменить действие</dt><dd>Esc или правый клик по пустому полю</dd><dt>Рассчитать и показать график</dt><dd>F9</dd><dt>Открыть / сохранить</dt><dd>Ctrl+O / Ctrl+S</dd></dl><p>Начать можно с готовой схемы в меню «Примеры». Время расчёта и сигналы настраиваются кнопкой с шестерёнкой.</p><button className="primary-action" onClick={() => setHelpOpen(false)}>Понятно</button></section></div>}

@@ -38,10 +38,17 @@ assert.equal(readRecovery(recoveryStorage)?.name, 'First');
 
 assert.deepEqual(paperSize({ format: 'A4', orientation: 'landscape', gridMm: 5 }), { widthMm: 297, heightMm: 210, width: 1188, height: 840 });
 assert.deepEqual(paperSize({ format: 'A3', orientation: 'portrait', gridMm: 5 }), { widthMm: 297, heightMm: 420, width: 1188, height: 1680 });
+for (const [format, short, long] of [['A0', 841, 1189], ['A1', 594, 841], ['A2', 420, 594]] as const) {
+  assert.deepEqual(paperSize({ format, orientation: 'portrait', gridMm: 5 }),
+    { widthMm: short, heightMm: long, width: short * SCHEMATIC_UNITS_PER_MM, height: long * SCHEMATIC_UNITS_PER_MM });
+  assert.deepEqual(parseYamlScm(exportToYamlScm([], [], SAMPLE_CIRCUITS[0].transient, undefined,
+    { format, orientation: 'landscape', gridMm: 5 })).printLayout,
+    { format, orientation: 'landscape', gridMm: 5 }, `${format} survives SCM`);
+}
 assert.equal(20 / SCHEMATIC_UNITS_PER_MM, 5, 'One existing schematic grid cell is 5 mm');
 assert.deepEqual(parsePrintLayout(), { format: 'A4', orientation: 'landscape', gridMm: 5 }, 'Legacy SCM defaults to A4');
 assert.deepEqual(parseYamlScm(exportToYamlScm([], [], SAMPLE_CIRCUITS[0].transient, undefined, { format: 'A3', orientation: 'portrait', gridMm: 2.5 })).printLayout, { format: 'A3', orientation: 'portrait', gridMm: 2.5 });
-assert.throws(() => parsePrintLayout('A2', 'portrait'), /Формат листа/);
+assert.throws(() => parsePrintLayout('A5', 'portrait'), /Формат листа/);
 for (const step of [1, 2, 2.5, 5, 10]) {
   assert.equal(parsePrintLayout('A4', 'landscape', step).gridMm, step);
 }
@@ -69,6 +76,9 @@ for (const [format, orientation, widthPt, heightPt] of [
   ['A4', 'portrait', 595.275, 841.889],
   ['A3', 'landscape', 1190.551, 841.889],
   ['A3', 'portrait', 841.889, 1190.551],
+  ['A2', 'portrait', 1190.551, 1683.779],
+  ['A1', 'portrait', 1683.779, 2383.937],
+  ['A0', 'portrait', 2383.937, 3370.393],
 ] as const) {
   const sheet = paperSize({ format, orientation, gridMm: 5 });
   const pdf = await rasterPagePdf(new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], { type: 'image/jpeg' }), 100, 100, sheet.widthMm, sheet.heightMm);

@@ -367,6 +367,9 @@ export interface CircuitWire {
   disabled?: boolean;
 }
 
+/** SCM 6/7 keep explicit junctions; SCM 8 stores crossings made in the new editor as junctions. */
+export type WireCrossingMode = 'explicit' | 'connect';
+
 export interface TransientSignalConfig {
   id: string;
   plotIndex: 1 | 2 | 3 | 4; // Номер графика (группировка кривых)

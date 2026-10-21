@@ -14,8 +14,8 @@ const { version } = require('../package.json');
     await page.goto(process.env.NAPS_TEST_URL || 'http://127.0.0.1:3000/', { waitUntil: 'networkidle' });
     assert.match(await page.locator('.brand').innerText(), new RegExp(`Версия ${version.replaceAll('.', '\\.')}`));
     await page.getByRole('button', { name: 'Библиотека...' }).click();
-    await page.getByRole('button', { name: 'Многополюсники' }).click();
-    assert.equal(await page.locator('.component-card').filter({ hasText: 'JK-триггер' }).count(), 1, 'five-pin JK is available in the library');
+    assert.equal(await page.locator('.component-card').count(), 5, 'focused library exposes five two-terminal families');
+    assert.equal(await page.locator('.component-card').filter({ hasText: 'JK-триггер' }).count(), 0, 'advanced models are hidden from placement');
     await page.getByTitle('Закрыть библиотеку').click();
 
     const canvas = page.locator('.schematic-editor div.relative.overflow-hidden.bg-white').last();
@@ -63,7 +63,7 @@ const { version } = require('../package.json');
     await page.keyboard.press('Shift+r');
     assert.match(await rotation(), /rotate\(45\)/, 'Shift+R rotates by 45 degrees');
     assert.deepEqual(errors, []);
-    console.log('PASS: version, JK library, Ctrl+C/V, arrow movement, Enter properties, editable nominal, undo/redo and 45°/90° rotation.');
+    console.log('PASS: focused two-terminal library, Ctrl+C/V, arrow movement, Enter properties, editable nominal, undo/redo and 45°/90° rotation.');
   } finally {
     await browser.close();
   }

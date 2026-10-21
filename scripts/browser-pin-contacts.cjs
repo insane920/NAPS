@@ -33,6 +33,17 @@ async function worldPoint(page, x, y) {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(process.env.NAPS_TEST_URL || 'http://127.0.0.1:3000/', { waitUntil: 'networkidle' });
+    // This legacy interaction suite uses the old explicit-junction topology.
+    // Importing an empty SCM 7 document also exercises backwards compatibility.
+    const legacyEmpty = await page.evaluate(async () => {
+      const { exportToYamlScm } = await import('/src/utils/yamlScm.ts');
+      const { SAMPLE_CIRCUITS } = await import('/src/data/sampleCircuits.ts');
+      return exportToYamlScm([], [], SAMPLE_CIRCUITS[0].transient);
+    });
+    await page.locator('input[type="file"]').setInputFiles({
+      name: 'legacy-empty.scm', mimeType: 'text/plain', buffer: Buffer.from(legacyEmpty),
+    });
+    await page.getByText('legacy-empty', { exact: true }).waitFor();
     const canvas = page.locator('.schematic-editor div.relative.overflow-hidden.bg-white').last();
     const bounds = await canvas.boundingBox();
     assert(bounds);

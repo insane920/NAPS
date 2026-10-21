@@ -1,4 +1,4 @@
-export type PaperFormat = 'A4' | 'A3';
+export type PaperFormat = 'A0' | 'A1' | 'A2' | 'A3' | 'A4';
 export type PaperOrientation = 'landscape' | 'portrait';
 export type GridStepMm = 0.5 | 1 | 2 | 2.5 | 5 | 10;
 export interface PrintLayout { format: PaperFormat; orientation: PaperOrientation; gridMm: GridStepMm }
@@ -15,7 +15,7 @@ export const SCHEMATIC_UNITS_PER_MM = 4;
 export const GRID_MM = 5;
 export const DEFAULT_PRINT_LAYOUT: PrintLayout = { format: 'A4', orientation: 'landscape', gridMm: 5 };
 const PAPER_MM: Record<PaperFormat, readonly [number, number]> = {
-  A4: [210, 297], A3: [297, 420],
+  A0: [841, 1189], A1: [594, 841], A2: [420, 594], A3: [297, 420], A4: [210, 297],
 };
 
 export function paperSize(layout: PrintLayout) {
@@ -50,8 +50,9 @@ export function printScaleLabel(scale: number): string {
 
 export function parsePrintLayout(format?: string, orientation?: string, gridMm?: number): PrintLayout {
   if (format === undefined && orientation === undefined && gridMm === undefined) return { ...DEFAULT_PRINT_LAYOUT };
-  if ((format !== 'A4' && format !== 'A3') || (orientation !== 'landscape' && orientation !== 'portrait')) {
-    throw new Error('Формат листа: выберите A4/A3 и книжную/альбомную ориентацию.');
+  if ((format !== 'A0' && format !== 'A1' && format !== 'A2' && format !== 'A3' && format !== 'A4') ||
+      (orientation !== 'landscape' && orientation !== 'portrait')) {
+    throw new Error('Формат листа: выберите A0–A4 и книжную/альбомную ориентацию.');
   }
   const step = gridMm ?? 5;
   if (step !== 0.5 && step !== 1 && step !== 2 && step !== 2.5 && step !== 5 && step !== 10) throw new Error('Шаг сетки: допустимы 0,5, 1, 2, 2,5, 5 или 10 мм.');

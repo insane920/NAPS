@@ -1,4 +1,4 @@
-import { CircuitElement, CircuitWire, TransientSettings, ACSettings } from '../types';
+import { CircuitElement, CircuitWire, TransientSettings, ACSettings, type WireCrossingMode } from '../types';
 import { getCircuitPinIds, parseEngValue } from '../math/circuitSolver';
 import { DEFAULT_PRINT_LAYOUT, parsePrintLayout, SCHEMATIC_UNITS_PER_MM, type PrintLayout } from './printLayout';
 import { validateChipPins } from './chipPins';
@@ -65,7 +65,8 @@ export function exportToYamlScm(
   transient: TransientSettings,
   ac?: ACSettings,
   printLayout: PrintLayout = DEFAULT_PRINT_LAYOUT,
-  format: 'current' | 'legacy' = 'current'
+  format: 'current' | 'legacy' = 'current',
+  crossingMode: WireCrossingMode = 'explicit'
 ): string {
   if (format === 'legacy' && wires.some(wire => wire.routeMode === 'direct')) {
     throw new Error('SCM 0.6.0 не поддерживает произвольные углы проводов. Сохраните проект в новом формате; совместимая копия не создана, чтобы не изменить маршрут.');
@@ -158,7 +159,7 @@ export function exportToYamlScm(
 
   // Сборка текста в чистом YAML
   let yaml = format === 'current'
-    ? 'scm:\n  MajorVersion: 7\n  MinorVersion: 0\n\nGeometry:\n  Version: 1\n  Unit: mm\n'
+    ? `scm:\n  MajorVersion: ${crossingMode === 'connect' ? 8 : 7}\n  MinorVersion: 0\n\nGeometry:\n  Version: 1\n  Unit: mm\n${crossingMode === 'connect' ? '\nTopology:\n  Crossings: connect\n' : ''}`
     : 'scm:\n  MajorVersion: 6\n  MinorVersion: 0\n';
   yaml += `\nPage:\n  Format: ${printLayout.format}\n  Orientation: ${printLayout.orientation}\n  GridMm: ${printLayout.gridMm}\n\nObjects:\n`;
   for (const obj of objects) {
@@ -300,6 +301,7 @@ function finiteScmNumber(value: string | number, label: string): number {
 export function parseYamlScm(yamlText: string): {
   elements: CircuitElement[];
   wires: CircuitWire[];
+  crossingMode: WireCrossingMode;
   transient: TransientSettings;
   ac?: ACSettings;
   printLayout: PrintLayout;
@@ -308,8 +310,9 @@ export function parseYamlScm(yamlText: string): {
   const elements: CircuitElement[] = [];
   const wires: CircuitWire[] = [];
 
-  let currentSection: 'none' | 'geometry' | 'page' | 'objects' | 'wires' | 'transient' | 'ac' = 'none';
+  let currentSection: 'none' | 'geometry' | 'topology' | 'page' | 'objects' | 'wires' | 'transient' | 'ac' = 'none';
   let majorVersion = 6;
+  let crossings: string | undefined;
   let geometryVersion: number | undefined;
   let geometryUnit: string | undefined;
   let pageFormat: string | undefined;
@@ -339,6 +342,7 @@ export function parseYamlScm(yamlText: string): {
 
     if (trimmed.startsWith('MajorVersion:')) { majorVersion = finiteScmNumber(trimmed.slice(13), 'MajorVersion'); continue; }
     if (trimmed === 'Geometry:') { currentSection = 'geometry'; continue; }
+    if (trimmed === 'Topology:') { currentSection = 'topology'; continue; }
 
     if (trimmed === 'Page:') { currentSection = 'page'; continue; }
     if (trimmed === 'AC:') {
@@ -368,6 +372,8 @@ export function parseYamlScm(yamlText: string): {
     if (currentSection === 'geometry') {
       if (trimmed.startsWith('Version:')) geometryVersion = finiteScmNumber(trimmed.slice(8), 'Geometry Version');
       else if (trimmed.startsWith('Unit:')) geometryUnit = readScalar(trimmed.slice(5));
+    } else if (currentSection === 'topology') {
+      if (trimmed.startsWith('Crossings:')) crossings = readScalar(trimmed.slice(10));
     } else if (currentSection === 'page') {
       if (trimmed.startsWith('Format:')) pageFormat = readScalar(trimmed.slice(7));
       else if (trimmed.startsWith('Orientation:')) pageOrientation = readScalar(trimmed.slice(12));
@@ -499,9 +505,11 @@ export function parseYamlScm(yamlText: string): {
     commitCurrentObject(currentObj, elements, numIdToElemId);
   }
   if (pendingFrom) throw new Error(`Провод ${wires.length + 1}: отсутствует конечный вывод.`);
-  if (!Number.isInteger(majorVersion) || majorVersion < 1 || majorVersion > 7) throw new Error('Неподдерживаемая версия SCM. Исходный файл не изменён.');
-  if (majorVersion === 7) {
-    if (geometryVersion !== 1 || geometryUnit !== 'mm') throw new Error('SCM 7 требует Geometry Version: 1 и Unit: mm.');
+  if (!Number.isInteger(majorVersion) || majorVersion < 1 || majorVersion > 8) throw new Error('Неподдерживаемая версия SCM. Исходный файл не изменён.');
+  if (majorVersion === 8 && crossings !== 'connect') throw new Error('SCM 8 требует Topology Crossings: connect.');
+  if (majorVersion < 8 && crossings !== undefined) throw new Error('Режим пересечений требует SCM 8.');
+  if (majorVersion >= 7) {
+    if (geometryVersion !== 1 || geometryUnit !== 'mm') throw new Error('SCM 7/8 требует Geometry Version: 1 и Unit: mm.');
     // One import boundary: physical millimetres become legacy SVG drawing units.
     // Re-export divides by the same fixed factor; monitor DPI and zoom never participate.
     for (const element of elements) { element.x *= SCHEMATIC_UNITS_PER_MM; element.y *= SCHEMATIC_UNITS_PER_MM; }
@@ -552,6 +560,7 @@ export function parseYamlScm(yamlText: string): {
   return {
     elements,
     wires,
+    crossingMode: majorVersion === 8 ? 'connect' : 'explicit',
     printLayout: parsePrintLayout(pageFormat, pageOrientation, gridMm),
     ac: hasAc ? { fMin, fMax, fMinStr, fMaxStr, points: acPoints, scaleType: acScale,
       signals: acExpressions.map((s, i) => ({ id: `ac_${i}`, plotIndex: s.Plot === 2 ? 2 : 1, exprX: s.X, exprY: s.Y, color: s.Color || '#2563eb', enabled: s.Enabled ?? true })) } : undefined,

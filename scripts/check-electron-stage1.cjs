@@ -31,6 +31,7 @@ const path = require('node:path');
       await page.getByRole('button', { name: 'Резистор', exact: true }).first().click();
       await page.mouse.click(canvas.x + x, canvas.y + y);
     }
+    await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'Прямой', exact: true }).click();
     const components = page.locator('[data-component-id]');
     const pin = (i, j) => components.nth(i).locator('circle[fill="transparent"].cursor-pointer').nth(j);
@@ -44,12 +45,16 @@ const path = require('node:path');
     await page.mouse.move(from.x, from.y); await page.mouse.down();
     await page.mouse.move(to.x, to.y, { steps: 8 }); await page.mouse.up();
     const wires = page.locator('#schematic-world path[stroke="transparent"]');
+    if (await wires.count() !== 1) {
+      await page.screenshot({ path: path.join(output, 'wiring-failure.png') });
+      console.error('Packaged wiring did not complete', { from, to, componentCount: await components.count(), errors, output });
+    }
     assert.equal(await wires.count(), 1);
     const route = await wires.first().getAttribute('d');
     await page.getByRole('button', { name: 'Сохранить', exact: true }).click();
     await page.waitForFunction(() => !document.title.startsWith('*'));
     const scm = await fs.readFile(saved, 'utf8');
-    assert.match(scm, /MajorVersion: 7/); assert.match(scm, /RouteMode: direct/);
+    assert.match(scm, /MajorVersion: 8/); assert.match(scm, /RouteMode: direct/);
     await page.getByRole('button', { name: 'Открыть', exact: true }).click();
     await page.waitForTimeout(100);
     assert.equal(await wires.first().getAttribute('d'), route);

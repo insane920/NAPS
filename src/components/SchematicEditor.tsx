@@ -26,6 +26,7 @@ import {
   CircuitWire,
   ComponentType,
   CircuitPin,
+  WireCrossingMode,
 } from '../types';
 import { SAMPLE_CIRCUITS, SampleCircuit } from '../data/sampleCircuits';
 import { buildCircuitGraph } from '../math/circuitSolver';
@@ -33,7 +34,7 @@ import { topologyTypes } from '../math/topologyTransient';
 import { nextComponentName } from '../utils/componentNames';
 import { getComponentLabelLayout, getComponentValueLabel, arrangeComponentLabels } from '../utils/componentLabels';
 import { useModalFocus } from '../hooks/useModalFocus';
-import { ComponentPalette, COMPONENT_CATALOG, TERMINAL_GROUPS, terminalGroupForType, TerminalGroup } from './ComponentPalette';
+import { ComponentPalette, COMPONENT_CATALOG, PLACEMENT_CATALOG, TERMINAL_GROUPS, terminalGroupForType, TerminalGroup } from './ComponentPalette';
 import { SYMBOL_METRICS } from './symbolMetrics';
 import { SCHEMATIC_UNITS_PER_MM, computePrintPlacement, printScaleLabel, type PrintLayout, type PrintPlacement } from '../utils/printLayout';
 import { SpatialIndex } from '../utils/spatialIndex';
@@ -44,6 +45,7 @@ interface SchematicEditorProps {
   elements: CircuitElement[];
   wires: CircuitWire[];
   printLayout: PrintLayout;
+  crossingMode: WireCrossingMode;
   onPrintLayoutChange: (value: PrintLayout) => void;
   onElementsChange: (elements: CircuitElement[]) => void;
   onWiresChange: (wires: CircuitWire[]) => void;
@@ -232,6 +234,94 @@ export function splitWireRoute(points: Point[], segmentIndex: number, point: Poi
     first: simplifyPoints([...points.slice(0, segmentIndex + 1), point]),
     second: simplifyPoints([point, ...points.slice(segmentIndex + 1)]),
   };
+}
+
+type RoutedWire = { wire: CircuitWire; points: Point[] };
+
+function crossingOfRoutes(first: Point[], second: Point[]): { point: Point; firstSegment: number; secondSegment: number } | null {
+  for (let i = 0; i < first.length - 1; i++) for (let j = 0; j < second.length - 1; j++) {
+    const a = first[i], b = first[i + 1], c = second[j], d = second[j + 1];
+    const rx = b.x - a.x, ry = b.y - a.y, sx = d.x - c.x, sy = d.y - c.y;
+    const denominator = rx * sy - ry * sx;
+    if (Math.abs(denominator) < ROUTE_EPSILON) {
+      // A newly routed wire can also overlap an old straight segment.
+      // One explicit junction within the shared interval is sufficient to unite the nets.
+      if (Math.abs((c.x - a.x) * ry - (c.y - a.y) * rx) >= ROUTE_EPSILON) continue;
+      const horizontal = Math.abs(rx) >= Math.abs(ry);
+      const coordinate = (point: Point) => horizontal ? point.x : point.y;
+      const low = Math.max(Math.min(coordinate(a), coordinate(b)), Math.min(coordinate(c), coordinate(d)));
+      const high = Math.min(Math.max(coordinate(a), coordinate(b)), Math.max(coordinate(c), coordinate(d)));
+      if (high - low <= ROUTE_EPSILON) continue;
+      const middle = (low + high) / 2;
+      const ratio = (middle - coordinate(a)) / (coordinate(b) - coordinate(a));
+      const point = { x: a.x + ratio * rx, y: a.y + ratio * ry };
+      if (!samePoint(point, first[0]) && !samePoint(point, first.at(-1)!) &&
+          !samePoint(point, second[0]) && !samePoint(point, second.at(-1)!)) {
+        return { point, firstSegment: i, secondSegment: j };
+      }
+      continue;
+    }
+    const t = ((c.x - a.x) * sy - (c.y - a.y) * sx) / denominator;
+    const u = ((c.x - a.x) * ry - (c.y - a.y) * rx) / denominator;
+    if (t < -ROUTE_EPSILON || t > 1 + ROUTE_EPSILON || u < -ROUTE_EPSILON || u > 1 + ROUTE_EPSILON) continue;
+    const point = { x: a.x + t * rx, y: a.y + t * ry };
+    // Existing terminal connections and explicit junctions already have stable identities.
+    if (samePoint(point, first[0]) || samePoint(point, first.at(-1)!) ||
+        samePoint(point, second[0]) || samePoint(point, second.at(-1)!)) continue;
+    return { point, firstSegment: i, secondSegment: j };
+  }
+  return null;
+}
+
+/** Split only a newly drawn wire and the routes it crosses. Old loaded routes are never reinterpreted. */
+export function materializeWireCrossings(
+  elements: CircuitElement[], wires: CircuitWire[], routed: RoutedWire[], newlyDrawnWireId: string,
+): { elements: CircuitElement[]; wires: CircuitWire[] } {
+  let nextElements = elements;
+  let nextWires = wires;
+  const routes = new Map(routed.map(item => [item.wire.id, item.points]));
+  const active = new Set([newlyDrawnWireId]);
+  for (let pass = 0; pass < 200; pass++) {
+    const pinToNode = buildCircuitGraph(nextElements, nextWires).pinToNode;
+    let crossing: { first: CircuitWire; second: CircuitWire; point: Point; firstSegment: number; secondSegment: number } | null = null;
+    for (const first of nextWires) {
+      if (!active.has(first.id) || first.disabled) continue;
+      const firstRoute = routes.get(first.id);
+      if (!firstRoute) continue;
+      for (const second of nextWires) {
+        if (second.id === first.id || active.has(second.id) || second.disabled) continue;
+        if (pinToNode.get(`${first.fromCompId}_${first.fromPinId}`) ===
+            pinToNode.get(`${second.fromCompId}_${second.fromPinId}`)) continue;
+        const secondRoute = routes.get(second.id);
+        if (!secondRoute) continue;
+        const hit = crossingOfRoutes(firstRoute, secondRoute);
+        if (hit) { crossing = { first, second, ...hit }; break; }
+      }
+      if (crossing) break;
+    }
+    if (!crossing) return { elements: nextElements, wires: nextWires };
+    const { first, second, point, firstSegment, secondSegment } = crossing;
+    const firstParts = splitWireRoute(routes.get(first.id)!, firstSegment, point);
+    const secondParts = splitWireRoute(routes.get(second.id)!, secondSegment, point);
+    const junctionId = `junction_cross_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    nextElements = [...nextElements, { id: junctionId, type: 'JUNCTION', name: nextComponentName(nextElements, 'N'),
+      x: point.x, y: point.y, rotation: 0, value: 0, valueStr: '', unit: '' }];
+    const split = (wire: CircuitWire, parts: { first: Point[]; second: Point[] }) => {
+      const before: CircuitWire = { ...wire, id: `${wire.id}_a_${junctionId}`, toCompId: junctionId, toPinId: '1',
+        routeMode: 'direct', manual: true, waypoints: parts.first.slice(1, -1) };
+      const after: CircuitWire = { ...wire, id: `${wire.id}_b_${junctionId}`, fromCompId: junctionId, fromPinId: '1',
+        routeMode: 'direct', manual: true, waypoints: parts.second.slice(1, -1) };
+      routes.delete(wire.id);
+      routes.set(before.id, parts.first);
+      routes.set(after.id, parts.second);
+      return [before, after];
+    };
+    const firstSplit = split(first, firstParts), secondSplit = split(second, secondParts);
+    active.delete(first.id);
+    firstSplit.forEach(wire => active.add(wire.id));
+    nextWires = [...nextWires.filter(wire => wire.id !== first.id && wire.id !== second.id), ...firstSplit, ...secondSplit];
+  }
+  throw new Error('Слишком много пересечений: провод не добавлен. Упростите маршрут.');
 }
 
 /**
@@ -655,6 +745,7 @@ export function SchematicEditor({
   elements,
   wires,
   printLayout,
+  crossingMode,
   onPrintLayoutChange,
   onElementsChange,
   onWiresChange,
@@ -737,7 +828,7 @@ export function SchematicEditor({
   useEffect(() => {
     if (!paletteDragGroup) return;
     const cycleDraggedType = (event: WheelEvent) => {
-      const options = COMPONENT_CATALOG.filter(item => terminalGroupForType(item.type) === paletteDragGroup);
+      const options = PLACEMENT_CATALOG.filter(item => terminalGroupForType(item.type) === paletteDragGroup);
       if (!options.length) return;
       event.preventDefault();
       const current = quickTypes[paletteDragGroup] ?? options[0].type;
@@ -782,7 +873,7 @@ export function SchematicEditor({
       if (pendingComponentType && !paletteDragGroup && !event.ctrlKey && !event.metaKey) {
         event.preventDefault();
         const group = terminalGroupForType(pendingComponentType);
-        const variants = COMPONENT_CATALOG.filter(item => group && terminalGroupForType(item.type) === group);
+        const variants = PLACEMENT_CATALOG.filter(item => group && terminalGroupForType(item.type) === group);
         if (variants.length > 1) {
           const current = variants.findIndex(item => item.type === pendingComponentType);
           const next = variants[(current + (event.deltaY > 0 ? 1 : variants.length - 1)) % variants.length].type;
@@ -1718,7 +1809,37 @@ export function SchematicEditor({
           waypoints: wireMode === 'orthogonal' && wiringWaypoints.length ? [...wiringWaypoints] : undefined,
           manual: wireMode === 'orthogonal' && wiringWaypoints.length > 0,
         };
-        onWiresChange([...wires, newWire]);
+        if (crossingMode === 'connect') {
+          const sourcePin = pinPositions.get(`${wiringSource.compId}_${wiringSource.pinId}`);
+          const targetPin = pinPositions.get(`${compId}_${pinId}`);
+          if (sourcePin && targetPin) {
+            const connectedGraph = buildCircuitGraph(elements, [...wires, newWire]);
+            const newNode = connectedGraph.pinToNode.get(`${newWire.fromCompId}_${newWire.fromPinId}`);
+            const foreignRoutes = wireGeometries.filter(geometry =>
+              connectedGraph.pinToNode.get(`${geometry.wire.fromCompId}_${geometry.wire.fromPinId}`) !== newNode)
+              .map(geometry => geometry.points);
+            const offsets = [0, gridUnits, -gridUnits, gridUnits * 2, -gridUnits * 2, gridUnits * 3, -gridUnits * 3];
+            const route = newWire.routeMode === 'direct'
+              ? simplifyPoints([sourcePin, ...(newWire.waypoints ?? []), targetPin])
+              : newWire.manual
+              ? buildStoredWireRoute(sourcePin, targetPin, newWire.waypoints ?? [],
+                { x: sourcePin.relX, y: sourcePin.relY }, { x: targetPin.relX, y: targetPin.relY },
+                sourcePin.elType, targetPin.elType, gridUnits)
+              : offsets.map(offset => computeOrthogonalWirePoints(sourcePin, targetPin,
+                { x: sourcePin.relX, y: sourcePin.relY }, { x: targetPin.relX, y: targetPin.relY },
+                sourcePin.elType, targetPin.elType, offset, gridUnits))
+                .reduce((best, candidate) => overlappingLength(candidate, foreignRoutes) < overlappingLength(best, foreignRoutes)
+                  ? candidate : best);
+            try {
+              const connected = materializeWireCrossings(elements, [...wires, newWire],
+                [...wireGeometries, { wire: newWire, points: route }], newWire.id);
+              if (connected.elements !== elements) onElementsChange(connected.elements);
+              onWiresChange(connected.wires);
+            } catch (error) {
+              window.alert(error instanceof Error ? error.message : 'Не удалось создать провод.');
+            }
+          } else onWiresChange([...wires, newWire]);
+        } else onWiresChange([...wires, newWire]);
       }
 
       setWiringFrom(null);
@@ -1977,8 +2098,8 @@ export function SchematicEditor({
         <div className="relative z-20 flex min-w-0 flex-1 basis-[760px] items-center gap-1.5 flex-wrap">
           {/* Быстрый выбор по числу выводов. Колесо перебирает элементы группы. */}
           <div className="flex max-w-full flex-wrap items-center gap-0.5 bg-white border border-slate-300 rounded p-0.5 shadow-2xs">
-            {TERMINAL_GROUPS.map(group => {
-              const options = COMPONENT_CATALOG.filter(item => terminalGroupForType(item.type) === group.id);
+            {TERMINAL_GROUPS.filter(group => group.id === 'two').map(group => {
+              const options = PLACEMENT_CATALOG.filter(item => terminalGroupForType(item.type) === group.id);
               const type = quickTypes[group.id] ?? options[0]?.type;
               const definition = COMPONENT_CATALOG.find(item => item.type === type);
               return <div key={group.id} className={`flex shrink-0 items-center gap-0.5 rounded border p-0.5 ${paletteDragGroup === group.id ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-white'}`} title={`${group.label}: удерживайте ЛКМ и перенесите на схему; колесо меняет элемент`}>
@@ -1998,7 +2119,7 @@ export function SchematicEditor({
               type="button"
               onClick={() => setIsPaletteOpen(true)}
               className="shrink-0 whitespace-nowrap px-2 py-1 rounded text-2xs font-semibold flex items-center gap-1 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 cursor-pointer ml-0.5 transition-colors"
-              title="Открыть полную библиотеку компонентов (ОУ, логика, триггеры, трансформаторы и т.д.)"
+              title="Открыть библиотеку двухполюсников"
             >
               <Layers className="w-3 h-3 text-blue-600" />
               <span>Библиотека...</span>
@@ -2074,10 +2195,10 @@ export function SchematicEditor({
           </div>
 
           {/* Загрузка готовых схем из руководства */}
-          <div className="relative" onMouseEnter={() => setExamplesOpen(true)} onMouseLeave={() => setExamplesOpen(false)}>
+          <div className="relative" onMouseEnter={() => { setPendingComponentType(null); setPaletteDragGroup(null); setExamplesOpen(true); }} onMouseLeave={() => setExamplesOpen(false)}>
             <button
               type="button"
-              onClick={() => setExamplesOpen(true)}
+              onClick={() => { setPendingComponentType(null); setPaletteDragGroup(null); setExamplesOpen(true); }}
               aria-expanded={examplesOpen}
               className="px-2 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-medium flex items-center gap-1 shadow-2xs cursor-pointer"
               title="Открыть готовую схему NAPS"
@@ -2756,7 +2877,7 @@ export function SchematicEditor({
       {exportTarget && <div role="dialog" aria-modal="true" aria-label="Настройки печати и экспорта" className="fixed inset-0 z-[110] flex flex-col bg-slate-900/70 p-4">
         <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-3 rounded-t bg-white px-4 py-3 text-sm text-slate-800">
           <strong>Печать и экспорт</strong>
-          <label>Формат <select aria-label="Формат листа" value={printLayout.format} onChange={event => onPrintLayoutChange({ ...printLayout, format: event.target.value as PrintLayout['format'] })} className="rounded border border-slate-300 p-1"><option value="A4">A4</option><option value="A3">A3</option></select></label>
+          <label>Формат <select aria-label="Формат листа" value={printLayout.format} onChange={event => onPrintLayoutChange({ ...printLayout, format: event.target.value as PrintLayout['format'] })} className="rounded border border-slate-300 p-1"><option value="A4">A4</option><option value="A3">A3</option><option value="A2">A2</option><option value="A1">A1</option><option value="A0">A0</option></select></label>
           <label>Ориентация <select aria-label="Ориентация листа" value={printLayout.orientation} onChange={event => onPrintLayoutChange({ ...printLayout, orientation: event.target.value as PrintLayout['orientation'] })} className="rounded border border-slate-300 p-1"><option value="landscape">Альбомная</option><option value="portrait">Книжная</option></select></label>
           <label>Режим <select aria-label="Режим масштабирования печати" value={printMode} onChange={event => setPrintMode(event.target.value as 'actual' | 'fit')} className="rounded border border-slate-300 p-1"><option value="actual">Заданный масштаб</option><option value="fit">Вписать в страницу</option></select></label>
           {printMode === 'actual' && <label>Масштаб <select aria-label="Масштаб печати" value={requestedPrintScale} onChange={event => setRequestedPrintScale(Number(event.target.value))} className="rounded border border-slate-300 p-1"><option value={2}>2:1</option><option value={1}>1:1</option><option value={0.5}>1:2</option><option value={0.4}>1:2,5</option><option value={0.25}>1:4</option></select></label>}

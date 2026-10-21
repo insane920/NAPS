@@ -245,6 +245,12 @@ export const COMPONENT_CATALOG: ComponentDefinition[] = [
   },
 ];
 
+// The full catalog remains the source of metadata for old SCM documents and
+// calculations. The current placement UI deliberately exposes only the five
+// basic two-terminal families until their model variants are unified.
+export const PLACEMENT_TYPES: readonly ComponentType[] = ['V_DC', 'I_DC', 'R', 'C', 'L'];
+export const PLACEMENT_CATALOG = COMPONENT_CATALOG.filter(item => PLACEMENT_TYPES.includes(item.type));
+
 export const SUBTYPE_TABS = [
   { id: 'all', label: 'Все', icon: Layers },
   { id: 'two', label: 'Двухполюсники', icon: Radio },
@@ -270,7 +276,7 @@ export function ComponentPalette({ selectedType, onSelectType, className = '' }:
   const normalizedQuery = query.trim().toLocaleLowerCase('ru');
   const matchesQuery = (item: ComponentDefinition) =>
     `${item.name} ${item.code} ${item.type} ${item.description}`.toLocaleLowerCase('ru').includes(normalizedQuery);
-  const selectable = COMPONENT_CATALOG.filter(item => terminalGroupForType(item.type));
+  const selectable = PLACEMENT_CATALOG;
   const items = selectable.filter(item => (category === 'all' || (category === 'chips' ? item.type === 'CHIP' : terminalGroupForType(item.type) === category)) && matchesQuery(item));
   const focused = items.find(item => item.type === focusedType) || items[0];
   const activeCategory = SUBTYPE_TABS.find(tab => tab.id === category)!;
@@ -285,9 +291,9 @@ export function ComponentPalette({ selectedType, onSelectType, className = '' }:
       <div className="library-body">
         <nav className="library-categories" aria-label="Категории компонентов">
           <span className="library-eyebrow">КАТЕГОРИИ</span>
-          {SUBTYPE_TABS.map(tab => {
+          {SUBTYPE_TABS.filter(tab => tab.id === 'all' || tab.id === 'two').map(tab => {
             const Icon = tab.icon;
-            const count = selectable.filter(item => (tab.id === 'all' || (tab.id === 'chips' ? item.type === 'CHIP' : terminalGroupForType(item.type) === tab.id)) && matchesQuery(item)).length;
+            const count = selectable.filter(item => (tab.id === 'all' || terminalGroupForType(item.type) === tab.id) && matchesQuery(item)).length;
             return <button key={tab.id} aria-pressed={category === tab.id} onClick={() => setCategory(tab.id)}>
               <Icon size={16} /><span>{tab.label === 'Все' ? 'Все компоненты' : tab.label}</span><small>{count}</small>
             </button>;

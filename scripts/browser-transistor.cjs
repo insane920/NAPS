@@ -9,10 +9,14 @@ const fs = require('node:fs/promises');
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(process.env.NAPS_TEST_URL || 'http://127.0.0.1:3000/', { waitUntil: 'networkidle' });
-    await page.getByRole('combobox', { name: 'Трёхполюсники: выбрать элемент' }).selectOption('NPN');
-    const canvas = await page.locator('.schematic-editor div.relative.overflow-hidden.bg-white').last().boundingBox();
-    await page.mouse.click(canvas.x + 260, canvas.y + 180);
-    await page.keyboard.press('Escape');
+    const legacy = await page.evaluate(async () => {
+      const { exportToYamlScm } = await import('/src/utils/yamlScm.ts');
+      const { SAMPLE_CIRCUITS } = await import('/src/data/sampleCircuits.ts');
+      return exportToYamlScm([{ id: 'old-npn', type: 'NPN', name: 'VT1', x: 260, y: 180,
+        rotation: 0, value: 100, valueStr: '100', unit: '' }], [], SAMPLE_CIRCUITS[0].transient);
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: 'old-transistor.scm', mimeType: 'text/plain', buffer: Buffer.from(legacy) });
+    await page.getByText('old-transistor', { exact: true }).waitFor();
     const component = page.locator('#schematic-world > g[transform^="translate"]').first();
     assert.ok(await component.count(), 'NPN is placed from the three-terminal category');
     const center = await component.evaluate(group => {
@@ -31,6 +35,6 @@ const fs = require('node:fs/promises');
     assert.match(scm, /TransistorModel: "?small-signal"?/);
     assert.match(scm, /Model_betaForward: "?125"?/);
     assert.deepEqual(errors, []);
-    console.log('PASS: three-terminal transistor placement, properties, model selection, and SCM save.');
+    console.log('PASS: hidden legacy transistor loads, remains editable, and saves its model parameters.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

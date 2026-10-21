@@ -12,6 +12,7 @@ const fs = require('node:fs/promises');
     await page.getByRole('combobox', { name: 'Трёхполюсники: выбрать элемент' }).selectOption('NPN');
     const canvas = await page.locator('.schematic-editor div.relative.overflow-hidden.bg-white').last().boundingBox();
     await page.mouse.click(canvas.x + 260, canvas.y + 180);
+    await page.keyboard.press('Escape');
     const component = page.locator('#schematic-world > g[transform^="translate"]').first();
     assert.ok(await component.count(), 'NPN is placed from the three-terminal category');
     const center = await component.evaluate(group => {

@@ -55,6 +55,7 @@ async function worldPoint(page, x, y) {
 
     await placeResistor(260, 170);
     await placeResistor(560, 270);
+    await page.keyboard.press('Escape');
     assert.equal(await components.count(), 2);
     assert.equal(await page.getByRole('button', { name: 'Проводка', exact: true }).count(), 0, 'wiring has no mode switch');
 
@@ -94,6 +95,7 @@ async function worldPoint(page, x, y) {
     assert.equal(await wires.count(), 1, 'redo restores the completed connection without a stale preview');
 
     await placeResistor(780, 380);
+    await page.keyboard.press('Escape');
     await dragPinToPin(pin(0, 1), pin(2, 0));
     assert.equal(await wires.count(), 2, 'one terminal accepts multiple wires');
     await dragPinToPin(pin(0, 1), pin(1, 0));

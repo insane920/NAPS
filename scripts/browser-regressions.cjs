@@ -17,10 +17,12 @@ const fs = require('node:fs/promises');
       await page.getByRole('button', { name: 'Резистор' }).first().click();
       await page.mouse.click(canvas.x + x, canvas.y + 200);
     }
+    await page.keyboard.press('Escape');
     await page.locator('#schematic-world > g[transform^="translate"]').nth(1).click();
     await page.keyboard.press('Delete');
     await page.getByRole('button', { name: 'Резистор' }).first().click();
     await page.mouse.click(canvas.x + 820, canvas.y + 200);
+    await page.keyboard.press('Escape');
     const names = (await page.locator('#schematic-world text').allTextContents()).filter(text => /^R\d+$/.test(text));
     assert.deepEqual(names, ['R1', 'R3', 'R4'], 'new name must not reuse R3 after deleting R2');
 

@@ -5,6 +5,7 @@ import {
   getComponentPins,
   isAllowedWireSegment,
   moveFreeWireSegment,
+  moveSelectedElements,
   projectPointToWire,
   simplifyPoints,
   snapManualWirePoint,
@@ -73,6 +74,13 @@ const moved = sample.elements.map((element, index) => ({
   ...element, x: element.x - 400 + index * 20, y: element.y + 260, rotation: (element.rotation + 90) % 360,
 }));
 assert.deepEqual(topology(moved, sample.wires), original, 'movement and rotation do not change topology');
+const pair = sample.elements.slice(0, 2);
+const groupWire = { id: 'group-route', fromCompId: pair[0].id, fromPinId: '1', toCompId: pair[1].id, toPinId: '1', waypoints: [{ x: 120, y: 140 }, { x: 180, y: 140 }], manual: true };
+const translated = moveSelectedElements(pair, [groupWire], new Set(pair.map(element => element.id)), 40, 20);
+assert.deepEqual(translated.wires[0].waypoints, [{ x: 160, y: 160 }, { x: 220, y: 160 }], 'group move translates internal manual route');
+assert.deepEqual(topology(translated.elements, translated.wires), topology(pair, [groupWire]), 'group move preserves electrical endpoints');
+const partial = moveSelectedElements(pair, [groupWire], new Set([pair[0].id]), 40, 20);
+assert.deepEqual(partial.wires[0].waypoints, [{ x: 160, y: 160 }, { x: 180, y: 140 }], 'moving one endpoint keeps the distant manual bend');
 const restored = parseYamlScm(exportToYamlScm(moved, sample.wires, sample.transient));
 assert.deepEqual(topology(restored.elements, restored.wires), original, 'SCM round trip keeps topology');
 

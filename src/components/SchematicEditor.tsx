@@ -628,6 +628,29 @@ export function reanchorManualWires(wires: CircuitWire[], before: CircuitElement
   });
 }
 
+/** Keep electrical endpoints fixed while translating the geometry of a selected group. */
+export function moveSelectedElements(
+  elements: CircuitElement[], wires: CircuitWire[], selectedIds: ReadonlySet<string>, dx: number, dy: number,
+): { elements: CircuitElement[]; wires: CircuitWire[] } {
+  const moved = elements.map(element => selectedIds.has(element.id)
+    ? { ...element, x: element.x + dx, y: element.y + dy } : element);
+  const movedWires = wires.map(wire => {
+    if (!wire.waypoints?.length) return wire;
+    const fromMoved = selectedIds.has(wire.fromCompId);
+    const toMoved = selectedIds.has(wire.toCompId);
+    if (!fromMoved && !toMoved) return wire;
+    const waypoints = wire.waypoints.map(point => ({ ...point }));
+    if (fromMoved && toMoved) {
+      for (const point of waypoints) { point.x += dx; point.y += dy; }
+    } else {
+      const point = waypoints[fromMoved ? 0 : waypoints.length - 1];
+      point.x += dx; point.y += dy;
+    }
+    return { ...wire, waypoints };
+  });
+  return { elements: moved, wires: movedWires };
+}
+
 export function SchematicEditor({
   elements,
   wires,
@@ -652,6 +675,8 @@ export function SchematicEditor({
   onHoverStatus,
 }: SchematicEditorProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [marquee, setMarquee] = useState<{ start: Point; end: Point } | null>(null);
   const [shortcutSettingsOpen, setShortcutSettingsOpen] = useState(false);
   const [recordingShortcut, setRecordingShortcut] = useState<EditorShortcut | null>(null);
   const [shortcutMessage, setShortcutMessage] = useState('Нажмите сочетание и затем щёлкните по схеме, чтобы разместить элемент.');
@@ -664,6 +689,7 @@ export function SchematicEditor({
     pins: Array<{ compId: string; pinId: string; x: number; y: number; name: string }>;
   } | null>(null);
   const [copiedElement, setCopiedElement] = useState<CircuitElement | null>(null);
+  const [copiedGroup, setCopiedGroup] = useState<{ elements: CircuitElement[]; wires: CircuitWire[] } | null>(null);
   const [replacingId, setReplacingId] = useState<string | null>(null);
   const [selectedWireId, setSelectedWireId] = useState<string | null>(null);
   const [wireMode, setWireMode] = useState<'orthogonal' | 'direct'>('orthogonal');
@@ -743,6 +769,7 @@ export function SchematicEditor({
 
   // Перетаскивание элемента
   const [draggingElemId, setDraggingElemId] = useState<string | null>(null);
+  const groupDragIds = useRef<Set<string> | null>(null);
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const wireSegmentDrag = useRef<{ wireId: string; segmentIndex: number; points: Point[]; started: boolean } | null>(null);
 
@@ -752,6 +779,18 @@ export function SchematicEditor({
     const canvas = containerRef.current;
     if (!canvas) return;
     const onWheel = (event: WheelEvent) => {
+      if (pendingComponentType && !paletteDragGroup && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        const group = terminalGroupForType(pendingComponentType);
+        const variants = COMPONENT_CATALOG.filter(item => group && terminalGroupForType(item.type) === group);
+        if (variants.length > 1) {
+          const current = variants.findIndex(item => item.type === pendingComponentType);
+          const next = variants[(current + (event.deltaY > 0 ? 1 : variants.length - 1)) % variants.length].type;
+          setPendingComponentType(next);
+          setQuickTypes(types => group ? { ...types, [group]: next } : types);
+        }
+        return;
+      }
       if (event.buttons || (event.target instanceof Element && event.target.closest('[data-component-id]') && !event.ctrlKey && !event.metaKey)) return;
       event.preventDefault();
       const bounds = canvas.getBoundingClientRect();
@@ -762,9 +801,12 @@ export function SchematicEditor({
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', onWheel);
-  }, [zoom, pan]);
+  }, [zoom, pan, pendingComponentType, paletteDragGroup]);
   useEffect(() => {
     setSelectedId(null);
+    setSelectedIds([]);
+    setMarquee(null);
+    groupDragIds.current = null;
     setContextMenu(null);
     setOverlapChoice(null);
     setReplacingId(null);
@@ -839,6 +881,23 @@ export function SchematicEditor({
       onWiresChange(reanchorManualWires(wires, before, after));
     }
   }, [elements, wires, onElementsChange, onWiresChange]);
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const transformSelection = (transform: (element: CircuitElement) => CircuitElement) => {
+    if (!selectedSet.size) return;
+    const changed = elements.map(element => selectedSet.has(element.id) ? transform(element) : element);
+    let routes = wires;
+    for (let index = 0; index < elements.length; index++) {
+      if (changed[index] !== elements[index]) routes = reanchorManualWires(routes, elements[index], changed[index]);
+    }
+    onElementsChange(changed);
+    if (routes !== wires) onWiresChange(routes);
+  };
+  const deleteSelection = () => {
+    if (!selectedSet.size) return;
+    onElementsChange(elements.filter(element => !selectedSet.has(element.id)));
+    onWiresChange(wires.filter(wire => !selectedSet.has(wire.fromCompId) && !selectedSet.has(wire.toCompId)));
+    setSelectedIds([]); setSelectedId(null);
+  };
 
   // Преобразование координат экрана в координаты схемы
   const screenToWorld = useCallback(
@@ -869,9 +928,42 @@ export function SchematicEditor({
         return;
       }
 
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === 'KeyC' && selectedId) {
-        const selected = elements.find(element => element.id === selectedId);
-        if (selected) { e.preventDefault(); setCopiedElement({ ...selected }); }
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === 'KeyC' && selectedSet.size) {
+        e.preventDefault();
+        if (selectedSet.size > 1) {
+          setCopiedGroup({
+            elements: elements.filter(element => selectedSet.has(element.id)),
+            wires: wires.filter(wire => selectedSet.has(wire.fromCompId) && selectedSet.has(wire.toCompId)),
+          });
+          setCopiedElement(null);
+        } else {
+          setCopiedElement(elements.find(element => selectedSet.has(element.id)) ?? null);
+          setCopiedGroup(null);
+        }
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === 'KeyV' && copiedGroup) {
+        e.preventDefault();
+        const ids = new Map<string, string>();
+        const usedNames = new Set(elements.map(element => element.name.toLocaleUpperCase()));
+        const copies = copiedGroup.elements.map(element => {
+          const id = `elem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          ids.set(element.id, id);
+          const base = `${element.name}_копия`;
+          let name = base, suffix = 2;
+          while (usedNames.has(name.toLocaleUpperCase())) name = `${base}${suffix++}`;
+          usedNames.add(name.toLocaleUpperCase());
+          return { ...element, id, name, x: snapToGrid(element.x + 40), y: snapToGrid(element.y + 40) };
+        });
+        const copiedWires = copiedGroup.wires.map(wire => ({ ...wire,
+          id: `wire_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          fromCompId: ids.get(wire.fromCompId)!, toCompId: ids.get(wire.toCompId)!,
+          waypoints: wire.waypoints?.map(point => ({ x: point.x + 40, y: point.y + 40 })),
+        }));
+        onElementsChange([...elements, ...copies]);
+        onWiresChange([...wires, ...copiedWires]);
+        setSelectedIds(copies.map(element => element.id));
+        setSelectedId(copies.at(-1)?.id ?? null);
         return;
       }
       if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === 'KeyV' && copiedElement) {
@@ -883,6 +975,7 @@ export function SchematicEditor({
           name, x: snapToGrid(copiedElement.x + 40), y: snapToGrid(copiedElement.y + 40) };
         onElementsChange([...elements, copy]);
         setSelectedId(copy.id);
+        setSelectedIds([copy.id]);
         onSelectElement(copy);
         return;
       }
@@ -895,8 +988,7 @@ export function SchematicEditor({
           return;
         }
         if (matchedAction === 'rotate') {
-          const selected = elements.find(element => element.id === selectedId);
-          if (selected) changeElementGeometry(selected, { ...selected, rotation: ((selected.rotation || 0) + (e.shiftKey ? 45 : 90)) % 360 });
+          transformSelection(element => ({ ...element, rotation: ((element.rotation || 0) + (e.shiftKey ? 45 : 90)) % 360 }));
           return;
         }
         const type = matchedAction.slice('component:'.length) as ComponentType;
@@ -919,16 +1011,19 @@ export function SchematicEditor({
         setWiringWaypoints([]);
         setPendingComponentType(null);
         setSelectedId(null);
+        setSelectedIds([]);
         setSelectedWireId(null);
       } else if (e.key === 'Enter' && selectedId) {
         const selected = elements.find(element => element.id === selectedId);
         if (selected) { e.preventDefault(); onOpenProperties(selected); }
-      } else if (selectedId && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+      } else if (selectedSet.size && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
         e.preventDefault();
         const dx = e.key === 'ArrowLeft' ? -gridUnits : e.key === 'ArrowRight' ? gridUnits : 0;
         const dy = e.key === 'ArrowUp' ? -gridUnits : e.key === 'ArrowDown' ? gridUnits : 0;
-        const selected = elements.find(element => element.id === selectedId);
-        if (selected) changeElementGeometry(selected, { ...selected, x: selected.x + dx, y: selected.y + dy });
+        if (selectedSet.size > 1) {
+          const moved = moveSelectedElements(elements, wires, selectedSet, dx, dy);
+          onElementsChange(moved.elements); onWiresChange(moved.wires);
+        } else transformSelection(element => ({ ...element, x: element.x + dx, y: element.y + dy }));
       } else if ((e.key === 'f' || e.key === 'а' || e.key === 'F') && selectedId) {
         // Отразить слева направо (стр. 4)
         e.preventDefault();
@@ -940,13 +1035,9 @@ export function SchematicEditor({
         const selected = elements.find(element => element.id === selectedId);
         if (selected) changeElementGeometry(selected, { ...selected, flipV: !selected.flipV });
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selectedId) {
+        if (selectedSet.size) {
           e.preventDefault();
-          onElementsChange(elements.filter((el) => el.id !== selectedId));
-          onWiresChange(
-            wires.filter((w) => w.fromCompId !== selectedId && w.toCompId !== selectedId)
-          );
-          setSelectedId(null);
+          deleteSelection();
         } else if (selectedWireId) {
           e.preventDefault();
           onWiresChange(wires.filter((w) => w.id !== selectedWireId));
@@ -961,7 +1052,7 @@ export function SchematicEditor({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedId, selectedWireId, copiedElement, elements, wires, onElementsChange, onWiresChange, changeElementGeometry, onOpenProperties, onSelectElement, onRunSimulation, shortcutsEnabled, isPaletteOpen, shortcutSettingsOpen, editorShortcuts]);
+    }, [selectedId, selectedIds, selectedSet, selectedWireId, copiedElement, copiedGroup, elements, wires, onElementsChange, onWiresChange, changeElementGeometry, onOpenProperties, onSelectElement, onRunSimulation, shortcutsEnabled, isPaletteOpen, shortcutSettingsOpen, editorShortcuts]);
 
   // Добавление нового компонента на схему
   const handlePlaceNewComponent = (type: ComponentType, worldX: number, worldY: number, replaceId = replacingId) => {
@@ -1151,11 +1242,13 @@ export function SchematicEditor({
       ));
       setReplacingId(null);
       setSelectedId(replacing.id);
+      setSelectedIds([replacing.id]);
     } else {
       onElementsChange([...elements, newElem]);
     }
     setSelectedId(newElem.id);
-    setPendingComponentType(null);
+    setSelectedIds([newElem.id]);
+    if (replacing) setPendingComponentType(null);
   };
 
   // Координаты всех выводов компонентов схемы
@@ -1359,6 +1452,7 @@ export function SchematicEditor({
       setWiringWaypoints([]);
       wirePointerDown.current = false;
       setSelectedId(junctionId);
+      setSelectedIds([junctionId]);
       setSelectedWireId(null);
       setHoveredWirePoint(null);
       setHoveredPin(null);
@@ -1366,6 +1460,7 @@ export function SchematicEditor({
       onElementsChange([...elements, newJunction]);
       onWiresChange([...remainingWires, wireA, wireB]);
       setSelectedId(junctionId);
+      setSelectedIds([junctionId]);
       setSelectedWireId(null);
       setHoveredWirePoint(null);
       setHoveredPin(null);
@@ -1429,7 +1524,9 @@ export function SchematicEditor({
     }
 
     setSelectedId(null);
+    setSelectedIds([]);
     setSelectedWireId(null);
+    if (e.button === 0) setMarquee({ start: { x: pos.rawX, y: pos.rawY }, end: { x: pos.rawX, y: pos.rawY } });
   };
 
   const handleCanvasMouseMove = (e: React.MouseEvent) => {
@@ -1442,6 +1539,11 @@ export function SchematicEditor({
     }
 
     const pos = screenToWorld(e.clientX, e.clientY);
+
+    if (marquee) {
+      setMarquee(current => current && { ...current, end: { x: pos.rawX, y: pos.rawY } });
+      return;
+    }
 
     if (wireSegmentDrag.current) {
       if (!(e.buttons & 1)) return;
@@ -1475,7 +1577,13 @@ export function SchematicEditor({
       const targetY = snapToGrid(pos.rawY - dragOffset.y);
       const dragged = elements.find(element => element.id === draggingElemId);
       if (dragged && (dragged.x !== targetX || dragged.y !== targetY)) {
-        changeElementGeometry(dragged, { ...dragged, x: targetX, y: targetY });
+        const group = groupDragIds.current;
+        if (group && group.size > 1) {
+          const dx = targetX - dragged.x, dy = targetY - dragged.y;
+          const moved = moveSelectedElements(elements, wires, group, dx, dy);
+          onElementsChange(moved.elements);
+          onWiresChange(moved.wires);
+        } else changeElementGeometry(dragged, { ...dragged, x: targetX, y: targetY });
       }
       return;
     }
@@ -1532,6 +1640,19 @@ export function SchematicEditor({
   };
 
   const handleCanvasMouseUp = (event?: React.MouseEvent) => {
+    if (marquee) {
+      const cursor = event ? screenToWorld(event.clientX, event.clientY) : null;
+      const end = cursor ? { x: cursor.rawX, y: cursor.rawY } : marquee.end;
+      const minX = Math.min(marquee.start.x, end.x);
+      const maxX = Math.max(marquee.start.x, end.x);
+      const minY = Math.min(marquee.start.y, end.y);
+      const maxY = Math.max(marquee.start.y, end.y);
+      if (Math.hypot(maxX - minX, maxY - minY) > 4 / zoom) {
+        const ids = elements.filter(element => element.x >= minX && element.x <= maxX && element.y >= minY && element.y <= maxY).map(element => element.id);
+        setSelectedIds(ids); setSelectedId(ids[0] ?? null);
+      }
+      setMarquee(null);
+    }
     if (event && event.button === 0 && paletteDragGroup && pendingComponentType) {
       const pos = screenToWorld(event.clientX, event.clientY);
       handlePlaceNewComponent(pendingComponentType, pos.x, pos.y);
@@ -1549,6 +1670,7 @@ export function SchematicEditor({
     }
     setIsPanning(false);
     setDraggingElemId(null);
+    groupDragIds.current = null;
   };
 
   // Нажатие на вывод элемента (Pin)
@@ -1633,7 +1755,7 @@ export function SchematicEditor({
 
   // Нажатие на элемент
   const handleElementMouseDown = (e: React.MouseEvent, el: CircuitElement) => {
-    if (e.button === 1 || e.shiftKey) return;
+    if (e.button === 1) return;
     e.stopPropagation();
     if (e.button === 2) {
       // Правая кнопка мыши — отмена проводки и инструмента
@@ -1648,11 +1770,20 @@ export function SchematicEditor({
     const pos = screenToWorld(e.clientX, e.clientY);
 
     if (pendingComponentType) return;
+    if (e.shiftKey || e.ctrlKey || e.metaKey) {
+      const next = selectedIds.includes(el.id) ? selectedIds.filter(id => id !== el.id) : [...selectedIds, el.id];
+      setSelectedIds(next);
+      setSelectedId(next.at(-1) ?? null);
+      setSelectedWireId(null);
+      return;
+    }
     if (el.type === 'JUNCTION' && (wiringFromRef.current ?? wiringFrom)) {
       handlePinClick(e, el.id, '1', el.x, el.y);
       return;
     }
     if (!(wiringFromRef.current ?? wiringFrom)) {
+      const ids = selectedIds.includes(el.id) ? selectedIds : [el.id];
+      setSelectedIds(ids);
       setSelectedId(el.id);
       setSelectedWireId(null);
       onSelectElement(el);
@@ -1660,6 +1791,7 @@ export function SchematicEditor({
       setWiringCursor(null);
       onBeginContinuousEdit?.();
       setDraggingElemId(el.id);
+      groupDragIds.current = new Set(ids);
       setDragOffset({ x: pos.rawX - el.x, y: pos.rawY - el.y });
       return;
     }
@@ -1702,6 +1834,7 @@ export function SchematicEditor({
 
     // 3. Стандартный выбор и перетаскивание элемента
     setSelectedId(el.id);
+    setSelectedIds([el.id]);
     setSelectedWireId(null);
     onSelectElement(el);
 
@@ -1728,11 +1861,13 @@ export function SchematicEditor({
       const copy = { ...source, id: `elem_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, name, x: snapToGrid(el.x + 40), y: snapToGrid(el.y + 40) };
       onElementsChange([...elements, copy]);
       setSelectedId(copy.id);
+      setSelectedIds([copy.id]);
     }
     if (action === 'delete') {
       onElementsChange(elements.filter(item => item.id !== id));
       onWiresChange(wires.filter(w => w.fromCompId !== id && w.toCompId !== id));
       setSelectedId(null);
+      setSelectedIds([]);
     }
     if (['cw', 'ccw', 'cw45', 'ccw45'].includes(action)) {
       const delta = action === 'cw' ? 90 : action === 'ccw' ? 270 : action === 'cw45' ? 45 : 315;
@@ -1880,7 +2015,7 @@ export function SchematicEditor({
             onClick={() => {
               if (selectedId) {
                 const selected = elements.find(element => element.id === selectedId);
-                if (selected) changeElementGeometry(selected, { ...selected, rotation: ((selected.rotation || 0) + 90) % 360 });
+                if (selected) transformSelection(element => ({ ...element, rotation: ((element.rotation || 0) + 90) % 360 }));
               }
             }}
             className="p-1 bg-white hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-white text-slate-700 border border-slate-300 rounded text-xs shadow-2xs cursor-pointer"
@@ -1888,7 +2023,7 @@ export function SchematicEditor({
           >
             <RotateCw className="w-3.5 h-3.5" />
           </button>
-          <button type="button" disabled={!selectedId} onClick={() => { const selected = elements.find(element => element.id === selectedId); if (selected) changeElementGeometry(selected, { ...selected, rotation: ((selected.rotation || 0) + 45) % 360 }); }} className="px-2 py-1 bg-white hover:bg-slate-100 disabled:opacity-40 text-blue-700 border border-blue-300 rounded text-xs font-bold shadow-2xs" title="Повернуть выбранный элемент на 45° (Shift+R)">45°</button>
+          <button type="button" disabled={!selectedId} onClick={() => transformSelection(element => ({ ...element, rotation: ((element.rotation || 0) + 45) % 360 }))} className="px-2 py-1 bg-white hover:bg-slate-100 disabled:opacity-40 text-blue-700 border border-blue-300 rounded text-xs font-bold shadow-2xs" title="Повернуть выбранный элемент на 45° (Shift+R)">45°</button>
 
           <label className="flex items-center gap-1 text-xs text-slate-600" title="Временно исключить двухвыводный элемент из расчёта">
             <span>В расчёте</span>
@@ -1911,11 +2046,7 @@ export function SchematicEditor({
             disabled={!selectedId && !selectedWireId}
             onClick={() => {
               if (selectedId) {
-                onElementsChange(elements.filter((el) => el.id !== selectedId));
-                onWiresChange(
-                  wires.filter((w) => w.fromCompId !== selectedId && w.toCompId !== selectedId)
-                );
-                setSelectedId(null);
+                deleteSelection();
               } else if (selectedWireId) {
                 onWiresChange(wires.filter((w) => w.id !== selectedWireId));
                 setSelectedWireId(null);
@@ -2062,7 +2193,7 @@ export function SchematicEditor({
         {pendingComponentType && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 bg-blue-600 text-white px-4 py-1.5 rounded-full shadow-lg text-xs font-semibold flex items-center gap-2 animate-in fade-in slide-in-from-top-2 duration-150">
             <span className="w-2 h-2 rounded-full bg-amber-300 animate-ping" />
-            <span>Кликните на схему для размещения компонента</span>
+            <span>Размещайте элементы кликами; колесо — вариант, Esc или ПКМ — выход</span>
             <button
               type="button"
               onClick={() => setPendingComponentType(null)}
@@ -2220,6 +2351,10 @@ export function SchematicEditor({
 
           {/* Группа элементов схемы с масштабированием и панорамированием */}
           <g id="schematic-world" transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`} style={{ fontFamily: 'GOST type A, GOST 2.304, Arial Narrow, sans-serif' }}>
+            {marquee && <rect data-export-hide="true" data-selection-marquee="true"
+              x={Math.min(marquee.start.x, marquee.end.x)} y={Math.min(marquee.start.y, marquee.end.y)}
+              width={Math.abs(marquee.end.x - marquee.start.x)} height={Math.abs(marquee.end.y - marquee.start.y)}
+              fill="#2563eb" fillOpacity={0.1} stroke="#2563eb" strokeDasharray="4 3" pointerEvents="none" />}
             {/* ПРОВОДА СХЕМЫ (WIRES) С ОРТОГОНАЛЬНОЙ ТРАССИРОВКОЙ И T-ОТВЕТВЛЕНИЯМИ */}
             {useMemo(() => wireGeometries.map((wg) => {
               const { wire, pathD } = wg;
@@ -2247,8 +2382,9 @@ export function SchematicEditor({
                     }
                     setSelectedWireId(wire.id);
                     setSelectedId(null);
+                    setSelectedIds([]);
                   }}
-                  onContextMenu={event => { event.preventDefault(); event.stopPropagation(); setContextMenu(null); setSelectedWireId(wire.id); setSelectedId(null); setWireContextMenu({ id: wire.id, x: event.clientX, y: event.clientY }); }}
+                  onContextMenu={event => { event.preventDefault(); event.stopPropagation(); setContextMenu(null); setSelectedWireId(wire.id); setSelectedId(null); setSelectedIds([]); setWireContextMenu({ id: wire.id, x: event.clientX, y: event.clientY }); }}
                   onMouseUp={(e) => {
                     if (!wirePointerDown.current || !wiringFrom) return;
                     e.stopPropagation();
@@ -2355,7 +2491,7 @@ export function SchematicEditor({
 
             {/* ЭЛЕМЕНТЫ СХЕМЫ (COMPONENTS) */}
             {useMemo(() => elements.map((el) => {
-              const isSelected = selectedId === el.id;
+              const isSelected = selectedIds.includes(el.id);
               const pins = getComponentPins(el);
               const valueLabel = getComponentValueLabel(el);
               const labelLayout = sceneLabels.get(el.id) ?? getComponentLabelLayout({
@@ -2396,6 +2532,7 @@ export function SchematicEditor({
                   onContextMenu={(e) => {
                     e.preventDefault(); e.stopPropagation();
                     setSelectedId(el.id);
+                    setSelectedIds([el.id]);
                     setSelectedWireId(null);
                     setContextMenu({ id: el.id, x: e.clientX, y: e.clientY });
                   }}
@@ -2543,7 +2680,7 @@ export function SchematicEditor({
 
                 </g>
               );
-            }), [sceneLabels, elements, wires, selectedId, wiringFrom, pendingComponentType, zoom, showElementNames, showElementValues, showNodeNumbers, circuitGraph, connectedPinKeys, copiedElement, gridUnits, wireMode, pan, draggingElemId, dragOffset, wiringWaypoints, onHoverStatus, onWiresChange, onElementsChange, onOpenProperties, onBeginContinuousEdit, onEndContinuousEdit])}
+            }), [sceneLabels, elements, wires, selectedId, selectedIds, wiringFrom, pendingComponentType, zoom, showElementNames, showElementValues, showNodeNumbers, circuitGraph, connectedPinKeys, copiedElement, gridUnits, wireMode, pan, draggingElemId, dragOffset, wiringWaypoints, onHoverStatus, onWiresChange, onElementsChange, onOpenProperties, onBeginContinuousEdit, onEndContinuousEdit])}
             {hoveredPin && (wiringFrom?.compId !== hoveredPin.compId || wiringFrom.pinId !== hoveredPin.pinId) && (() => {
               const pin = pinPositions.get(`${hoveredPin.compId}_${hoveredPin.pinId}`);
               return pin && <g data-export-hide="true" transform={`translate(${pin.x}, ${pin.y})`} pointerEvents="none">

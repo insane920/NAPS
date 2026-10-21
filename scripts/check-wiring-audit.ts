@@ -143,6 +143,47 @@ const overlap = materializeWireCrossings(crossingElements, crossingWires, [
 assert.equal(overlap.elements.filter(element => element.type === 'JUNCTION').length, 1, 'overlapping conductors create a junction');
 assert.equal(buildCircuitGraph(overlap.elements, overlap.wires).pinToNode.get('cross_0_1'),
   buildCircuitGraph(overlap.elements, overlap.wires).pinToNode.get('cross_2_1'), 'overlapping conductors unite their nets');
+const thirdWire = { id: 'diagonal', fromCompId: 'cross_4', fromPinId: '1', toCompId: 'cross_5', toPinId: '1', routeMode: 'direct' as const };
+const threeElements = [...crossingElements, ...[4, 5].map(index => ({ ...crossingElements[0], id: `cross_${index}`, name: `R${index + 1}` }))];
+const threeRouted = [
+  { wire: crossingWires[0], points: [{ x: -100, y: 0 }, { x: 100, y: 0 }] },
+  { wire: crossingWires[1], points: [{ x: 0, y: -100 }, { x: 0, y: 100 }] },
+  { wire: thirdWire, points: [{ x: -100, y: -100 }, { x: 100, y: 100 }] },
+];
+const tripleCross = normalizeCrossingTopology(threeElements, [...crossingWires, thirdWire], threeRouted, 'connect');
+assert.equal(tripleCross.elements.filter(element => element.autoCrossing).length, 1,
+  'three routes meeting at one position share a single visible junction');
+assert.equal(buildCircuitGraph(tripleCross.elements, tripleCross.wires).pinToNode.get('cross_0_1'),
+  buildCircuitGraph(tripleCross.elements, tripleCross.wires).pinToNode.get('cross_4_1'),
+  'three conductors meeting at one location become one electrical net');
+const tripleRoundTrip = parseYamlScm(exportToYamlScm(tripleCross.elements, tripleCross.wires, sample.transient,
+  undefined, undefined, 'current', 'connect'));
+assert.equal(tripleRoundTrip.elements.filter(element => element.autoCrossing).length, 1,
+  'a shared three-wire junction survives SCM round-trip');
+const cutFragment = tripleCross.wires.find(wire => wire.fromCompId === 'cross_4' || wire.toCompId === 'cross_4')!;
+const cutWires = tripleCross.wires.filter(wire => wire.id !== cutFragment.id);
+assert.notEqual(buildCircuitGraph(tripleCross.elements, cutWires).pinToNode.get('cross_4_1'),
+  buildCircuitGraph(tripleCross.elements, cutWires).pinToNode.get('cross_0_1'),
+  'removing one branch fragment disconnects only its removed endpoint');
+const multipleCrossings = normalizeCrossingTopology(threeElements, [...crossingWires, thirdWire], [
+  { wire: crossingWires[0], points: [{ x: -100, y: 0 }, { x: 100, y: 0 }] },
+  { wire: crossingWires[1], points: [{ x: -50, y: -100 }, { x: -50, y: 100 }] },
+  { wire: thirdWire, points: [{ x: 50, y: -100 }, { x: 50, y: 100 }] },
+], 'connect');
+assert.equal(multipleCrossings.elements.filter(element => element.autoCrossing).length, 2,
+  'one conductor crossing two separate nets creates two distinct junctions');
+const originalEnds = new Map<string, { x: number; y: number }>([
+  ['cross_0', { x: -100, y: 0 }], ['cross_1', { x: 100, y: 0 }],
+  ['cross_2', { x: -50, y: -100 }], ['cross_3', { x: -50, y: 100 }],
+  ['cross_4', { x: 50, y: -100 }], ['cross_5', { x: 50, y: 100 }],
+]);
+const multiroutes = multipleCrossings.wires.map(wire => ({ wire, points: [
+  originalEnds.get(wire.fromCompId) ?? multipleCrossings.elements.find(element => element.id === wire.fromCompId)!,
+  ...(wire.waypoints ?? []),
+  originalEnds.get(wire.toCompId) ?? multipleCrossings.elements.find(element => element.id === wire.toCompId)!,
+] }));
+const multipleCollapsed = collapseAutomaticCrossings(multipleCrossings.elements, multipleCrossings.wires, multiroutes);
+assert.equal(multipleCollapsed.wires.length, 3, 'multi-crossing conductors reconstruct without losing endpoints');
 for (const [shape, horizontal, vertical] of [
   ['X', [{ x: -100, y: 0 }, { x: 100, y: 0 }], [{ x: 0, y: -100 }, { x: 0, y: 100 }]],
   ['T', [{ x: -100, y: 0 }, { x: 100, y: 0 }], [{ x: 0, y: -100 }, { x: 0, y: 0 }]],

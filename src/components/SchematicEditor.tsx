@@ -350,10 +350,13 @@ export function materializeWireCrossings(
     const { first, second, point, firstSegment, secondSegment } = crossing;
     const firstParts = splitWireRoute(routes.get(first.id)!, firstSegment, point);
     const secondParts = splitWireRoute(routes.get(second.id)!, secondSegment, point);
-    const junctionId = `junction_cross_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-    nextElements = [...nextElements, { id: junctionId, type: 'JUNCTION', name: nextComponentName(nextElements, 'N'),
+    const existingJunction = nextElements.find(element => element.type === 'JUNCTION' && samePoint(element, point));
+    const junctionId = existingJunction?.id ?? `junction_cross_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    if (!existingJunction) nextElements = [...nextElements, { id: junctionId, type: 'JUNCTION', name: nextComponentName(nextElements, 'N'),
       x: point.x, y: point.y, rotation: 0, value: 0, valueStr: '', unit: '', autoCrossing: true }];
     const split = (wire: CircuitWire, parts: { first: Point[]; second: Point[] }) => {
+      if ((wire.fromCompId === junctionId && samePoint(routes.get(wire.id)![0], point)) ||
+          (wire.toCompId === junctionId && samePoint(routes.get(wire.id)!.at(-1)!, point))) return [wire];
       const before: CircuitWire = { ...wire, id: `${wire.id}_a_${junctionId}`, toCompId: junctionId, toPinId: '1',
         routeMode: 'direct', manual: true, waypoints: parts.first.slice(1, -1), originWireId: wire.originWireId ?? wire.id };
       const after: CircuitWire = { ...wire, id: `${wire.id}_b_${junctionId}`, fromCompId: junctionId, fromPinId: '1',
@@ -958,6 +961,7 @@ export function SchematicEditor({
   const geometryDragChanged = useRef(false);
   const normalizedThisDrag = useRef(false);
   const normalizeReleasedDrag = useRef<() => void>(() => {});
+  const geometryActionPending = useRef(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -1063,14 +1067,16 @@ export function SchematicEditor({
   // Снэп к сетке
   const snapToGrid = (val: number) => Math.round(val / gridUnits) * gridUnits;
   const changeElementGeometry = useCallback((before: CircuitElement, after: CircuitElement) => {
+    if (crossingMode === 'connect') { geometryActionPending.current = true; onBeginContinuousEdit?.(); }
     onElementsChange(elements.map(element => element.id === before.id ? after : element));
     if (wires.some(wire => wire.waypoints?.length && (wire.fromCompId === before.id || wire.toCompId === before.id))) {
       onWiresChange(reanchorManualWires(wires, before, after));
     }
-  }, [elements, wires, onElementsChange, onWiresChange]);
+  }, [elements, wires, crossingMode, onBeginContinuousEdit, onElementsChange, onWiresChange]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const transformSelection = (transform: (element: CircuitElement) => CircuitElement) => {
     if (!selectedSet.size) return;
+    if (crossingMode === 'connect') { geometryActionPending.current = true; onBeginContinuousEdit?.(); }
     const changed = elements.map(element => selectedSet.has(element.id) ? transform(element) : element);
     let routes = wires;
     for (let index = 0; index < elements.length; index++) {
@@ -1208,6 +1214,7 @@ export function SchematicEditor({
         const dx = e.key === 'ArrowLeft' ? -gridUnits : e.key === 'ArrowRight' ? gridUnits : 0;
         const dy = e.key === 'ArrowUp' ? -gridUnits : e.key === 'ArrowDown' ? gridUnits : 0;
         if (selectedSet.size > 1) {
+          if (crossingMode === 'connect') { geometryActionPending.current = true; onBeginContinuousEdit?.(); }
           const moved = moveSelectedElements(elements, wires, selectedSet, dx, dy);
           onElementsChange(moved.elements); onWiresChange(moved.wires);
         } else transformSelection(element => ({ ...element, x: element.x + dx, y: element.y + dy }));
@@ -1523,6 +1530,19 @@ export function SchematicEditor({
     }
     return geometries;
   }, [wires, pinPositions, circuitGraph, gridUnits]);
+  useEffect(() => {
+    if (!geometryActionPending.current) return;
+    geometryActionPending.current = false;
+    try {
+      const normalized = normalizeCrossingTopology(elements, wires, wireGeometries, crossingMode);
+      if (normalized.elements !== elements) onElementsChange(normalized.elements);
+      if (normalized.wires !== wires) onWiresChange(normalized.wires);
+    } catch (cause) {
+      window.alert(cause instanceof Error ? cause.message : 'Не удалось обновить пересечения после поворота.');
+    } finally {
+      onEndContinuousEdit?.();
+    }
+  }, [elements, wires, wireGeometries, crossingMode, onElementsChange, onWiresChange, onEndContinuousEdit]);
   normalizeReleasedDrag.current = () => {
     if (normalizedThisDrag.current || crossingMode !== 'connect' ||
         !(geometryDragChanged.current || wireSegmentDrag.current?.started)) return;
@@ -1804,6 +1824,7 @@ export function SchematicEditor({
       const targetY = snapToGrid(pos.rawY - dragOffset.y);
       const dragged = elements.find(element => element.id === draggingElemId);
       if (dragged && (dragged.x !== targetX || dragged.y !== targetY)) {
+        if (!geometryDragChanged.current) onBeginContinuousEdit?.();
         geometryDragChanged.current = true;
         const base = crossingMode === 'connect' && dragged.type !== 'JUNCTION'
           ? collapseAutomaticCrossings(elements, wires, wireGeometries)
@@ -2058,7 +2079,6 @@ export function SchematicEditor({
       onSelectElement(el);
       setWiringFrom(null);
       setWiringCursor(null);
-      onBeginContinuousEdit?.();
       geometryDragChanged.current = false;
       normalizedThisDrag.current = false;
       setDraggingElemId(el.id);

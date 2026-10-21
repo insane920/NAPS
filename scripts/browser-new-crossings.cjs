@@ -75,7 +75,27 @@ const center = locator => locator.evaluate(circle => {
     assert.equal(await page.locator('[data-component-id]').count(), 5, 'undo restores the crossing after segment edit');
     await page.keyboard.press('Control+y');
     assert.equal(await page.locator('[data-component-id]').count(), 4, 'redo removes the crossing again');
+    await page.keyboard.press('Control+z');
+    const rotated = await pin(2, 1).locator('..').evaluate(group => {
+      const point = group.ownerSVGElement.createSVGPoint(); point.x = 0; point.y = 0;
+      const screen = point.matrixTransform(group.getScreenCTM());
+      return { x: screen.x, y: screen.y };
+    });
+    await page.mouse.click(rotated.x, rotated.y);
+    await page.keyboard.press('r');
+    const [rotatedDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
+    const rotatedScm = await fs.readFile(await rotatedDownload.path(), 'utf8');
+    const rotationResult = await page.evaluate(async scm => {
+      const { parseYamlScm } = await import('/src/utils/yamlScm.ts');
+      const { buildCircuitGraph } = await import('/src/math/circuitSolver.ts');
+      const parsed = parseYamlScm(scm);
+      const ids = Object.fromEntries(parsed.elements.map(item => [item.name, item.id]));
+      const graph = buildCircuitGraph(parsed.elements, parsed.wires);
+      return { junctions: parsed.elements.filter(item => item.autoCrossing).length,
+        joined: graph.pinToNode.get(`${ids.R1}_2`) === graph.pinToNode.get(`${ids.R3}_2`) };
+    }, rotatedScm);
+    assert.deepEqual(rotationResult, { junctions: 1, joined: true }, 'rotation preserves the connected junction');
     assert.deepEqual(errors, []);
-    console.log('PASS: SCM 8 crossing creation, segment edit, disconnection, save and undo/redo.');
+    console.log('PASS: SCM 8 crossing creation, segment edit, rotation, save and undo/redo.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

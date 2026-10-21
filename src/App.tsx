@@ -11,6 +11,7 @@ import { useModalFocus } from './hooks/useModalFocus';
 import { NapsLogo } from './components/NapsLogo';
 import { version as appVersion } from '../package.json';
 import { DEFAULT_PRINT_LAYOUT, type PrintLayout } from './utils/printLayout';
+import { readRecovery, writeRecovery, discardRecovery, type RecoveryCopy } from './utils/projectRecovery';
 
 const GraphWindow = lazy(() => import('./components/GraphWindow').then(m => ({ default: m.GraphWindow })));
 const ScmYamlModal = lazy(() => import('./components/ScmYamlModal').then(m => ({ default: m.ScmYamlModal })));
@@ -37,6 +38,10 @@ export default function App() {
   const [printLayout, setPrintLayout] = useState<PrintLayout>(DEFAULT_PRINT_LAYOUT);
   const [name, setName] = useState('Новая схема');
   const [dirty, setDirty] = useState(false);
+  const [recoveryCopy, setRecoveryCopy] = useState<RecoveryCopy | null>(() => {
+    try { return readRecovery(localStorage); } catch { return null; }
+  });
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
   const [results, setResults] = useState<CircuitSimulationResults | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('Добавьте компоненты из библиотеки');
@@ -134,6 +139,24 @@ export default function App() {
     return () => window.removeEventListener('beforeunload', guard);
   }, [dirty]);
 
+  useEffect(() => {
+    // Preserve the offered recovery until the user has chosen what to do with it.
+    if (!dirty || recoveryCopy) return;
+    const persist = () => {
+      try {
+        const snapshot = currentSnapshot.current;
+        writeRecovery(localStorage, { version: 1, name: snapshot.name, savedAt: Date.now(),
+          content: exportToYamlScm(snapshot.elements, snapshot.wires, snapshot.settings, snapshot.ac, snapshot.printLayout) });
+        setRecoveryError(null);
+      } catch { setRecoveryError('Автосохранение недоступно. Сохраните схему в файл.'); }
+    };
+    const timer = window.setTimeout(persist, 800);
+    const onHidden = () => { if (document.visibilityState === 'hidden') persist(); };
+    window.addEventListener('pagehide', persist);
+    document.addEventListener('visibilitychange', onHidden);
+    return () => { window.clearTimeout(timer); window.removeEventListener('pagehide', persist); document.removeEventListener('visibilitychange', onHidden); };
+  }, [elements, wires, settings, ac, printLayout, name, dirty, recoveryCopy]);
+
   const runSimulation = useCallback(() => {
     if (!elements.length) { setError('Добавьте элементы на схему перед расчётом.'); return; }
     let calculationSettings = settings;
@@ -230,17 +253,18 @@ export default function App() {
       } else fileInput.current?.click();
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Не удалось открыть файл.'); }
   };
-  const saveCircuit = async () => {
+  const saveCircuit = async (format: 'current' | 'legacy' = 'current') => {
     const savedRevision = revision.current;
     try {
-      const content = exportToYamlScm(elements, wires, settings, ac, printLayout);
-      const fileName = `${name.replace(/[<>:"/\\|?*]/g, '_')}.scm`;
+      const content = exportToYamlScm(elements, wires, settings, ac, printLayout, format);
+      const baseName = name.replace(/-(scm7|0\.6\.0)$/i, '').replace(/[<>:"/\\|?*]/g, '_');
+      const fileName = `${baseName}-${format === 'current' ? 'scm7' : '0.6.0'}.scm`;
       if (window.desktop) {
         const savedName = await window.desktop.saveCircuit(content, fileName);
         if (!savedName) return;
-        if (revision.current === savedRevision) {
+        if (format === 'current' && revision.current === savedRevision) {
           setName(savedName.replace(/\.scm$/i, '')); setDirty(false);
-          currentSnapshot.current = { ...currentSnapshot.current, dirty: false };
+          currentSnapshot.current = { ...currentSnapshot.current, name: savedName.replace(/\.scm$/i, ''), dirty: false };
         }
       } else {
         const url = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }));
@@ -259,8 +283,8 @@ export default function App() {
       const physicalKey = event.code;
       if (command && !editingText && physicalKey === 'KeyZ') { event.preventDefault(); event.stopPropagation(); event.shiftKey ? redo() : undo(); }
       else if (command && !editingText && physicalKey === 'KeyY') { event.preventDefault(); event.stopPropagation(); redo(); }
-      else if (command && event.key.toLowerCase() === 's') { event.preventDefault(); void saveCircuit(); }
-      else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'o') { event.preventDefault(); void openCircuit(); }
+      else if (command && physicalKey === 'KeyS') { event.preventDefault(); void saveCircuit(); }
+      else if (command && physicalKey === 'KeyO') { event.preventDefault(); void openCircuit(); }
       else if (event.key === 'Escape') { setHelpOpen(false); setGraphOpen(false); }
     };
     window.addEventListener('keydown', onKey, true);
@@ -276,7 +300,8 @@ export default function App() {
           <button onClick={undo} disabled={!undoStack.current.length} title="Отменить (Ctrl+Z)" aria-label="Отменить"><Undo2 size={16} /></button>
           <button onClick={redo} disabled={!redoStack.current.length} title="Повторить (Ctrl+Y)" aria-label="Повторить"><Redo2 size={16} /></button>
           <button onClick={openCircuit} title="Открыть схему (Ctrl+O)"><FolderOpen size={16} /><span>Открыть</span></button>
-          <button onClick={saveCircuit} title="Сохранить схему (Ctrl+S)"><Save size={16} /><span>Сохранить</span></button>
+          <button onClick={() => void saveCircuit()} title="Сохранить SCM 7 с координатами в мм (Ctrl+S). Для старой версии используйте копию 0.6.0."><Save size={16} /><span>Сохранить</span></button>
+          <button onClick={() => void saveCircuit('legacy')} title="Сохранить отдельную копию для NAPS 0.6.0. Произвольные углы и сетка 0,5 мм несовместимы."><span>Копия 0.6.0</span></button>
           <button onClick={runAC} title="Рассчитать АЧХ и ФЧХ"><Activity size={16} /><span>АЧХ/ФЧХ</span></button>
           <button onClick={() => setAcSettingsOpen(true)} title="Параметры частотного анализа" aria-label="Параметры частотного анализа"><SlidersHorizontal size={16} /></button>
           <button onClick={() => setYamlOpen(true)} title="Редактор файла схемы" aria-label="Редактор файла схемы"><FileCode2 size={17} /></button>
@@ -289,7 +314,21 @@ export default function App() {
           catch (cause) { setError(cause instanceof Error ? cause.message : 'Ошибка чтения файла.'); }
         }} />
       </header>
+      <div className="px-3 py-1 text-[11px] text-slate-500">Сохранение: SCM 7, координаты в мм. Старые версии NAPS не поддерживают этот формат — для них доступна «Копия 0.6.0».</div>
       {error && <div className="error-banner" role="alert"><span>{error}</span><button onClick={() => setError(null)} aria-label="Закрыть сообщение"><X size={16} /></button></div>}
+      {recoveryCopy && <div role="status" className="flex flex-wrap items-center gap-3 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+        <span>Есть резервная копия «{recoveryCopy.name}» от {new Date(recoveryCopy.savedAt).toLocaleString('ru-RU')}.</span>
+        <button className="rounded border px-2 py-1" onClick={() => {
+          if (!confirmReplace()) return;
+          try { replaceProject(parseYamlScm(recoveryCopy.content), recoveryCopy.name, true); setRecoveryCopy(null); }
+          catch { setRecoveryError('Резервную копию не удалось открыть.'); }
+        }}>Восстановить схему</button>
+        <button className="rounded border px-2 py-1" onClick={() => {
+          try { discardRecovery(localStorage); setRecoveryCopy(null); }
+          catch { setRecoveryError('Не удалось удалить резервную копию.'); }
+        }}>Удалить резервную копию</button>
+      </div>}
+      {recoveryError && <div role="alert" className="bg-amber-50 px-3 py-2 text-sm text-amber-900">{recoveryError}</div>}
       <main className="workspace">
         <SchematicEditor elements={elements} wires={wires} printLayout={printLayout} onPrintLayoutChange={value => { beginHistoryChange(); currentSnapshot.current = { ...currentSnapshot.current, printLayout: value, dirty: true }; setPrintLayout(value); markChanged(); }} onElementsChange={changeElements} onWiresChange={changeWires}
           onBeginContinuousEdit={beginContinuousHistory} onEndContinuousEdit={endContinuousHistory}

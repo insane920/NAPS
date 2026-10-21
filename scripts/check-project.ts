@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readRecovery, writeRecovery, RECOVERY_KEY, PREVIOUS_RECOVERY_KEY } from '../src/utils/projectRecovery';
 import { SAMPLE_CIRCUITS } from '../src/data/sampleCircuits';
 import { exportToYamlScm, parseYamlScm } from '../src/utils/yamlScm';
 import { solveCircuitTransient, solveCircuitAC, getCircuitPinIds, formatEngValue } from '../src/math/circuitSolver';
@@ -10,9 +11,30 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { buildStoredWireRoute, computeOrthogonalWirePoints, getComponentPins, isAllowedWireSegment, moveWireSegment, projectPointToWire, reanchorManualWires, snapManualWirePoint, splitWireRoute, wireGapDashArray } from '../src/components/SchematicEditor';
 import { buildCircuitGraph } from '../src/math/circuitSolver';
 import { nextComponentName } from '../src/utils/componentNames';
-import { paperSize, parsePrintLayout, SCHEMATIC_UNITS_PER_MM } from '../src/utils/printLayout';
+import { paperSize, parsePrintLayout, computePrintPlacement, SCHEMATIC_UNITS_PER_MM } from '../src/utils/printLayout';
 import { rasterPagePdf } from '../src/utils/rasterPdf';
 import { DEFAULT_CHIP_PINS } from '../src/utils/chipPins';
+
+const recoveryData = new Map<string, string>();
+let storageFailed = false;
+const recoveryStorage = {
+  getItem: (key: string) => recoveryData.get(key) ?? null,
+  setItem: (key: string, value: string) => { if (storageFailed) throw new Error('Quota exceeded'); recoveryData.set(key, value); },
+  removeItem: (key: string) => { recoveryData.delete(key); },
+};
+const recoveryContent = exportToYamlScm(SAMPLE_CIRCUITS[0].elements, SAMPLE_CIRCUITS[0].wires, SAMPLE_CIRCUITS[0].transient);
+writeRecovery(recoveryStorage, { version: 1, name: 'First', content: recoveryContent, savedAt: 1 });
+writeRecovery(recoveryStorage, { version: 1, name: 'Second', content: recoveryContent, savedAt: 2 });
+assert.equal(readRecovery(recoveryStorage)?.name, 'Second');
+assert.ok(recoveryData.has(PREVIOUS_RECOVERY_KEY));
+recoveryData.set(RECOVERY_KEY, '{broken');
+assert.equal(readRecovery(recoveryStorage)?.name, 'First', 'corrupt latest copy falls back to previous valid SCM');
+storageFailed = true;
+assert.throws(() => writeRecovery(recoveryStorage, { version: 1, name: 'Failed', content: recoveryContent, savedAt: 3 }));
+assert.equal(readRecovery(recoveryStorage)?.name, 'First', 'quota failure preserves the last valid recovery');
+storageFailed = false;
+assert.throws(() => writeRecovery(recoveryStorage, { version: 1, name: 'Bad', content: 'invalid', savedAt: 4 }));
+assert.equal(readRecovery(recoveryStorage)?.name, 'First');
 
 assert.deepEqual(paperSize({ format: 'A4', orientation: 'landscape', gridMm: 5 }), { widthMm: 297, heightMm: 210, width: 1188, height: 840 });
 assert.deepEqual(paperSize({ format: 'A3', orientation: 'portrait', gridMm: 5 }), { widthMm: 297, heightMm: 420, width: 1188, height: 1680 });
@@ -20,6 +42,24 @@ assert.equal(20 / SCHEMATIC_UNITS_PER_MM, 5, 'One existing schematic grid cell i
 assert.deepEqual(parsePrintLayout(), { format: 'A4', orientation: 'landscape', gridMm: 5 }, 'Legacy SCM defaults to A4');
 assert.deepEqual(parseYamlScm(exportToYamlScm([], [], SAMPLE_CIRCUITS[0].transient, undefined, { format: 'A3', orientation: 'portrait', gridMm: 2.5 })).printLayout, { format: 'A3', orientation: 'portrait', gridMm: 2.5 });
 assert.throws(() => parsePrintLayout('A2', 'portrait'), /Формат листа/);
+for (const step of [1, 2, 2.5, 5, 10]) {
+  assert.equal(parsePrintLayout('A4', 'landscape', step).gridMm, step);
+}
+const hundredMm = { x: -120, y: 80, width: 100 * SCHEMATIC_UNITS_PER_MM, height: 4 };
+const a4Layout = { format: 'A4', orientation: 'landscape', gridMm: 5 } as const;
+const oneToOne = computePrintPlacement(hundredMm, a4Layout, 5, 'actual');
+const oneToTwo = computePrintPlacement(hundredMm, a4Layout, 5, 'actual', 0.5);
+const twoToOne = computePrintPlacement(hundredMm, a4Layout, 5, 'actual', 2);
+assert.equal(twoToOne.scale, 2, '2:1 paper scale doubles physical schematic dimensions');
+assert.equal(oneToOne.scale * hundredMm.width / SCHEMATIC_UNITS_PER_MM, 100);
+assert.equal(oneToTwo.scale * hundredMm.width / SCHEMATIC_UNITS_PER_MM, 50);
+assert.ok(oneToOne.fits && oneToTwo.fits);
+const wideScheme = { x: -1000, y: -500, width: 2400, height: 1600 };
+assert.equal(computePrintPlacement(wideScheme, a4Layout, 5, 'actual').fits, false, '1:1 never silently shrinks oversized schematics');
+const fitted = computePrintPlacement(wideScheme, a4Layout, 5, 'fit');
+assert.ok(fitted.fits);
+assert.ok(wideScheme.width * fitted.scale <= fitted.width - 10 * SCHEMATIC_UNITS_PER_MM);
+assert.ok(wideScheme.height * fitted.scale <= fitted.height - 10 * SCHEMATIC_UNITS_PER_MM);
 const paperPdf = await rasterPagePdf(new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], { type: 'image/jpeg' }), 3508, 2480, 297, 210);
 const pdfText = await paperPdf.text();
 assert.ok(pdfText.startsWith('%PDF-1.4'));

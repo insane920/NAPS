@@ -1,6 +1,6 @@
 import { CircuitElement, CircuitWire, TransientSettings, ACSettings } from '../types';
 import { getCircuitPinIds, parseEngValue } from '../math/circuitSolver';
-import { DEFAULT_PRINT_LAYOUT, parsePrintLayout, type PrintLayout } from './printLayout';
+import { DEFAULT_PRINT_LAYOUT, parsePrintLayout, SCHEMATIC_UNITS_PER_MM, type PrintLayout } from './printLayout';
 import { validateChipPins } from './chipPins';
 
 /**
@@ -23,6 +23,7 @@ export interface YamlScmObject {
 export interface YamlScmWire {
   From: { ID: number; Pin: string | number };
   To: { ID: number; Pin: string | number };
+  RouteMode?: 'direct';
   Waypoints?: Array<{ x: number; y: number }>;
   Manual?: boolean;
   Disabled?: boolean;
@@ -63,8 +64,16 @@ export function exportToYamlScm(
   wires: CircuitWire[],
   transient: TransientSettings,
   ac?: ACSettings,
-  printLayout: PrintLayout = DEFAULT_PRINT_LAYOUT
+  printLayout: PrintLayout = DEFAULT_PRINT_LAYOUT,
+  format: 'current' | 'legacy' = 'current'
 ): string {
+  if (format === 'legacy' && wires.some(wire => wire.routeMode === 'direct')) {
+    throw new Error('SCM 0.6.0 не поддерживает произвольные углы проводов. Сохраните проект в новом формате; совместимая копия не создана, чтобы не изменить маршрут.');
+  }
+  if (format === 'legacy' && printLayout.gridMm === 0.5) {
+    throw new Error('SCM 0.6.0 не поддерживает шаг сетки 0,5 мм. Выберите шаг от 1 мм для совместимой копии; координаты компонентов при этом не меняются.');
+  }
+  const unitsPerStoredUnit = format === 'current' ? SCHEMATIC_UNITS_PER_MM : 1;
   // Карта строковых ID в числовые индексы ID (1, 2, 3...)
   const idMap = new Map<string, number>();
   elements.forEach((el, idx) => {
@@ -117,8 +126,8 @@ export function exportToYamlScm(
       ID: idx + 1,
       Type: mapTypeToYaml(el.type),
       Name: el.name,
-      X: el.x,
-      Y: el.y,
+      X: el.x / unitsPerStoredUnit,
+      Y: el.y / unitsPerStoredUnit,
       Rot: (el.rotation || 0) / 90,
       FlipH: el.flipH,
       FlipV: el.flipV,
@@ -140,14 +149,18 @@ export function exportToYamlScm(
     scmWires.push({
       From: { ID: fromId, Pin: isNaN(Number(w.fromPinId)) ? w.fromPinId : Number(w.fromPinId) },
       To: { ID: toId, Pin: isNaN(Number(w.toPinId)) ? w.toPinId : Number(w.toPinId) },
-      Waypoints: w.waypoints,
+      RouteMode: w.routeMode === 'direct' ? 'direct' : undefined,
+      Waypoints: w.waypoints?.map(point => ({ x: point.x / unitsPerStoredUnit, y: point.y / unitsPerStoredUnit })),
       Manual: w.manual,
       Disabled: w.disabled,
     });
   }
 
   // Сборка текста в чистом YAML
-  let yaml = `scm:\n  MajorVersion: 6\n  MinorVersion: 0\n\nPage:\n  Format: ${printLayout.format}\n  Orientation: ${printLayout.orientation}\n  GridMm: ${printLayout.gridMm}\n\nObjects:\n`;
+  let yaml = format === 'current'
+    ? 'scm:\n  MajorVersion: 7\n  MinorVersion: 0\n\nGeometry:\n  Version: 1\n  Unit: mm\n'
+    : 'scm:\n  MajorVersion: 6\n  MinorVersion: 0\n';
+  yaml += `\nPage:\n  Format: ${printLayout.format}\n  Orientation: ${printLayout.orientation}\n  GridMm: ${printLayout.gridMm}\n\nObjects:\n`;
   for (const obj of objects) {
     yaml += `  - ID: ${obj.ID}\n`;
     yaml += `    Type: "${obj.Type}"\n`;
@@ -168,6 +181,7 @@ export function exportToYamlScm(
     yaml += `  - From: { ID: ${w.From.ID}, Pin: ${JSON.stringify(w.From.Pin)} }\n`;
     yaml += `    To:   { ID: ${w.To.ID}, Pin: ${JSON.stringify(w.To.Pin)} }\n`;
     if (w.Waypoints) yaml += `    Waypoints: ${JSON.stringify(w.Waypoints)}\n`;
+    if (w.RouteMode) yaml += `    RouteMode: ${w.RouteMode}\n`;
     if (w.Manual) yaml += `    Manual: true\n`;
     if (w.Disabled) yaml += `    Disabled: true\n`;
   }
@@ -294,7 +308,10 @@ export function parseYamlScm(yamlText: string): {
   const elements: CircuitElement[] = [];
   const wires: CircuitWire[] = [];
 
-  let currentSection: 'none' | 'page' | 'objects' | 'wires' | 'transient' | 'ac' = 'none';
+  let currentSection: 'none' | 'geometry' | 'page' | 'objects' | 'wires' | 'transient' | 'ac' = 'none';
+  let majorVersion = 6;
+  let geometryVersion: number | undefined;
+  let geometryUnit: string | undefined;
   let pageFormat: string | undefined;
   let pageOrientation: string | undefined;
   let gridMm: number | undefined;
@@ -319,6 +336,9 @@ export function parseYamlScm(yamlText: string): {
   for (let line of lines) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
+
+    if (trimmed.startsWith('MajorVersion:')) { majorVersion = finiteScmNumber(trimmed.slice(13), 'MajorVersion'); continue; }
+    if (trimmed === 'Geometry:') { currentSection = 'geometry'; continue; }
 
     if (trimmed === 'Page:') { currentSection = 'page'; continue; }
     if (trimmed === 'AC:') {
@@ -345,7 +365,10 @@ export function parseYamlScm(yamlText: string): {
       continue;
     }
 
-    if (currentSection === 'page') {
+    if (currentSection === 'geometry') {
+      if (trimmed.startsWith('Version:')) geometryVersion = finiteScmNumber(trimmed.slice(8), 'Geometry Version');
+      else if (trimmed.startsWith('Unit:')) geometryUnit = readScalar(trimmed.slice(5));
+    } else if (currentSection === 'page') {
       if (trimmed.startsWith('Format:')) pageFormat = readScalar(trimmed.slice(7));
       else if (trimmed.startsWith('Orientation:')) pageOrientation = readScalar(trimmed.slice(12));
       else if (trimmed.startsWith('GridMm:')) gridMm = finiteScmNumber(trimmed.slice(7), 'GridMm');
@@ -383,6 +406,12 @@ export function parseYamlScm(yamlText: string): {
         }
       }
     } else if (currentSection === 'wires') {
+      if (trimmed.startsWith('RouteMode:') && wires.length) {
+        const mode = trimmed.slice('RouteMode:'.length).trim();
+        if (mode !== 'direct') throw new Error('Некорректный режим трассировки провода.');
+        wires[wires.length - 1].routeMode = 'direct';
+        continue;
+      }
       if (trimmed === 'Disabled: true' && wires.length) { wires[wires.length - 1].disabled = true; continue; }
       if (trimmed === 'Manual: true' && wires.length) {
         wires[wires.length - 1].manual = true;
@@ -470,6 +499,20 @@ export function parseYamlScm(yamlText: string): {
     commitCurrentObject(currentObj, elements, numIdToElemId);
   }
   if (pendingFrom) throw new Error(`Провод ${wires.length + 1}: отсутствует конечный вывод.`);
+  if (!Number.isInteger(majorVersion) || majorVersion < 1 || majorVersion > 7) throw new Error('Неподдерживаемая версия SCM. Исходный файл не изменён.');
+  if (majorVersion === 7) {
+    if (geometryVersion !== 1 || geometryUnit !== 'mm') throw new Error('SCM 7 требует Geometry Version: 1 и Unit: mm.');
+    // One import boundary: physical millimetres become legacy SVG drawing units.
+    // Re-export divides by the same fixed factor; monitor DPI and zoom never participate.
+    for (const element of elements) { element.x *= SCHEMATIC_UNITS_PER_MM; element.y *= SCHEMATIC_UNITS_PER_MM; }
+    for (const wire of wires) if (wire.waypoints) wire.waypoints = wire.waypoints.map(point => ({ x: point.x * SCHEMATIC_UNITS_PER_MM, y: point.y * SCHEMATIC_UNITS_PER_MM }));
+    if (elements.some(element => !Number.isFinite(element.x) || !Number.isFinite(element.y)) ||
+        wires.some(wire => wire.waypoints?.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.y)))) {
+      throw new Error('Координаты SCM выходят за допустимый числовой диапазон.');
+    }
+  } else if (geometryVersion !== undefined || geometryUnit !== undefined) {
+    throw new Error('Геометрия в миллиметрах требует SCM 7. Исходный файл не изменён.');
+  }
   const names = new Set<string>();
   for (const element of elements) {
     const key = element.name.trim().toLocaleUpperCase();

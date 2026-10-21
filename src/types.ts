@@ -357,7 +357,9 @@ export interface CircuitWire {
   fromPinId: string;
   toCompId: string;
   toPinId: string;
-  /** Optional user-set horizontal, vertical, or 45-degree route points. */
+  /** Straight wire keeps the exact terminal-to-terminal line at any angle. Omitted means the legacy routed mode. */
+  routeMode?: 'orthogonal' | 'direct';
+  /** User route points: legacy 0/45/90-degree routes or free-angle direct-mode edits. */
   waypoints?: Array<{ x: number; y: number }>;
   /** Explicitly user-routed wire; also preserves a single straight 45-degree segment. */
   manual?: boolean;

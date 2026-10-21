@@ -31,11 +31,12 @@ import { SAMPLE_CIRCUITS, SampleCircuit } from '../data/sampleCircuits';
 import { buildCircuitGraph } from '../math/circuitSolver';
 import { topologyTypes } from '../math/topologyTransient';
 import { nextComponentName } from '../utils/componentNames';
-import { getComponentLabelLayout, getComponentValueLabel } from '../utils/componentLabels';
+import { getComponentLabelLayout, getComponentValueLabel, arrangeComponentLabels } from '../utils/componentLabels';
 import { useModalFocus } from '../hooks/useModalFocus';
 import { ComponentPalette, COMPONENT_CATALOG, TERMINAL_GROUPS, terminalGroupForType, TerminalGroup } from './ComponentPalette';
 import { SYMBOL_METRICS } from './symbolMetrics';
-import { SCHEMATIC_UNITS_PER_MM, paperSize, type PrintLayout } from '../utils/printLayout';
+import { SCHEMATIC_UNITS_PER_MM, computePrintPlacement, printScaleLabel, type PrintLayout, type PrintPlacement } from '../utils/printLayout';
+import { SpatialIndex } from '../utils/spatialIndex';
 import { rasterPagePdf } from '../utils/rasterPdf';
 import { chipPins, DEFAULT_CHIP_PINS } from '../utils/chipPins';
 
@@ -207,7 +208,7 @@ export function snapManualWirePoint(from: Point, cursor: Point, grid = GRID_SIZE
  * Упрощение точек полилинии: удаление дубликатов и схлопывание коллинеарных промежуточных точек.
  */
 export function simplifyPoints(pts: Point[]): Point[] {
-  if (pts.length <= 2) return pts;
+  if (pts.length <= 1) return pts;
   const result: Point[] = [pts[0]];
   for (let i = 1; i < pts.length; i++) {
     const prev = result[result.length - 1];
@@ -256,7 +257,7 @@ export function computeOrthogonalWirePoints(
 
   // Точки совпадают
   if (x1 === x2 && y1 === y2) {
-    return [{ x: x1, y: y1 }, { x: x2, y: y2 }];
+    return [{ x: x1, y: y1 }];
   }
 
   // Строго горизонтальная линия
@@ -264,8 +265,9 @@ export function computeOrthogonalWirePoints(
     if (trackOffset) {
       const direction1 = Math.sign(p1PinRel?.x || x2 - x1) || 1;
       const direction2 = Math.sign(p2PinRel?.x || x1 - x2) || -1;
-      const stub1 = x1 + direction1 * grid;
-      const stub2 = x2 + direction2 * grid;
+      const shortSpan = Math.abs(x2 - x1) <= 2 * grid && direction1 !== direction2;
+      const stub1 = x1 + (shortSpan ? -Math.sign(x2 - x1) : direction1) * grid;
+      const stub2 = x2 + (shortSpan ? Math.sign(x2 - x1) : direction2) * grid;
       return simplifyPoints([
         { x: x1, y: y1 }, { x: stub1, y: y1 },
         { x: stub1, y: y1 + trackOffset }, { x: stub2, y: y1 + trackOffset },
@@ -280,8 +282,9 @@ export function computeOrthogonalWirePoints(
     if (trackOffset) {
       const direction1 = Math.sign(p1PinRel?.y || y2 - y1) || 1;
       const direction2 = Math.sign(p2PinRel?.y || y1 - y2) || -1;
-      const stub1 = y1 + direction1 * grid;
-      const stub2 = y2 + direction2 * grid;
+      const shortSpan = Math.abs(y2 - y1) <= 2 * grid && direction1 !== direction2;
+      const stub1 = y1 + (shortSpan ? -Math.sign(y2 - y1) : direction1) * grid;
+      const stub2 = y2 + (shortSpan ? Math.sign(y2 - y1) : direction2) * grid;
       return simplifyPoints([
         { x: x1, y: y1 }, { x: x1, y: stub1 },
         { x: x1 + trackOffset, y: stub1 }, { x: x1 + trackOffset, y: stub2 },
@@ -459,6 +462,22 @@ export function moveWireSegment(points: Point[], segmentIndex: number, coordinat
         ];
       })();
   return simplifyPoints([...before, ...moved, ...after]);
+}
+
+/** Shift an arbitrary-angle segment parallel to itself without changing its terminal endpoints. */
+export function moveFreeWireSegment(points: Point[], segmentIndex: number, offset: number): Point[] {
+  if (segmentIndex < 0 || segmentIndex >= points.length - 1) return points;
+  const a = points[segmentIndex], b = points[segmentIndex + 1];
+  const length = Math.hypot(b.x - a.x, b.y - a.y);
+  if (length < ROUTE_EPSILON || Math.abs(offset) < ROUTE_EPSILON) return points;
+  const nx = -(b.y - a.y) / length;
+  const ny = (b.x - a.x) / length;
+  return simplifyPoints([
+    ...points.slice(0, segmentIndex + 1),
+    { x: a.x + nx * offset, y: a.y + ny * offset },
+    { x: b.x + nx * offset, y: b.y + ny * offset },
+    ...points.slice(segmentIndex + 1),
+  ]);
 }
 
 export function getComponentPins(el: CircuitElement): CircuitPin[] {
@@ -640,11 +659,21 @@ export function SchematicEditor({
   useEffect(() => { localStorage.setItem('naps_editor_shortcuts', JSON.stringify(editorShortcuts)); }, [editorShortcuts]);
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [wireContextMenu, setWireContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [overlapChoice, setOverlapChoice] = useState<{
+    x: number; y: number;
+    pins: Array<{ compId: string; pinId: string; x: number; y: number; name: string }>;
+  } | null>(null);
   const [copiedElement, setCopiedElement] = useState<CircuitElement | null>(null);
   const [replacingId, setReplacingId] = useState<string | null>(null);
-  const [hoveredJunctionId, setHoveredJunctionId] = useState<string | null>(null);
   const [selectedWireId, setSelectedWireId] = useState<string | null>(null);
-  const [printPreviewHtml, setPrintPreviewHtml] = useState<string | null>(null);
+  const [wireMode, setWireMode] = useState<'orthogonal' | 'direct'>('orthogonal');
+  const [exportTarget, setExportTarget] = useState<'png' | 'svg' | 'pdf' | 'print' | null>(null);
+  const [printMode, setPrintMode] = useState<'actual' | 'fit'>('actual');
+  const [requestedPrintScale, setRequestedPrintScale] = useState(1);
+  const [printMarginMm, setPrintMarginMm] = useState(5);
+  const [centerPrint, setCenterPrint] = useState(true);
+  const [exportPlan, setExportPlan] = useState<{ xml: string; html: string; placement: PrintPlacement } | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const printPreviewRef = useRef<HTMLIFrameElement>(null);
   const [showNodeNumbers, setShowNodeNumbers] = useState<boolean>(false);
   const [showElementNames, setShowElementNames] = useState<boolean>(true);
@@ -720,11 +749,28 @@ export function SchematicEditor({
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   useEffect(() => {
+    const canvas = containerRef.current;
+    if (!canvas) return;
+    const onWheel = (event: WheelEvent) => {
+      if (event.buttons || (event.target instanceof Element && event.target.closest('[data-component-id]') && !event.ctrlKey && !event.metaKey)) return;
+      event.preventDefault();
+      const bounds = canvas.getBoundingClientRect();
+      const x = event.clientX - bounds.left, y = event.clientY - bounds.top;
+      const nextZoom = Math.max(Math.min(0.01, zoom), Math.min(2.5, zoom * Math.exp(-event.deltaY * 0.001)));
+      setPan({ x: x - (x - pan.x) * nextZoom / zoom, y: y - (y - pan.y) * nextZoom / zoom });
+      setZoom(nextZoom);
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', onWheel);
+  }, [zoom, pan]);
+  useEffect(() => {
     setSelectedId(null);
     setContextMenu(null);
+    setOverlapChoice(null);
     setReplacingId(null);
-    setHoveredJunctionId(null);
     setSelectedWireId(null);
+    wiringFromRef.current = null;
+    wirePointerDown.current = false;
     setWiringFrom(null);
     setWiringCursor(null);
     setWiringWaypoints([]);
@@ -745,14 +791,15 @@ export function SchematicEditor({
       if (draggingElemId) onEndContinuousEdit?.();
       if (wireSegmentDrag.current?.started) onEndContinuousEdit?.();
       wireSegmentDrag.current = null;
-      if (wirePointerDown.current) {
-        wirePointerDown.current = false;
-        if (event.type === 'blur') {
-          wiringFromRef.current = null;
-          setWiringFrom(null);
-          setWiringCursor(null);
-          setWiringWaypoints([]);
-        }
+      wirePointerDown.current = false;
+      if (event.type === 'blur') {
+        setOverlapChoice(null);
+        wiringFromRef.current = null;
+        setWiringFrom(null);
+        setWiringCursor(null);
+        setWiringWaypoints([]);
+        setHoveredPin(null);
+        setHoveredWirePoint(null);
       }
       setDraggingElemId(null); setIsPanning(false);
     };
@@ -763,15 +810,17 @@ export function SchematicEditor({
   const fittedProject = useRef<number | null>(null);
   const fitToView = useCallback(() => {
     const bounds = containerRef.current?.getBoundingClientRect();
-    if (!bounds || !bounds.width || !bounds.height || !elements.length) return;
-    const minX = Math.min(...elements.map(element => element.x)) - 80;
-    const maxX = Math.max(...elements.map(element => element.x)) + 80;
-    const minY = Math.min(...elements.map(element => element.y)) - 80;
-    const maxY = Math.max(...elements.map(element => element.y)) + 80;
-    const nextZoom = Math.max(0.2, Math.min(1.5, (bounds.width - 48) / (maxX - minX), (bounds.height - 48) / (maxY - minY)));
+    const world = svgRef.current?.querySelector<SVGGElement>('#schematic-world');
+    if (!bounds || !world || bounds.width <= 48 || bounds.height <= 48 || !elements.length) return;
+    // SVG bounds include symbols, labels and manual wire detours in world units.
+    const drawing = world.getBBox();
+    const minX = drawing.x - 8, maxX = drawing.x + drawing.width + 8;
+    const minY = drawing.y - 8, maxY = drawing.y + drawing.height + 8;
+    const nextZoom = Math.min(1.5, (bounds.width - 48) / (maxX - minX), (bounds.height - 48) / (maxY - minY));
+    if (!Number.isFinite(nextZoom) || nextZoom <= 0) return;
     setZoom(nextZoom);
     setPan({ x: (bounds.width - (minX + maxX) * nextZoom) / 2, y: (bounds.height - (minY + maxY) * nextZoom) / 2 });
-  }, [elements]);
+  }, [elements, wires]);
   useEffect(() => {
     // Fit initial and replacement projects; dragging preserves the user's viewport.
     if (fittedProject.current === fitRevision) return;
@@ -805,7 +854,7 @@ export function SchematicEditor({
         rawY,
       };
     },
-    [pan, zoom]
+    [pan, zoom, gridUnits]
   );
 
   // Горячие клавиши редактора и быстрый выбор элемента из библиотеки.
@@ -863,6 +912,7 @@ export function SchematicEditor({
       if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
 
       if (e.key === 'Escape') {
+        setOverlapChoice(null);
         setWiringFrom(null);
         wiringFromRef.current = null;
         setWiringCursor(null);
@@ -1112,12 +1162,15 @@ export function SchematicEditor({
   const pinPositions = useMemo(() => {
     const map = new Map<
       string,
-      { x: number; y: number; name: string; label?: string; relX: number; relY: number; elType: string }
+      { compId: string; pinId: string; componentName: string; x: number; y: number; name: string; label?: string; relX: number; relY: number; elType: string }
     >();
     for (const el of elements) {
       const pins = getComponentPins(el);
       for (const p of pins) {
         map.set(`${el.id}_${p.id}`, {
+          compId: el.id,
+          pinId: p.id,
+          componentName: el.name,
           x: el.x + p.x,
           y: el.y + p.y,
           name: p.name,
@@ -1133,10 +1186,13 @@ export function SchematicEditor({
   const connectedPinKeys = useMemo(() => new Set(wires.filter(wire => !wire.disabled).flatMap(wire => [
     `${wire.fromCompId}_${wire.fromPinId}`, `${wire.toCompId}_${wire.toPinId}`,
   ])), [wires]);
+  const pinSpatialIndex = useMemo(() => new SpatialIndex(Array.from(pinPositions.values()).map(pin => ({
+    minX: pin.x, maxX: pin.x, minY: pin.y, maxY: pin.y, value: pin,
+  }))), [pinPositions]);
 
   // Геометрия всех проводов с ортогональной трассировкой (под прямым углом)
   const wireGeometries = useMemo(() => {
-    const occupied: Array<{ node: number | undefined; points: Point[] }> = [];
+    const occupiedByNode = new Map<number | undefined, Point[][]>();
     const geometries: Array<{
       wire: CircuitWire;
       p1: NonNullable<ReturnType<typeof pinPositions.get>>;
@@ -1150,10 +1206,14 @@ export function SchematicEditor({
       const p2 = pinPositions.get(`${wire.toCompId}_${wire.toPinId}`);
       if (!p1 || !p2) continue;
       const node = circuitGraph.pinToNode.get(`${wire.fromCompId}_${wire.fromPinId}`);
-      const foreignRoutes = occupied.filter(route => route.node !== node).map(route => route.points);
+      const foreignRoutes = Array.from(occupiedByNode.entries())
+        .filter(([occupiedNode]) => occupiedNode !== node)
+        .flatMap(([, routes]) => routes);
 
       let pts: Point[];
-      if (wire.manual || wire.waypoints?.length) {
+      if (wire.routeMode === 'direct') {
+        pts = simplifyPoints([p1, ...(wire.waypoints ?? []), p2]);
+      } else if (wire.manual || wire.waypoints?.length) {
         pts = buildStoredWireRoute(
           p1, p2, wire.waypoints ?? [],
           { x: p1.relX, y: p1.relY },
@@ -1176,11 +1236,32 @@ export function SchematicEditor({
         );
       }
 
-      occupied.push({ node, points: pts });
+      const routes = occupiedByNode.get(node);
+      if (routes) routes.push(pts);
+      else occupiedByNode.set(node, [pts]);
       geometries.push({ wire, p1, p2, points: pts, pathD: pointsToSvgPath(pts) });
     }
     return geometries;
   }, [wires, pinPositions, circuitGraph, gridUnits]);
+  const sceneLabels = useMemo(() => arrangeComponentLabels(elements, wireGeometries, elements.flatMap(element => {
+    const pins = getComponentPins(element);
+    const xs = [-20, 20, ...pins.map(pin => pin.x)], ys = [-20, 20, ...pins.map(pin => pin.y)];
+    const minX = Math.min(...xs) - 14, minY = Math.min(...ys) - 14;
+    if (element.type === 'CHIP' || element.type === 'TR3') return [{ x: element.x + minX, y: element.y + minY, width: Math.max(...xs) + 14 - minX, height: Math.max(...ys) + 14 - minY }];
+    const radius = (element.rotation || 0) % 90 === 0 ? 24 : 32;
+    return [{ x: element.x - radius, y: element.y - radius, width: radius * 2, height: radius * 2 },
+      ...pins.map(pin => ({ x: element.x + pin.x - 9, y: element.y + pin.y - 12, width: 26, height: 22 }))];
+  }), showElementNames, showElementValues), [elements, wireGeometries, showElementNames, showElementValues]);
+  const wireSpatialIndex = useMemo(() => new SpatialIndex(wireGeometries.flatMap(geometry =>
+    geometry.wire.disabled ? [] : geometry.points.slice(1).map((b, index) => {
+      const a = geometry.points[index];
+      return {
+        minX: Math.min(a.x, b.x), minY: Math.min(a.y, b.y),
+        maxX: Math.max(a.x, b.x), maxY: Math.max(a.y, b.y),
+        value: { wireId: geometry.wire.id, a, b },
+      };
+    })
+  )), [wireGeometries]);
 
   // Разделение провода и создание подвижного узла (JUNCTION)
   const handleWirePointClick = (wireId: string, px: number, py: number) => {
@@ -1208,8 +1289,9 @@ export function SchematicEditor({
           id: `wire_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           fromCompId: wiringSource.compId, fromPinId: wiringSource.pinId,
           toCompId: endpoint.compId, toPinId: endpoint.pinId,
-          waypoints: wiringWaypoints.length ? [...wiringWaypoints] : undefined,
-          manual: wiringWaypoints.length > 0,
+          routeMode: wireMode,
+          waypoints: wireMode === 'orthogonal' && wiringWaypoints.length ? [...wiringWaypoints] : undefined,
+          manual: wireMode === 'orthogonal' && wiringWaypoints.length > 0,
         }]);
       }
       wiringFromRef.current = null;
@@ -1240,8 +1322,9 @@ export function SchematicEditor({
       fromPinId: targetWire.fromPinId,
       toCompId: junctionId,
       toPinId: '1',
+      routeMode: targetWire.routeMode,
       waypoints: split.first.slice(1, -1),
-      manual: true,
+      manual: targetWire.routeMode !== 'direct',
     };
     const wireB: CircuitWire = {
       id: `wire_${Date.now()}_b_${Math.random().toString(36).slice(2, 6)}`,
@@ -1249,8 +1332,9 @@ export function SchematicEditor({
       fromPinId: '1',
       toCompId: targetWire.toCompId,
       toPinId: targetWire.toPinId,
+      routeMode: targetWire.routeMode,
       waypoints: split.second.slice(1, -1),
-      manual: true,
+      manual: targetWire.routeMode !== 'direct',
     };
 
     const remainingWires = wires.filter((w) => w.id !== wireId);
@@ -1263,8 +1347,9 @@ export function SchematicEditor({
         fromPinId: wiringSource.pinId,
         toCompId: junctionId,
         toPinId: '1',
-        waypoints: wiringWaypoints.length ? [...wiringWaypoints] : undefined,
-        manual: wiringWaypoints.length > 0,
+        routeMode: wireMode,
+        waypoints: wireMode === 'orthogonal' && wiringWaypoints.length ? [...wiringWaypoints] : undefined,
+        manual: wireMode === 'orthogonal' && wiringWaypoints.length > 0,
       };
       onElementsChange([...elements, newJunction]);
       onWiresChange([...remainingWires, wireA, wireB, wireC]);
@@ -1298,6 +1383,7 @@ export function SchematicEditor({
   };
 
   const appendManualWaypoint = (cursor: Point) => {
+    if (wireMode === 'direct') return;
     const source = wiringFromRef.current ?? wiringFrom;
     if (!source) return;
     const previous = wiringWaypoints.at(-1) ?? source;
@@ -1337,6 +1423,7 @@ export function SchematicEditor({
     }
 
     if (wiringFrom) {
+      if (wireMode === 'direct') return;
       appendManualWaypoint({ x: pos.rawX, y: pos.rawY });
       return;
     }
@@ -1355,7 +1442,6 @@ export function SchematicEditor({
     }
 
     const pos = screenToWorld(e.clientX, e.clientY);
-    setMouseWorldPos({ x: pos.x, y: pos.y });
 
     if (wireSegmentDrag.current) {
       if (!(e.buttons & 1)) return;
@@ -1363,11 +1449,18 @@ export function SchematicEditor({
       const a = drag.points[drag.segmentIndex], b = drag.points[drag.segmentIndex + 1];
       const horizontal = Math.abs(a.y - b.y) < ROUTE_EPSILON;
       const vertical = Math.abs(a.x - b.x) < ROUTE_EPSILON;
+      const isDirect = wires.find(wire => wire.id === drag.wireId)?.routeMode === 'direct';
       const coordinate = horizontal ? snapToGrid(pos.rawY) : vertical ? snapToGrid(pos.rawX)
         : snapToGrid(((pos.rawX - a.x) - Math.sign((b.y - a.y) / (b.x - a.x)) * (pos.rawY - a.y)) / 2);
-      if (coordinate === (horizontal ? a.y : vertical ? a.x : 0) && !drag.started) return;
+      const length = Math.hypot(b.x - a.x, b.y - a.y);
+      const freeOffset = length > ROUTE_EPSILON
+        ? snapToGrid(((pos.rawX - a.x) * -(b.y - a.y) + (pos.rawY - a.y) * (b.x - a.x)) / length)
+        : 0;
+      if ((isDirect ? freeOffset === 0 : coordinate === (horizontal ? a.y : vertical ? a.x : 0)) && !drag.started) return;
       if (!drag.started) { onBeginContinuousEdit?.(); drag.started = true; }
-      const route = moveWireSegment(drag.points, drag.segmentIndex, coordinate);
+      const route = isDirect
+        ? moveFreeWireSegment(drag.points, drag.segmentIndex, freeOffset)
+        : moveWireSegment(drag.points, drag.segmentIndex, coordinate);
       onWiresChange(wires.map(wire => wire.id === drag.wireId ? { ...wire, waypoints: route.slice(1, -1), manual: true } : wire));
       return;
     }
@@ -1388,6 +1481,7 @@ export function SchematicEditor({
     }
 
     if (pendingComponentType) {
+      setMouseWorldPos(current => current?.x === pos.x && current?.y === pos.y ? current : { x: pos.x, y: pos.y });
       setHoveredPin(null);
       setHoveredWirePoint(null);
       return;
@@ -1396,33 +1490,29 @@ export function SchematicEditor({
     // 1. Поиск ближайшего вывода (Магнитный захват с увеличенным радиусом 28px для надежной фиксации)
     let foundPin: { compId: string; pinId: string; x: number; y: number; name: string } | null = null;
     let minPinDist = 12 / zoom;
-    for (const el of elements) {
-      const pins = getComponentPins(el);
-      for (const p of pins) {
-        const absX = el.x + p.x;
-        const absY = el.y + p.y;
-        const dist = Math.hypot(pos.rawX - absX, pos.rawY - absY);
-        if (dist <= minPinDist) {
-          minPinDist = dist;
-          foundPin = { compId: el.id, pinId: p.id, x: absX, y: absY, name: `${el.name}.${p.name}` };
-        }
+    for (const pin of pinSpatialIndex.query(pos.rawX, pos.rawY, minPinDist)) {
+      const dist = Math.hypot(pos.rawX - pin.x, pos.rawY - pin.y);
+      if (dist <= minPinDist) {
+        minPinDist = dist;
+        foundPin = { compId: pin.compId, pinId: pin.pinId, x: pin.x, y: pin.y, name: `${pin.componentName}.${pin.name}` };
       }
     }
-    setHoveredPin(foundPin);
+    setHoveredPin(current => current?.compId === foundPin?.compId && current?.pinId === foundPin?.pinId ? current : foundPin);
 
     // 2. Если пин не найден — проверяем наведение на сегменты существующих проводов
     let foundWirePoint: { wireId: string; x: number; y: number } | null = null;
     if (wiringFrom && !foundPin) {
       let minWireDist = 8 / zoom;
-      for (const wg of wireGeometries) {
-        const hit = projectPointToWire(wg.points, { x: pos.rawX, y: pos.rawY }, gridUnits);
+      for (const segment of wireSpatialIndex.query(pos.rawX, pos.rawY, minWireDist)) {
+        const hit = projectPointToWire([segment.a, segment.b], { x: pos.rawX, y: pos.rawY }, gridUnits);
         if (hit && hit.distance <= minWireDist) {
           minWireDist = hit.distance;
-          foundWirePoint = { wireId: wg.wire.id, ...hit.point };
+          foundWirePoint = { wireId: segment.wireId, ...hit.point };
         }
       }
     }
-    setHoveredWirePoint(foundWirePoint);
+    setHoveredWirePoint(current => current?.wireId === foundWirePoint?.wireId &&
+      current?.x === foundWirePoint?.x && current?.y === foundWirePoint?.y ? current : foundWirePoint);
 
     // 3. Обновление положения проводки при протягивании
     if (wiringFrom) {
@@ -1434,7 +1524,9 @@ export function SchematicEditor({
         setWiringCursor({ x: foundWirePoint.x, y: foundWirePoint.y });
       } else {
         // Плавное следование строго по сетке 20px
-        setWiringCursor(snapManualWirePoint(wiringWaypoints.at(-1) ?? wiringFrom, { x: pos.rawX, y: pos.rawY }, gridUnits));
+        setWiringCursor(wireMode === 'direct'
+          ? { x: pos.rawX, y: pos.rawY }
+          : snapManualWirePoint(wiringWaypoints.at(-1) ?? wiringFrom, { x: pos.rawX, y: pos.rawY }, gridUnits));
       }
     }
   };
@@ -1460,10 +1552,7 @@ export function SchematicEditor({
   };
 
   // Нажатие на вывод элемента (Pin)
-  const handlePinClick = (e: React.MouseEvent, compId: string, pinId: string, px: number, py: number) => {
-    if (pendingComponentType || e.button !== 0) return;
-    e.stopPropagation();
-
+  const connectPin = (compId: string, pinId: string, px: number, py: number) => {
     const wiringSource = wiringFromRef.current ?? wiringFrom;
     if (!wiringSource) {
       // Зажать кнопку на первом выводе и протянуть до цели.
@@ -1503,8 +1592,9 @@ export function SchematicEditor({
           fromPinId: wiringSource.pinId,
           toCompId: compId,
           toPinId: pinId,
-          waypoints: wiringWaypoints.length ? [...wiringWaypoints] : undefined,
-          manual: wiringWaypoints.length > 0,
+          routeMode: wireMode,
+          waypoints: wireMode === 'orthogonal' && wiringWaypoints.length ? [...wiringWaypoints] : undefined,
+          manual: wireMode === 'orthogonal' && wiringWaypoints.length > 0,
         };
         onWiresChange([...wires, newWire]);
       }
@@ -1515,6 +1605,21 @@ export function SchematicEditor({
       setWiringWaypoints([]);
       wirePointerDown.current = false;
     }
+  };
+  const handlePinClick = (e: React.MouseEvent, compId: string, pinId: string, px: number, py: number) => {
+    if (pendingComponentType || e.button !== 0) return;
+    e.stopPropagation();
+    const coincident = pinSpatialIndex.query(px, py, ROUTE_EPSILON).filter(pin =>
+      Math.hypot(pin.x - px, pin.y - py) < ROUTE_EPSILON);
+    if (coincident.length > 1) {
+      wirePointerDown.current = false;
+      setOverlapChoice({
+        x: e.clientX, y: e.clientY,
+        pins: coincident.map(pin => ({ compId: pin.compId, pinId: pin.pinId, x: pin.x, y: pin.y, name: `${pin.componentName}.${pin.name}` })),
+      });
+      return;
+    }
+    connectPin(compId, pinId, px, py);
   };
 
   const handlePinMouseUp = (e: React.MouseEvent, compId: string, pinId: string, px: number, py: number) => {
@@ -1643,38 +1748,54 @@ export function SchematicEditor({
     if (action === 'replace') { setReplacingId(id); setIsPaletteOpen(true); }
   };
 
-  const downloadSchematic = (format: 'png' | 'svg' | 'pdf' | 'preview') => {
-    const source = svgRef.current;
-    if (!source) return;
-    const { width, height, widthMm, heightMm } = paperSize(printLayout);
-    const outsideElements = elements.some(el => {
-      const reachX = Math.max(65, ...getComponentPins(el).map(pin => Math.abs(pin.x) + 15));
-      const reachY = Math.max(65, ...getComponentPins(el).map(pin => Math.abs(pin.y) + 15));
-      return el.x - reachX < 0 || el.y - reachY < 0 || el.x + reachX > width || el.y + reachY > height;
-    });
-    const outsideWires = wireGeometries.some(geometry => geometry.points.some(point => point.x < 0 || point.y < 0 || point.x > width || point.y > height));
-    if ((outsideElements || outsideWires) &&
-      !window.confirm('Часть схемы выходит за пределы листа и будет обрезана. Сохранить лист?')) return;
-    const clone = source.cloneNode(true) as SVGSVGElement;
-    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-    clone.setAttribute('width', `${widthMm}mm`);
-    clone.setAttribute('height', `${heightMm}mm`);
-    clone.setAttribute('viewBox', `0 0 ${width} ${height}`);
-    clone.querySelectorAll('[data-export-hide="true"]').forEach(node => node.remove());
-    clone.querySelector('#schematic-screen-background')?.remove();
-    clone.querySelector('#schematic-world')?.removeAttribute('transform');
-    const background = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    background.setAttribute('x', '0'); background.setAttribute('y', '0');
-    background.setAttribute('width', String(width)); background.setAttribute('height', String(height));
-    background.setAttribute('fill', '#ffffff');
-    const world = clone.querySelector('#schematic-world');
-    clone.insertBefore(background, world || clone.firstChild);
-    const xml = new XMLSerializer().serializeToString(clone).replaceAll('#dc2626', '#1e293b').replaceAll('#2563eb', '#1e293b');
-    const fileName = `схема-${printLayout.format}-${printLayout.orientation}`;
-    if (format === 'preview') {
-      setPrintPreviewHtml(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><style>@page{size:${widthMm}mm ${heightMm}mm;margin:0}body{margin:0;background:#e2e8f0;display:flex;justify-content:center}svg{display:block;max-width:100%;height:auto;background:white;box-shadow:0 4px 24px #0002}@media print{body{display:block;background:white}svg{width:${widthMm}mm!important;height:${heightMm}mm!important;max-width:none;box-shadow:none}}</style></head><body>${xml}</body></html>`);
-      return;
+  useEffect(() => {
+    if (!exportTarget) return;
+    try {
+      const source = svgRef.current;
+      if (!source) return;
+      const clone = source.cloneNode(true) as SVGSVGElement;
+      clone.querySelectorAll('[data-export-hide="true"]').forEach(node => node.remove());
+      clone.querySelector('#schematic-screen-background')?.remove();
+      const world = clone.querySelector('#schematic-world') as SVGGElement | null;
+      if (!world) return;
+      world.removeAttribute('transform');
+      // Measure the same SVG nodes that are exported, including routed wires and labels.
+      // A hidden DOM attachment gives Firefox/Chromium reliable text metrics.
+      clone.style.cssText = 'position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none';
+      document.body.appendChild(clone);
+      let box: DOMRect;
+      try { box = world.getBBox(); } finally { clone.remove(); clone.removeAttribute('style'); }
+      const padding = 2 * SCHEMATIC_UNITS_PER_MM;
+      const bounds = elements.length || wires.length
+        ? { x: box.x - padding, y: box.y - padding, width: Math.max(box.width, 1) + 2 * padding, height: Math.max(box.height, 1) + 2 * padding }
+        : { x: 0, y: 0, width: 1, height: 1 };
+      const placement = computePrintPlacement(bounds, printLayout, printMarginMm, printMode, requestedPrintScale, centerPrint);
+      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      clone.setAttribute('width', `${placement.widthMm}mm`);
+      clone.setAttribute('height', `${placement.heightMm}mm`);
+      clone.setAttribute('viewBox', `0 0 ${placement.width} ${placement.height}`);
+      world.setAttribute('transform', `translate(${placement.translateX} ${placement.translateY}) scale(${placement.scale})`);
+      const background = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      background.setAttribute('x', '0'); background.setAttribute('y', '0');
+      background.setAttribute('width', String(placement.width)); background.setAttribute('height', String(placement.height));
+      background.setAttribute('fill', '#ffffff');
+      clone.insertBefore(background, world || clone.firstChild);
+      const xml = new XMLSerializer().serializeToString(clone).replaceAll('#dc2626', '#1e293b').replaceAll('#2563eb', '#1e293b');
+      const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><style>@page{size:${placement.widthMm}mm ${placement.heightMm}mm;margin:0}body{margin:0;background:#e2e8f0;display:flex;justify-content:center}svg{display:block;max-width:100%;height:auto;background:white;box-shadow:0 4px 24px #0002}@media print{body{display:block;background:white}svg{width:${placement.widthMm}mm!important;height:${placement.heightMm}mm!important;max-width:none;box-shadow:none}}</style></head><body>${xml}</body></html>`;
+      setExportPlan({ xml, html, placement });
+      setExportError(null);
+    } catch (error) {
+      setExportPlan(null);
+      setExportError(error instanceof Error ? error.message : 'Не удалось подготовить лист.');
     }
+  }, [exportTarget, printLayout, printMarginMm, printMode, requestedPrintScale, centerPrint, elements, wires, zoom, pan, showElementNames, showElementValues, showNodeNumbers]);
+
+  const downloadSchematic = (format: 'png' | 'svg' | 'pdf' | 'print') => {
+    if (!exportPlan || !exportPlan.placement.fits) return;
+    if (format === 'print') { printPreviewRef.current?.contentWindow?.print(); return; }
+    const { xml, placement } = exportPlan;
+    const { width, height, widthMm, heightMm } = placement;
+    const fileName = `схема-${printLayout.format}-${printLayout.orientation}`;
     if (format === 'svg') {
       const link = document.createElement('a');
       const svgUrl = URL.createObjectURL(new Blob([xml], { type: 'image/svg+xml;charset=utf-8' }));
@@ -1710,6 +1831,9 @@ export function SchematicEditor({
     image.src = url;
   };
 
+  // The cached symbol layer must still dispatch with the latest hovered contact.
+  const elementMouseDownRef = useRef(handleElementMouseDown);
+  elementMouseDownRef.current = handleElementMouseDown;
   return (
     <div className="schematic-editor flex flex-col h-full bg-slate-100 select-none border border-slate-300 rounded overflow-hidden text-slate-800">
       {/* Верхняя панель инструментов редактора. */}
@@ -1803,6 +1927,10 @@ export function SchematicEditor({
             <Trash2 className="w-3.5 h-3.5" />
           </button>
           <button type="button" disabled={!selectedWireId} onClick={() => onWiresChange(wires.map(wire => wire.id === selectedWireId ? { ...wire, disabled: !wire.disabled } : wire))} className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-40" title="Разорвать или восстановить выбранный провод">{wires.find(wire => wire.id === selectedWireId)?.disabled ? 'Соединить' : 'Разорвать'}</button>
+          <div role="group" aria-label="Режим прокладки провода" className="flex items-center rounded border border-slate-300 p-0.5">
+            <button type="button" aria-pressed={wireMode === 'orthogonal'} onClick={() => { setWireMode('orthogonal'); setWiringWaypoints([]); }} className={`rounded px-2 py-1 text-xs ${wireMode === 'orthogonal' ? 'bg-blue-600 text-white' : 'text-slate-700'}`}>Ортогональный</button>
+            <button type="button" aria-pressed={wireMode === 'direct'} onClick={() => { setWireMode('direct'); setWiringWaypoints([]); }} className={`rounded px-2 py-1 text-xs ${wireMode === 'direct' ? 'bg-blue-600 text-white' : 'text-slate-700'}`}>Прямой</button>
+          </div>
 
           <div className="flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 p-1 shadow-2xs" aria-label="Отображение схемы">
             <span className="px-1 text-[10px] font-bold uppercase tracking-wide text-blue-700">Вид</span>
@@ -1866,7 +1994,7 @@ export function SchematicEditor({
           <div className="flex items-center gap-0.5 bg-white border border-slate-300 rounded p-0.5 shadow-2xs">
             <button
               type="button"
-              onClick={() => setZoom((z) => Math.max(0.4, z - 0.1))}
+              onClick={() => setZoom((z) => Math.max(Math.min(0.01, z), z / 1.25))}
               className="p-1 hover:bg-slate-100 rounded text-slate-700 cursor-pointer"
               title="Уменьшить масштаб"
             >
@@ -1895,13 +2023,11 @@ export function SchematicEditor({
 
           <div className="h-5 w-px bg-slate-300 mx-0.5" />
 
-          <select aria-label="Формат листа" value={printLayout.format} onChange={event => onPrintLayoutChange({ ...printLayout, format: event.target.value as PrintLayout['format'] })} className="rounded border border-slate-300 bg-white px-1 py-1 text-xs" title="Формат листа в миллиметрах"><option value="A4">A4</option><option value="A3">A3</option></select>
-          <select aria-label="Ориентация листа" value={printLayout.orientation} onChange={event => onPrintLayoutChange({ ...printLayout, orientation: event.target.value as PrintLayout['orientation'] })} className="rounded border border-slate-300 bg-white px-1 py-1 text-xs" title="Ориентация листа"><option value="landscape">Альбомная</option><option value="portrait">Книжная</option></select>
-          <select aria-label="Шаг сетки в миллиметрах" value={printLayout.gridMm} onChange={event => onPrintLayoutChange({ ...printLayout, gridMm: Number(event.target.value) as PrintLayout['gridMm'] })} className="rounded border border-slate-300 bg-white px-1 py-1 text-xs" title="Шаг основной сетки в миллиметрах"><option value={2.5}>2,5 мм</option><option value={5}>5 мм</option><option value={10}>10 мм</option></select>
-          <button type="button" onClick={() => downloadSchematic('svg')} className="px-2.5 py-1 rounded text-xs font-semibold border border-slate-300 bg-white text-slate-700 hover:bg-slate-100" title="Сохранить лист SVG с физическим размером A3/A4 для печати">SVG</button>
-          <button type="button" onClick={() => downloadSchematic('pdf')} className="px-2.5 py-1 rounded text-xs font-semibold border border-slate-300 bg-white text-slate-700 hover:bg-slate-100" title="Сохранить PDF A3/A4 для печати в масштабе 1:1">PDF</button>
-          <button type="button" onClick={() => downloadSchematic('preview')} className="px-2.5 py-1 rounded text-xs font-semibold border border-slate-300 bg-white text-slate-700 hover:bg-slate-100" title="Предварительный просмотр и печать листа">Печать</button>
-          <button type="button" onClick={() => downloadSchematic('png')} className="px-2.5 py-1 rounded text-xs font-semibold flex items-center gap-1.5 border border-slate-300 bg-white text-slate-700 hover:bg-slate-100" title="Сохранить лист PNG A3/A4 при 300 dpi"><ImageDown className="w-3.5 h-3.5" /><span className="hidden lg:inline">PNG</span></button>
+          <select aria-label="Шаг сетки в миллиметрах" value={printLayout.gridMm} onChange={event => onPrintLayoutChange({ ...printLayout, gridMm: Number(event.target.value) as PrintLayout['gridMm'] })} className="rounded border border-slate-300 bg-white px-1 py-1 text-xs" title="Шаг основной сетки в миллиметрах"><option value={0.5}>0,5 мм</option><option value={1}>1 мм</option><option value={2}>2 мм</option><option value={2.5}>2,5 мм</option><option value={5}>5 мм</option><option value={10}>10 мм</option></select>
+          <button type="button" onClick={() => setExportTarget('svg')} className="px-2.5 py-1 rounded text-xs font-semibold border border-slate-300 bg-white text-slate-700 hover:bg-slate-100" title="Настройки экспорта SVG">SVG</button>
+          <button type="button" onClick={() => setExportTarget('pdf')} className="px-2.5 py-1 rounded text-xs font-semibold border border-slate-300 bg-white text-slate-700 hover:bg-slate-100" title="Настройки экспорта PDF">PDF</button>
+          <button type="button" onClick={() => setExportTarget('print')} className="px-2.5 py-1 rounded text-xs font-semibold border border-slate-300 bg-white text-slate-700 hover:bg-slate-100" title="Настройки печати">Печать</button>
+          <button type="button" onClick={() => setExportTarget('png')} className="px-2.5 py-1 rounded text-xs font-semibold flex items-center gap-1.5 border border-slate-300 bg-white text-slate-700 hover:bg-slate-100" title="Настройки экспорта PNG"><ImageDown className="w-3.5 h-3.5" /><span className="hidden lg:inline">PNG</span></button>
 
           {/* ВЫДЕЛЕННАЯ КНОПКА ПОСТРОЕНИЯ ГРАФИКА */}
           <button
@@ -2094,12 +2220,11 @@ export function SchematicEditor({
 
           {/* Группа элементов схемы с масштабированием и панорамированием */}
           <g id="schematic-world" transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`} style={{ fontFamily: 'GOST type A, GOST 2.304, Arial Narrow, sans-serif' }}>
-            <rect data-export-hide="true" x={0} y={0} width={paperSize(printLayout).width} height={paperSize(printLayout).height} fill="none" stroke="#64748b" strokeWidth={1.5 / zoom} strokeDasharray={`${7 / zoom} ${4 / zoom}`} pointerEvents="none" />
             {/* ПРОВОДА СХЕМЫ (WIRES) С ОРТОГОНАЛЬНОЙ ТРАССИРОВКОЙ И T-ОТВЕТВЛЕНИЯМИ */}
-            {wireGeometries.map((wg) => {
+            {useMemo(() => wireGeometries.map((wg) => {
               const { wire, pathD } = wg;
               const isSelected = selectedWireId === wire.id;
-              const isHovered = hoveredWirePoint?.wireId === wire.id;
+              const coincidentEndpoint = wg.points.length === 1 ? wg.points[0] : null;
 
               return (
                 <g
@@ -2141,18 +2266,6 @@ export function SchematicEditor({
                     strokeWidth={16}
                     className="cursor-pointer"
                   />
-                  {/* Подсветка сегмента провода при наведении */}
-                  {isHovered && !isSelected && !wire.disabled && (
-                    <path
-                      d={pathD}
-                      fill="none"
-                      stroke="#10b981"
-                      strokeWidth={3.5}
-                      strokeOpacity={0.4}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  )}
                   {/* Видимый провод схемы под прямыми углами */}
                   <path
                     d={pathD}
@@ -2163,23 +2276,41 @@ export function SchematicEditor({
                     strokeLinecap="round"
                     strokeLinejoin="round"
                   />
+                  {/* Keep an explicit connection between coincident pins visible, even without a line segment. */}
+                  {coincidentEndpoint && (
+                    <circle
+                      cx={coincidentEndpoint.x}
+                      cy={coincidentEndpoint.y}
+                      r={6}
+                      fill={wire.disabled ? '#ffffff' : isSelected ? '#2563eb' : '#1e293b'}
+                      stroke={wire.disabled ? '#94a3b8' : '#ffffff'}
+                      strokeWidth={1.5 / zoom}
+                      className="cursor-pointer"
+                    />
+                  )}
                 </g>
               );
-            })}
+            }), [wireGeometries, selectedWireId, zoom, wiringFrom, pendingComponentType, wires, elements, gridUnits, wiringWaypoints, wireMode, pan, onWiresChange, onElementsChange])}
+            {hoveredWirePoint && (() => {
+              const geometry = wireGeometries.find(item => item.wire.id === hoveredWirePoint.wireId);
+              return geometry && !geometry.wire.disabled && selectedWireId !== geometry.wire.id
+                ? <path data-export-hide="true" d={geometry.pathD} fill="none" stroke="#10b981" strokeWidth={3.5} strokeOpacity={0.4} pointerEvents="none" />
+                : null;
+            })()}
 
             {/* Предпросмотр ручных точек и автоматически ортогонального последнего участка. */}
             {wiringFrom && wiringCursor && (() => {
               const fromPin = pinPositions.get(`${wiringFrom.compId}_${wiringFrom.pinId}`);
               const targetIsPinOrWire = !!hoveredPin || !!hoveredWirePoint;
               const tailStart = wiringWaypoints.at(-1) ?? wiringFrom;
-              const snappedEnd = targetIsPinOrWire ? wiringCursor : snapManualWirePoint(tailStart, wiringCursor, gridUnits);
+              const snappedEnd = wireMode === 'direct' || targetIsPinOrWire ? wiringCursor : snapManualWirePoint(tailStart, wiringCursor, gridUnits);
               const pinDirection = fromPin && Math.hypot(fromPin.relX, fromPin.relY) > 0
                 ? { x: fromPin.relX / Math.hypot(fromPin.relX, fromPin.relY), y: fromPin.relY / Math.hypot(fromPin.relX, fromPin.relY) }
                 : { x: 1, y: 0 };
               const previewEnd = samePoint(tailStart, snappedEnd)
                 ? { x: tailStart.x + pinDirection.x * 14, y: tailStart.y + pinDirection.y * 14 }
                 : snappedEnd;
-              const pts = wiringWaypoints.length
+              const pts = wireMode === 'direct' ? [wiringFrom, previewEnd] : wiringWaypoints.length
                 ? buildStoredWireRoute(wiringFrom, previewEnd, wiringWaypoints, undefined, undefined, undefined, undefined, gridUnits)
                 : targetIsPinOrWire
                   ? computeOrthogonalWirePoints(
@@ -2223,11 +2354,11 @@ export function SchematicEditor({
             )}
 
             {/* ЭЛЕМЕНТЫ СХЕМЫ (COMPONENTS) */}
-            {elements.map((el) => {
+            {useMemo(() => elements.map((el) => {
               const isSelected = selectedId === el.id;
               const pins = getComponentPins(el);
               const valueLabel = getComponentValueLabel(el);
-              const labelLayout = getComponentLabelLayout({
+              const labelLayout = sceneLabels.get(el.id) ?? getComponentLabelLayout({
                 rotation: el.rotation,
                 flipH: el.flipH,
                 flipV: el.flipV,
@@ -2237,8 +2368,9 @@ export function SchematicEditor({
               return (
                 <g
                   key={el.id}
+                  data-component-id={el.id}
                   transform={`translate(${el.x}, ${el.y})`}
-                  onMouseDown={(e) => handleElementMouseDown(e, el)}
+                  onMouseDown={(e) => elementMouseDownRef.current(e, el)}
                   onMouseEnter={() => onHoverStatus?.(`${el.name} · ${COMPONENT_CATALOG.find(item => item.type === el.type)?.name ?? el.type}${valueLabel ? ` · ${valueLabel}` : ''} · выводов: ${pins.length}${el.isolation ? ` · ${el.isolation === 'open' ? 'разрыв' : 'замыкание'}` : ''}`)}
                   onMouseLeave={() => onHoverStatus?.(null)}
                   onMouseUp={(e) => {
@@ -2246,6 +2378,7 @@ export function SchematicEditor({
                   }}
                   onDoubleClick={(e) => handleElementDoubleClick(e, el)}
                   onWheel={(e) => {
+                    if (e.ctrlKey || e.metaKey) return;
                     if (wiringFrom || pendingComponentType || el.type === 'JUNCTION') return;
                     e.preventDefault(); e.stopPropagation();
                     if (e.buttons & 1) {
@@ -2291,10 +2424,10 @@ export function SchematicEditor({
                     style={el.isolation === 'open' ? { filter: 'grayscale(1)' } : undefined}
                   >
                     {el.type === 'JUNCTION'
-                      ? <g onMouseEnter={() => setHoveredJunctionId(el.id)} onMouseLeave={() => setHoveredJunctionId(null)}>
+                      ? <g className="group">
                           <circle r={10} fill="transparent" />
                           <circle r={3.5} fill={isSelected ? '#dc2626' : '#1e293b'} pointerEvents="none" />
-                          {(hoveredJunctionId === el.id || isSelected) && <circle data-export-hide="true" r={6} fill="none" stroke="#2563eb" strokeWidth={1.5} pointerEvents="none" />}
+                          <circle data-export-hide="true" r={6} fill="none" stroke="#2563eb" strokeWidth={1.5} pointerEvents="none" className={isSelected ? '' : 'opacity-0 group-hover:opacity-100'} />
                           <circle r={6 / zoom} fill="transparent" className="cursor-pointer"
                             onMouseDown={(e) => handlePinClick(e, el.id, '1', el.x, el.y)}
                             onMouseUp={(e) => handlePinMouseUp(e, el.id, '1', el.x, el.y)} />
@@ -2307,7 +2440,7 @@ export function SchematicEditor({
                   {el.type !== 'TEXT' && el.type !== 'JUNCTION' && (showElementNames || showElementValues || el.isolation === 'short') && <g data-element-labels={el.id} className="pointer-events-none select-none" style={{ fontFamily: 'GOST type A, GOST 2.304, Arial Narrow, sans-serif', paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 3.5, strokeLinejoin: 'round' }}>
                     {showElementNames && <text data-label-kind="name" x={labelLayout.name.x} y={labelLayout.name.y} textAnchor={labelLayout.name.anchor} fontSize={11} fontWeight="bold" textDecoration={el.type === 'VCCS' || el.type === 'CCCS' ? 'underline' : undefined} fill={el.isolation === 'open' ? '#94a3b8' : '#1e293b'}>{el.name}</text>}
                     {showElementValues && valueLabel && <text data-label-kind="value" x={labelLayout.value.x} y={labelLayout.value.y} textAnchor={labelLayout.value.anchor} fontSize={11} fill={el.isolation === 'open' ? '#94a3b8' : '#3730a3'}>{valueLabel}</text>}
-                    {el.isolation === 'short' && <text data-label-kind="isolation" x={labelLayout.isolation.x} y={labelLayout.isolation.y} textAnchor="middle" fontSize={9} fill="#b91c1c" fontWeight="bold">КЗ</text>}
+                    {el.isolation === 'short' && <text data-label-kind="isolation" x={labelLayout.isolation.x} y={labelLayout.isolation.y} textAnchor={labelLayout.isolation.anchor} fontSize={9} fill="#b91c1c" fontWeight="bold">КЗ</text>}
                   </g>}
 
                   {/* Выводы элемента (Pins с магнитным притягиванием и подсветкой) — только для стандартных компонентов */}
@@ -2318,7 +2451,7 @@ export function SchematicEditor({
                       const pinKey = `${el.id}_${pin.id}`;
                       const nodeNum = circuitGraph.pinToNode.get(pinKey);
                       const isWiringSource = wiringFrom?.compId === el.id && wiringFrom?.pinId === pin.id;
-                      const isHovered = hoveredPin?.compId === el.id && hoveredPin?.pinId === pin.id;
+                      const isHovered = false;
                       const isConnected = connectedPinKeys.has(pinKey);
 
                       return (
@@ -2383,9 +2516,9 @@ export function SchematicEditor({
                           {/* Название вывода */}
                           {pin.label && (
                             <text
-                              x={pin.x + (pin.x < 0 ? 6 : -6)}
-                              y={pin.y + (pin.y < 0 ? 8 : -4)}
-                              textAnchor={pin.x < 0 ? 'start' : 'end'}
+                              x={pin.x + (Math.abs(pin.y) > Math.abs(pin.x) ? 8 : pin.x > 0 ? 7 : -7)}
+                              y={pin.y + (Math.abs(pin.y) > Math.abs(pin.x) ? 3 : -7)}
+                              textAnchor={pin.x > 0 ? 'start' : pin.x < 0 ? 'end' : 'middle'}
                               className="font-mono text-3xs font-bold fill-slate-700 pointer-events-none select-none"
                               style={{ fontSize: '9px' }}
                             >
@@ -2408,37 +2541,18 @@ export function SchematicEditor({
                       );
                     })}
 
-                  {/* Ореол и подсказка соединения для узла (JUNCTION) во время проводки */}
-                  {el.type === 'JUNCTION' && hoveredPin?.compId === el.id && (
-                    <g pointerEvents="none">
-                      <circle
-                        cx={0}
-                        cy={0}
-                        r={10}
-                        fill="#10b981"
-                        fillOpacity={0.25}
-                        stroke="#059669"
-                        strokeWidth={1.5}
-                      />
-                      {wiringFrom && wiringFrom.compId !== el.id && (
-                        <g transform="translate(8, -18)">
-                          <rect width={70} height={16} rx={3} fill="#0f172a" fillOpacity={0.9} />
-                          <text
-                            x={35}
-                            y={11}
-                            textAnchor="middle"
-                            fill="#ffffff"
-                            style={{ fontSize: '9px', fontFamily: 'sans-serif', fontWeight: 600 }}
-                          >
-                            Соединить
-                          </text>
-                        </g>
-                      )}
-                    </g>
-                  )}
                 </g>
               );
-            })}
+            }), [sceneLabels, elements, wires, selectedId, wiringFrom, pendingComponentType, zoom, showElementNames, showElementValues, showNodeNumbers, circuitGraph, connectedPinKeys, copiedElement, gridUnits, wireMode, pan, draggingElemId, dragOffset, wiringWaypoints, onHoverStatus, onWiresChange, onElementsChange, onOpenProperties, onBeginContinuousEdit, onEndContinuousEdit])}
+            {hoveredPin && (wiringFrom?.compId !== hoveredPin.compId || wiringFrom.pinId !== hoveredPin.pinId) && (() => {
+              const pin = pinPositions.get(`${hoveredPin.compId}_${hoveredPin.pinId}`);
+              return pin && <g data-export-hide="true" transform={`translate(${pin.x}, ${pin.y})`} pointerEvents="none">
+                <circle r={10} fill="#10b981" fillOpacity={0.25} stroke="#059669" strokeWidth={1.5} />
+                {pin.label === '+' ? <rect x={-6} y={-6} width={12} height={12} fill="#10b981" stroke="#ffffff" strokeWidth={1.5} />
+                  : <circle r={6} fill="#10b981" stroke="#ffffff" strokeWidth={1.5} />}
+                {wiringFrom && <g transform="translate(8, -18)"><rect width={70} height={16} rx={3} fill="#0f172a" fillOpacity={0.9} /><text x={35} y={11} textAnchor="middle" fill="#ffffff" fontSize={9} fontWeight="bold">Соединить</text></g>}
+              </g>;
+            })()}
           </g>
 
           {/* Ghost-превью компонента при перемещении мыши */}
@@ -2464,7 +2578,7 @@ export function SchematicEditor({
             </g>
           )}
         </svg>
-        {showGrid && <div className="pointer-events-none absolute bottom-2 right-2 rounded border border-slate-200 bg-white/90 px-2 py-1 font-mono text-[10px] text-slate-500 shadow-sm">Сетка: {printLayout.gridMm} мм · вспомогательная: 2,5 мм · {printLayout.format}</div>}
+        {showGrid && <div className="pointer-events-none absolute bottom-2 right-2 rounded border border-slate-200 bg-white/90 px-2 py-1 font-mono text-[10px] text-slate-500 shadow-sm">Сетка: {printLayout.gridMm} мм</div>}
       </div>
       {contextMenu && (() => {
         const el = elements.find(item => item.id === contextMenu.id);
@@ -2489,6 +2603,11 @@ export function SchematicEditor({
           {items.map(item => <button key={item.action} type="button" role="menuitem" disabled={item.disabled} onClick={() => runElementAction(el.id, item.action)} className="block w-full rounded px-3 py-1.5 text-left text-slate-700 hover:bg-blue-50 hover:text-blue-700 disabled:opacity-40 disabled:hover:bg-white">{item.label}</button>)}
         </div>;
       })()}
+      {overlapChoice && <div role="dialog" aria-label="Выбор совпадающего контакта" className="fixed z-[105] min-w-48 rounded border border-blue-300 bg-white p-2 text-xs shadow-xl" style={{ left: Math.min(overlapChoice.x + 8, window.innerWidth - 210), top: Math.min(overlapChoice.y + 8, window.innerHeight - 140) }}>
+        <div className="mb-1 font-semibold text-slate-700">Выберите контакт</div>
+        {overlapChoice.pins.map(pin => <button key={`${pin.compId}_${pin.pinId}`} type="button" className="block w-full rounded px-2 py-1 text-left hover:bg-blue-100" onClick={() => { setOverlapChoice(null); connectPin(pin.compId, pin.pinId, pin.x, pin.y); }}>{pin.name}</button>)}
+        <button type="button" className="mt-1 text-slate-500 hover:text-slate-800" onClick={() => setOverlapChoice(null)}>Отмена</button>
+      </div>}
       {wireContextMenu && (() => {
         const wire = wires.find(item => item.id === wireContextMenu.id);
         if (!wire) return null;
@@ -2497,9 +2616,19 @@ export function SchematicEditor({
           <button type="button" role="menuitem" className="block w-full rounded px-3 py-1.5 text-left hover:bg-rose-50" onClick={() => { onWiresChange(wires.filter(item => item.id !== wire.id)); setWireContextMenu(null); setSelectedWireId(null); }}>Удалить провод</button>
         </div>;
       })()}
-      {printPreviewHtml && <div role="dialog" aria-modal="true" aria-label="Предварительный просмотр печати" className="fixed inset-0 z-[110] flex flex-col bg-slate-900/70 p-4">
-        <div className="mx-auto flex w-full max-w-6xl items-center justify-between rounded-t bg-white px-4 py-2 text-sm font-semibold text-slate-800"><span>Предварительный просмотр · {printLayout.format} · {printLayout.orientation === 'landscape' ? 'альбомная' : 'книжная'} · 1:1</span><div className="flex gap-2"><button type="button" onClick={() => printPreviewRef.current?.contentWindow?.print()} className="rounded bg-blue-600 px-3 py-1.5 text-white">Печать…</button><button type="button" onClick={() => setPrintPreviewHtml(null)} className="rounded border border-slate-300 px-3 py-1.5">Закрыть</button></div></div>
-        <iframe ref={printPreviewRef} title="Лист схемы" srcDoc={printPreviewHtml} className="mx-auto min-h-0 w-full max-w-6xl flex-1 rounded-b bg-white" />
+      {exportTarget && <div role="dialog" aria-modal="true" aria-label="Настройки печати и экспорта" className="fixed inset-0 z-[110] flex flex-col bg-slate-900/70 p-4">
+        <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-3 rounded-t bg-white px-4 py-3 text-sm text-slate-800">
+          <strong>Печать и экспорт</strong>
+          <label>Формат <select aria-label="Формат листа" value={printLayout.format} onChange={event => onPrintLayoutChange({ ...printLayout, format: event.target.value as PrintLayout['format'] })} className="rounded border border-slate-300 p-1"><option value="A4">A4</option><option value="A3">A3</option></select></label>
+          <label>Ориентация <select aria-label="Ориентация листа" value={printLayout.orientation} onChange={event => onPrintLayoutChange({ ...printLayout, orientation: event.target.value as PrintLayout['orientation'] })} className="rounded border border-slate-300 p-1"><option value="landscape">Альбомная</option><option value="portrait">Книжная</option></select></label>
+          <label>Режим <select aria-label="Режим масштабирования печати" value={printMode} onChange={event => setPrintMode(event.target.value as 'actual' | 'fit')} className="rounded border border-slate-300 p-1"><option value="actual">Заданный масштаб</option><option value="fit">Вписать в страницу</option></select></label>
+          {printMode === 'actual' && <label>Масштаб <select aria-label="Масштаб печати" value={requestedPrintScale} onChange={event => setRequestedPrintScale(Number(event.target.value))} className="rounded border border-slate-300 p-1"><option value={2}>2:1</option><option value={1}>1:1</option><option value={0.5}>1:2</option><option value={0.4}>1:2,5</option><option value={0.25}>1:4</option></select></label>}
+          <label>Поля, мм <input aria-label="Поля страницы в миллиметрах" type="number" min="0" max="100" step="1" value={printMarginMm} onChange={event => setPrintMarginMm(Number(event.target.value))} className="w-14 rounded border border-slate-300 p-1" /></label>
+          <label className="flex items-center gap-1"><input type="checkbox" checked={centerPrint} onChange={event => setCenterPrint(event.target.checked)} />По центру</label>
+          <div className="ml-auto flex gap-2"><button type="button" disabled={!exportPlan?.placement.fits} onClick={() => downloadSchematic(exportTarget)} className="rounded bg-blue-600 px-3 py-1.5 text-white disabled:opacity-40">{exportTarget === 'print' ? 'Печать…' : `Скачать ${exportTarget.toUpperCase()}`}</button><button type="button" onClick={() => setExportTarget(null)} className="rounded border border-slate-300 px-3 py-1.5">Закрыть</button></div>
+        </div>
+        <div className="mx-auto w-full max-w-6xl bg-white px-4 py-1 text-xs text-slate-600">{exportPlan && <>Схема: {exportPlan.placement.contentWidthMm.toFixed(1)} × {exportPlan.placement.contentHeightMm.toFixed(1)} мм · фактический масштаб {printScaleLabel(exportPlan.placement.scale)} · лист {exportPlan.placement.widthMm} × {exportPlan.placement.heightMm} мм</>}{exportError && <span className="text-red-700">{exportError}</span>}{exportPlan && !exportPlan.placement.fits && <span className="ml-2 text-red-700">Схема не помещается: выберите А3, уменьшите масштаб или включите «Вписать в страницу». Автоматическое обрезание отключено.</span>}</div>
+        <iframe ref={printPreviewRef} title="Предварительный просмотр листа" srcDoc={exportPlan?.html ?? ''} className="mx-auto min-h-0 w-full max-w-6xl flex-1 rounded-b bg-white" />
       </div>}
     </div>
   </div>

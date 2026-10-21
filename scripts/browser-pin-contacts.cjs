@@ -38,6 +38,7 @@ async function worldPoint(page, x, y) {
     assert(bounds);
     const components = page.locator('#schematic-world > g[transform^="translate"]');
     const wires = page.locator('#schematic-world path[stroke="transparent"]');
+    const hoverMarker = page.locator('#schematic-world > g[data-export-hide="true"][transform^="translate"] circle[stroke="#059669"]');
     const pin = (component, terminal) => components.nth(component).locator('circle[fill="transparent"].cursor-pointer').nth(terminal);
     const placeResistor = async (x, y) => {
       await page.getByRole('button', { name: 'Резистор' }).first().click();
@@ -62,14 +63,14 @@ async function worldPoint(page, x, y) {
     const from = await screenCenter(source);
     const to = await screenCenter(target);
     await page.mouse.move(from.x, from.y);
-    await components.nth(0).locator('circle[stroke="#059669"]').waitFor();
+    await hoverMarker.waitFor();
     await page.screenshot({ path: '.work/browser-pin-hover.png' });
     await page.mouse.down();
     await page.getByText('Проводка активна: выберите конечный контакт или существующий провод').waitFor();
     await page.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 5 });
     assert.equal(await page.locator('#schematic-world path[stroke-dasharray="4 3"]').count(), 1, 'wire preview follows the cursor');
     await page.mouse.move(to.x, to.y, { steps: 5 });
-    await components.nth(1).locator('circle[stroke="#059669"]').waitFor();
+    await hoverMarker.waitFor();
     await page.mouse.up();
     assert.equal(await wires.count(), 1, 'dragging from an ordinary-mode contact creates a wire');
     await page.screenshot({ path: '.work/browser-pin-connected.png' });
@@ -79,8 +80,18 @@ async function worldPoint(page, x, y) {
     const immediatePreview = await page.locator('#schematic-world path[stroke-dasharray="4 3"]').getAttribute('d');
     const previewNumbers = immediatePreview.match(/-?\d+(?:\.\d+)?/g).map(Number);
     assert.ok(previewNumbers.length >= 4 && (previewNumbers[0] !== previewNumbers[2] || previewNumbers[1] !== previewNumbers[3]), 'a nonzero wire stub is visible immediately after selecting a terminal');
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    assert.equal(await page.locator('#schematic-world path[stroke-dasharray="4 3"]').count(), 0, 'losing window focus cancels click-to-wire preview');
+    await page.mouse.click(from.x, from.y);
+    assert.equal(await page.locator('#schematic-world path[stroke-dasharray="4 3"]').count(), 1, 'wiring can start again after blur');
     await page.mouse.click(bounds.x + 100, bounds.y + 500, { button: 'right' });
     assert.equal(await page.locator('#schematic-world path[stroke-dasharray="4 3"]').count(), 0, 'right click cancels the pending wire');
+    await page.mouse.click(from.x, from.y);
+    await page.keyboard.press('Control+z');
+    await page.locator('#schematic-world path[stroke-dasharray="4 3"]').waitFor({ state: 'detached', timeout: 2000 });
+    assert.equal(await page.locator('#schematic-world path[stroke-dasharray="4 3"]').count(), 0, 'undo clears both the wire preview and its source pin');
+    await page.keyboard.press('Control+y');
+    assert.equal(await wires.count(), 1, 'redo restores the completed connection without a stale preview');
 
     await placeResistor(780, 380);
     await dragPinToPin(pin(0, 1), pin(2, 0));
@@ -88,7 +99,11 @@ async function worldPoint(page, x, y) {
     await dragPinToPin(pin(0, 1), pin(1, 0));
     assert.equal(await wires.count(), 2, 'repeating the same pair does not create a duplicate');
 
-    const wireSegment = await worldPoint(page, 600, 360);
+    const wireSegment = await wires.last().evaluate(path => {
+      const point = path.getPointAtLength(path.getTotalLength() - 60);
+      const screen = point.matrixTransform(path.getScreenCTM());
+      return { x: screen.x, y: screen.y };
+    });
     await page.mouse.click(wireSegment.x, wireSegment.y);
     await page.keyboard.press('Delete');
     assert.equal(await wires.count(), 1, 'selected wire can be deleted');
@@ -98,7 +113,7 @@ async function worldPoint(page, x, y) {
     await page.getByRole('button', { name: 'Увеличить масштаб' }).click();
     const zoomedPin = await screenCenter(pin(1, 1));
     await page.mouse.move(zoomedPin.x, zoomedPin.y);
-    await components.nth(1).locator('circle[stroke="#059669"]').waitFor();
+    await hoverMarker.waitFor();
     await dragPinToPin(pin(1, 1), pin(2, 1));
     assert.equal(await wires.count(), 3, 'contacts remain interactive after zooming');
 
@@ -151,7 +166,7 @@ async function worldPoint(page, x, y) {
       for (let terminal = 0; terminal < count; terminal++) {
         const center = await screenCenter(hitTargets.nth(terminal));
         await page.mouse.move(center.x, center.y);
-        await components.nth(index).locator('circle[stroke="#059669"]').waitFor({ timeout: 2000 });
+        await hoverMarker.waitFor({ timeout: 2000 });
         checkedPins++;
       }
     }

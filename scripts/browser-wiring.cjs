@@ -109,6 +109,8 @@ const fs = require('node:fs/promises');
   await page.getByText('roundtrip', { exact: true }).waitFor();
   const reloadedPaths = await page.locator('#schematic-world path[stroke="transparent"]').evaluateAll(nodes => nodes.map(node => node.getAttribute('d')));
   assert.deepEqual(reloadedPaths, branchedPaths, 'SCM reload preserves visible route topology');
+  await page.mouse.move(5, 5);
+  const beforeEditImage = await page.locator('#schematic-world').screenshot({ path: '.work/browser-wire-before-edit.png' });
   const screenPoint = (x, y) => page.evaluate(([x, y]) => {
     const world = document.querySelector('#schematic-world');
     const svg = world.ownerSVGElement;
@@ -129,8 +131,13 @@ const fs = require('node:fs/promises');
   assert.equal(new Set(editedPaths).size, editedPaths.length, 'dragging does not leave duplicate old routes');
   assert.notDeepEqual(editedPaths, reloadedPaths, 'segment edit changes the visible route');
   assert.ok(editedPaths[3].startsWith('M 870 300') && editedPaths[3].endsWith('620 310'), 'segment edit retains electrical endpoints');
+  await page.mouse.move(5, 5);
+  await page.locator('#schematic-world').screenshot({ path: '.work/browser-wire-after-edit.png' });
   await page.keyboard.press('Control+z');
   assert.deepEqual(await page.locator('#schematic-world path[stroke="transparent"]').evaluateAll(nodes => nodes.map(node => node.getAttribute('d'))), reloadedPaths);
+  await page.mouse.move(5, 5);
+  const restoredImage = await page.locator('#schematic-world').screenshot({ path: '.work/browser-wire-after-undo.png' });
+  assert(beforeEditImage.equals(restoredImage), 'undo restores identical rendered pixels without ghost segments');
   await page.keyboard.press('Control+y');
   assert.deepEqual(await page.locator('#schematic-world path[stroke="transparent"]').evaluateAll(nodes => nodes.map(node => node.getAttribute('d'))), editedPaths);
   const manualStart = await screenPoint(900, 300);
@@ -217,5 +224,12 @@ const fs = require('node:fs/promises');
   assert.notEqual(parallelGraph[0], parallelGraph[2], 'parallel branch sides stay distinct');
   await page.screenshot({ path: '.work/browser-parallel.png' });
   console.log(JSON.stringify({ stage: 'parallel', parallelPaths, parallelGraph, errors }, null, 2));
+  for (let cycle = 0; cycle < 2; cycle++) {
+    for (let step = 0; step < 30; step++) await page.getByRole('button', { name: 'Увеличить масштаб' }).click();
+    assert.match(await page.locator('#schematic-world').getAttribute('transform'), /scale\(2\.5\)/, 'maximum zoom is stable');
+    for (let step = 0; step < 30; step++) await page.getByRole('button', { name: 'Уменьшить масштаб' }).click();
+    assert.match(await page.locator('#schematic-world').getAttribute('transform'), /scale\(0\.01\)/, '1% minimum zoom is stable for large schematics');
+  }
+  assert.deepEqual(await page.locator('#schematic-world path[stroke="transparent"]').evaluateAll(nodes => nodes.map(node => node.getAttribute('d'))), parallelPaths, 'repeated extreme zoom leaves model-space wire geometry unchanged');
   await browser.close();
 })().catch(error => { console.error(error); process.exit(1); });

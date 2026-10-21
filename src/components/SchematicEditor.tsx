@@ -785,6 +785,7 @@ export function SchematicEditor({
   const [selectedWireId, setSelectedWireId] = useState<string | null>(null);
   const [wireMode, setWireMode] = useState<'orthogonal' | 'direct'>('orthogonal');
   const [exportTarget, setExportTarget] = useState<'png' | 'svg' | 'pdf' | 'print' | null>(null);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [printMode, setPrintMode] = useState<'actual' | 'fit'>('actual');
   const [requestedPrintScale, setRequestedPrintScale] = useState(1);
   const [printMarginMm, setPrintMarginMm] = useState(5);
@@ -2276,10 +2277,13 @@ export function SchematicEditor({
           <div className="h-5 w-px bg-slate-300 mx-0.5" />
 
           <select aria-label="Шаг сетки в миллиметрах" value={printLayout.gridMm} onChange={event => onPrintLayoutChange({ ...printLayout, gridMm: Number(event.target.value) as PrintLayout['gridMm'] })} className="rounded border border-slate-300 bg-white px-1 py-1 text-xs" title="Шаг основной сетки в миллиметрах"><option value={0.5}>0,5 мм</option><option value={1}>1 мм</option><option value={2}>2 мм</option><option value={2.5}>2,5 мм</option><option value={5}>5 мм</option><option value={10}>10 мм</option></select>
-          <button type="button" onClick={() => setExportTarget('svg')} className="px-2.5 py-1 rounded text-xs font-semibold border border-slate-300 bg-white text-slate-700 hover:bg-slate-100" title="Настройки экспорта SVG">SVG</button>
-          <button type="button" onClick={() => setExportTarget('pdf')} className="px-2.5 py-1 rounded text-xs font-semibold border border-slate-300 bg-white text-slate-700 hover:bg-slate-100" title="Настройки экспорта PDF">PDF</button>
-          <button type="button" onClick={() => setExportTarget('print')} className="px-2.5 py-1 rounded text-xs font-semibold border border-slate-300 bg-white text-slate-700 hover:bg-slate-100" title="Настройки печати">Печать</button>
-          <button type="button" onClick={() => setExportTarget('png')} className="px-2.5 py-1 rounded text-xs font-semibold flex items-center gap-1.5 border border-slate-300 bg-white text-slate-700 hover:bg-slate-100" title="Настройки экспорта PNG"><ImageDown className="w-3.5 h-3.5" /><span className="hidden lg:inline">PNG</span></button>
+          <div className="relative" onMouseLeave={() => setExportMenuOpen(false)}>
+            <button type="button" aria-haspopup="menu" aria-expanded={exportMenuOpen} onClick={() => { setPendingComponentType(null); setExportMenuOpen(open => !open); }} className="flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100" title="Экспорт и печать"><ImageDown className="h-3.5 w-3.5" />Экспорт ▾</button>
+            {exportMenuOpen && <div role="menu" aria-label="Формат экспорта" className="absolute right-0 top-full z-50 min-w-36 rounded border border-slate-300 bg-white py-1 shadow-lg">
+              {([['svg', 'SVG'], ['pdf', 'PDF'], ['png', 'PNG'], ['print', 'Печать']] as const).map(([format, label]) =>
+                <button key={format} type="button" role="menuitem" onClick={() => { setExportMenuOpen(false); setExportTarget(format); }} className="block w-full px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-blue-50">{label}</button>)}
+            </div>}
+          </div>
 
           {/* ВЫДЕЛЕННАЯ КНОПКА ПОСТРОЕНИЯ ГРАФИКА */}
           <button

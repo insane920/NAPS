@@ -24,7 +24,7 @@
 | `npx electron-builder --linux AppImage --x64` | Неуспешно: Windows-дистрибутив Electron в `electronDist` не содержит Linux `electron`; WSL-дистрибутив не установлен. Частичный `linux-unpacked` удалён. |
 | `git diff --check` | Ошибок пробелов нет. |
 
-Windows-артефакты: `release/NAPS-Setup-0.6.0-x64.exe` (102887356 байт, SHA-256 `031DA9968C52646A779FCF57D6924988DA94169F1C6413472B084DAE28FC8063`) и `release/NAPS-Portable-0.6.0-x64.exe` (102742834 байт, SHA-256 `18919D7581372B60D066C3DBCAFBC469D9BFAB160CA5E750859B7B688808E163`).
+Windows-артефакты: `release/NAPS-Setup-0.6.0-x64.exe` (102887405 байт, SHA-256 `F78C3FA4A3B37C7BCD9052657A9F018A63441EAB5654C41B5EFED1890B7D0BD2`) и `release/NAPS-Portable-0.6.0-x64.exe` (102742888 байт, SHA-256 `CA6A641A8BA153E9A37D6E85B2A5B7B18561DBECC793ECC94E9830E44A8FD5DB`).
 
 ## Статус пунктов полного ТЗ
 

@@ -52,7 +52,30 @@ const center = locator => locator.evaluate(circle => {
     assert.equal(await page.locator('[data-component-id]').count(), 4, 'undo removes the crossing junction with its wire');
     await page.keyboard.press('Control+y');
     assert.equal(await page.locator('[data-component-id]').count(), 5, 'redo restores the connected junction');
+    const top = await center(pin(2, 1));
+    const bottom = await center(pin(3, 0));
+    const grab = { x: top.x, y: top.y + (bottom.y - top.y) * 0.25 };
+    await page.mouse.move(grab.x, grab.y);
+    await page.mouse.down();
+    await page.mouse.move(grab.x + 350, grab.y, { steps: 4 });
+    await page.mouse.up();
+    const [movedDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
+    const movedScm = await fs.readFile(await movedDownload.path(), 'utf8');
+    const moved = await page.evaluate(async scm => {
+      const { parseYamlScm } = await import('/src/utils/yamlScm.ts');
+      const { buildCircuitGraph } = await import('/src/math/circuitSolver.ts');
+      const parsed = parseYamlScm(scm);
+      const ids = Object.fromEntries(parsed.elements.map(item => [item.name, item.id]));
+      const nodes = buildCircuitGraph(parsed.elements, parsed.wires).pinToNode;
+      return { junctions: parsed.elements.filter(item => item.autoCrossing).length,
+        joined: nodes.get(`${ids.R1}_2`) === nodes.get(`${ids.R3}_2`) };
+    }, movedScm);
+    assert.deepEqual(moved, { junctions: 0, joined: false }, 'moving the crossing segment away disconnects the electrical nets');
+    await page.keyboard.press('Control+z');
+    assert.equal(await page.locator('[data-component-id]').count(), 5, 'undo restores the crossing after segment edit');
+    await page.keyboard.press('Control+y');
+    assert.equal(await page.locator('[data-component-id]').count(), 4, 'redo removes the crossing again');
     assert.deepEqual(errors, []);
-    console.log('PASS: SCM 8 crossing creates a calculated junction; save, undo and redo preserve it.');
+    console.log('PASS: SCM 8 crossing creation, segment edit, disconnection, save and undo/redo.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

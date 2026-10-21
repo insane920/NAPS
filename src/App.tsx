@@ -95,7 +95,10 @@ export default function App() {
     }
   }, []);
   const beginContinuousHistory = useCallback(() => {
-    continuousHistoryGroup.current = true; beginHistoryChange();
+    continuousHistoryGroup.current = true;
+    if (historyGroupTimer.current) clearTimeout(historyGroupTimer.current);
+    historyGroupTimer.current = null;
+    beginHistoryChange();
   }, [beginHistoryChange]);
   const endContinuousHistory = useCallback(() => {
     continuousHistoryGroup.current = false; closeHistoryGroup();

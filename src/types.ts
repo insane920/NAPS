@@ -349,6 +349,8 @@ export interface CircuitElement {
   };
   portName?: string;    // Name of port (e.g. "IN", "OUT", "GATE")
   textDirective?: string; // Text content for TEXT component
+  /** Generated at a geometric crossing in SCM 8; can be rebuilt after routing edits. */
+  autoCrossing?: boolean;
 }
 
 export interface CircuitWire {
@@ -365,6 +367,8 @@ export interface CircuitWire {
   manual?: boolean;
   /** A visible planned route with no electrical continuity. */
   disabled?: boolean;
+  /** Stable identity of a conductor before an automatic crossing split. */
+  originWireId?: string;
 }
 
 /** SCM 6/7 keep explicit junctions; SCM 8 stores crossings made in the new editor as junctions. */

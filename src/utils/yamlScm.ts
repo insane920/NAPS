@@ -27,6 +27,7 @@ export interface YamlScmWire {
   Waypoints?: Array<{ x: number; y: number }>;
   Manual?: boolean;
   Disabled?: boolean;
+  OriginWireId?: string;
 }
 
 export interface YamlScmAnalysis {
@@ -112,6 +113,7 @@ export function exportToYamlScm(
     params['ValueText'] = el.valueStr;
     params['Unit'] = el.unit;
     if (el.isolation) params['Isolation'] = el.isolation;
+    if (format === 'current' && crossingMode === 'connect' && el.autoCrossing) params['AutoCrossing'] = 'true';
     if (el.controlSource) params['ControlSource'] = el.controlSource;
     if (el.type === 'DIODE' && el.diodeModel) params['DiodeModel'] = el.diodeModel;
     if (el.transistorModel) params['TransistorModel'] = el.transistorModel;
@@ -154,6 +156,7 @@ export function exportToYamlScm(
       Waypoints: w.waypoints?.map(point => ({ x: point.x / unitsPerStoredUnit, y: point.y / unitsPerStoredUnit })),
       Manual: w.manual,
       Disabled: w.disabled,
+      OriginWireId: format === 'current' && crossingMode === 'connect' ? w.originWireId : undefined,
     });
   }
 
@@ -185,6 +188,7 @@ export function exportToYamlScm(
     if (w.RouteMode) yaml += `    RouteMode: ${w.RouteMode}\n`;
     if (w.Manual) yaml += `    Manual: true\n`;
     if (w.Disabled) yaml += `    Disabled: true\n`;
+    if (w.OriginWireId) yaml += `    OriginWireId: ${JSON.stringify(w.OriginWireId)}\n`;
   }
 
   yaml += `\nAnalysis:\n  Transient:\n`;
@@ -419,6 +423,12 @@ export function parseYamlScm(yamlText: string): {
         continue;
       }
       if (trimmed === 'Disabled: true' && wires.length) { wires[wires.length - 1].disabled = true; continue; }
+      if (trimmed.startsWith('OriginWireId:') && wires.length) {
+        const origin = readScalar(trimmed.slice('OriginWireId:'.length));
+        if (!origin || origin.length > 160) throw new Error('Некорректный исходный ID провода.');
+        wires[wires.length - 1].originWireId = origin;
+        continue;
+      }
       if (trimmed === 'Manual: true' && wires.length) {
         wires[wires.length - 1].manual = true;
         continue;
@@ -508,6 +518,9 @@ export function parseYamlScm(yamlText: string): {
   if (!Number.isInteger(majorVersion) || majorVersion < 1 || majorVersion > 8) throw new Error('Неподдерживаемая версия SCM. Исходный файл не изменён.');
   if (majorVersion === 8 && crossings !== 'connect') throw new Error('SCM 8 требует Topology Crossings: connect.');
   if (majorVersion < 8 && crossings !== undefined) throw new Error('Режим пересечений требует SCM 8.');
+  if (majorVersion < 8 && (elements.some(element => element.autoCrossing) || wires.some(wire => wire.originWireId))) {
+    throw new Error('Метаданные автоматических пересечений требуют SCM 8.');
+  }
   if (majorVersion >= 7) {
     if (geometryVersion !== 1 || geometryUnit !== 'mm') throw new Error('SCM 7/8 требует Geometry Version: 1 и Unit: mm.');
     // One import boundary: physical millimetres become legacy SVG drawing units.
@@ -665,6 +678,7 @@ function commitCurrentObject(
     modelParams: Object.keys(modelParams).length ? modelParams : undefined,
     portName: params['Label'] || (type === 'PORT' ? raw.Name : undefined),
     textDirective: params['Directive'],
+    autoCrossing: type === 'JUNCTION' && params['AutoCrossing'] === 'true' ? true : undefined,
   });
 }
 

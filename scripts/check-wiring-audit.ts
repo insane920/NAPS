@@ -7,6 +7,8 @@ import {
   moveFreeWireSegment,
   moveSelectedElements,
   materializeWireCrossings,
+  collapseAutomaticCrossings,
+  normalizeCrossingTopology,
   projectPointToWire,
   simplifyPoints,
   snapManualWirePoint,
@@ -16,6 +18,7 @@ import { buildCircuitGraph, getCircuitPinIds } from '../src/math/circuitSolver';
 import { exportToYamlScm, parseYamlScm } from '../src/utils/yamlScm';
 import { SAMPLE_CIRCUITS } from '../src/data/sampleCircuits';
 import { SpatialIndex, type SpatialEntry } from '../src/utils/spatialIndex';
+import type { CircuitElement, CircuitWire } from '../src/types';
 
 const close = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y) < 1e-6;
 const key = (a: Point, b: Point) => [a, b]
@@ -120,6 +123,19 @@ const newRestored = parseYamlScm(newScm);
 assert.equal(newRestored.crossingMode, 'connect');
 assert.equal(buildCircuitGraph(newRestored.elements, newRestored.wires).pinToNode.get(`${newRestored.elements[0].id}_1`),
   buildCircuitGraph(newRestored.elements, newRestored.wires).pinToNode.get(`${newRestored.elements[2].id}_1`), 'v8 SCM preserves crossing connectivity');
+assert.equal(newRestored.elements.filter(element => element.autoCrossing).length, 1, 'v8 retains automatic crossing provenance');
+assert.equal(newRestored.wires.filter(wire => wire.originWireId).length, 4, 'v8 retains the two original conductor identities');
+const reopenedRoutes = newRestored.wires.map(wire => {
+  const endpoint = (id: string, pinId: string) => {
+    const element = newRestored.elements.find(item => item.id === id)!;
+    const pin = getComponentPins(element).find(item => item.id === pinId)!;
+    return { x: element.x + pin.x, y: element.y + pin.y };
+  };
+  return { wire, points: [endpoint(wire.fromCompId, wire.fromPinId), ...(wire.waypoints ?? []), endpoint(wire.toCompId, wire.toPinId)] };
+});
+const collapsed = collapseAutomaticCrossings(newRestored.elements, newRestored.wires, reopenedRoutes);
+assert.equal(collapsed.elements.length, 4, 'automatic junction can be removed before rerouting');
+assert.equal(collapsed.wires.length, 2, 'split fragments reconstruct their original conductors');
 const overlap = materializeWireCrossings(crossingElements, crossingWires, [
   { wire: crossingWires[0], points: [{ x: -100, y: 0 }, { x: 100, y: 0 }] },
   { wire: crossingWires[1], points: [{ x: -50, y: 0 }, { x: 150, y: 0 }] },
@@ -127,6 +143,57 @@ const overlap = materializeWireCrossings(crossingElements, crossingWires, [
 assert.equal(overlap.elements.filter(element => element.type === 'JUNCTION').length, 1, 'overlapping conductors create a junction');
 assert.equal(buildCircuitGraph(overlap.elements, overlap.wires).pinToNode.get('cross_0_1'),
   buildCircuitGraph(overlap.elements, overlap.wires).pinToNode.get('cross_2_1'), 'overlapping conductors unite their nets');
+for (const [shape, horizontal, vertical] of [
+  ['X', [{ x: -100, y: 0 }, { x: 100, y: 0 }], [{ x: 0, y: -100 }, { x: 0, y: 100 }]],
+  ['T', [{ x: -100, y: 0 }, { x: 100, y: 0 }], [{ x: 0, y: -100 }, { x: 0, y: 0 }]],
+  ['L', [{ x: -100, y: 0 }, { x: 0, y: 0 }], [{ x: 0, y: 0 }, { x: 0, y: 100 }]],
+  ['endpoint', [{ x: -100, y: 0 }, { x: 0, y: 0 }], [{ x: 0, y: 0 }, { x: 100, y: 0 }]],
+] as const) {
+  const connected = materializeWireCrossings(crossingElements, crossingWires, [
+    { wire: crossingWires[0], points: [...horizontal] },
+    { wire: crossingWires[1], points: [...vertical] },
+  ], 'vertical');
+  assert.equal(connected.elements.filter(element => element.autoCrossing).length, 1, `${shape} makes a junction`);
+  assert.equal(buildCircuitGraph(connected.elements, connected.wires).pinToNode.get('cross_0_1'),
+    buildCircuitGraph(connected.elements, connected.wires).pinToNode.get('cross_2_1'), `${shape} unites nets`);
+}
+const editorElements: CircuitElement[] = [
+  [100, 200, 0], [500, 200, 0], [300, 50, 90], [300, 350, 90],
+].map(([x, y, rotation], index) => ({ ...sample.elements[5], type: 'R' as const,
+  id: `editor_${index}`, name: `R${index + 1}`, x, y, rotation }));
+const editorWires: CircuitWire[] = [
+  { id: 'h', fromCompId: 'editor_0', fromPinId: '2', toCompId: 'editor_1', toPinId: '1', routeMode: 'direct' as const },
+  { id: 'v', fromCompId: 'editor_2', fromPinId: '2', toCompId: 'editor_3', toPinId: '1', routeMode: 'direct' as const },
+];
+const endpointFor = (items: CircuitElement[], id: string, pinId: string) => {
+  const element = items.find(item => item.id === id)!;
+  const pin = getComponentPins(element).find(item => item.id === pinId)!;
+  return { x: element.x + pin.x, y: element.y + pin.y };
+};
+const routedFor = (items: CircuitElement[], routes: CircuitWire[]) => routes.map(wire => ({ wire,
+  points: [endpointFor(items, wire.fromCompId, wire.fromPinId), ...(wire.waypoints ?? []), endpointFor(items, wire.toCompId, wire.toPinId)] }));
+const normalizedCross = normalizeCrossingTopology(editorElements, editorWires, routedFor(editorElements, editorWires), 'connect');
+assert.equal(normalizedCross.elements.filter(element => element.autoCrossing).length, 1, 'shared normalizer creates a crossing');
+const collapsedCross = collapseAutomaticCrossings(normalizedCross.elements, normalizedCross.wires,
+  routedFor(normalizedCross.elements, normalizedCross.wires));
+const detouredWires = collapsedCross.wires.map(wire => wire.id === 'v' ? { ...wire,
+  waypoints: [{ x: 480, y: 80 }, { x: 480, y: 320 }] } : wire);
+const separated = normalizeCrossingTopology(collapsedCross.elements, detouredWires,
+  routedFor(collapsedCross.elements, detouredWires), 'connect');
+assert.equal(separated.elements.filter(element => element.autoCrossing).length, 0, 'moving a route away removes the electrical crossing');
+assert.notEqual(buildCircuitGraph(separated.elements, separated.wires).pinToNode.get('editor_0_2'),
+  buildCircuitGraph(separated.elements, separated.wires).pinToNode.get('editor_2_2'), 'separated routes become different electrical nets');
+const translatedCrossingElements = collapsedCross.elements.map(element => element.id === 'editor_2' || element.id === 'editor_3'
+  ? { ...element, x: element.x + 500 } : element);
+const movedCross = normalizeCrossingTopology(translatedCrossingElements, collapsedCross.wires,
+  routedFor(translatedCrossingElements, collapsedCross.wires), 'connect');
+assert.equal(movedCross.elements.filter(element => element.autoCrossing).length, 0,
+  'moving both connected components away removes the obsolete crossing');
+assert.notEqual(buildCircuitGraph(movedCross.elements, movedCross.wires).pinToNode.get('editor_0_2'),
+  buildCircuitGraph(movedCross.elements, movedCross.wires).pinToNode.get('editor_2_2'),
+  'group movement separates the electrical nets');
+const legacyMoved = normalizeCrossingTopology(editorElements, editorWires, routedFor(editorElements, editorWires), 'explicit');
+assert.equal(legacyMoved.elements, editorElements, 'SCM 7 mode never normalizes visible crossings');
 assert.throws(() => exportToYamlScm(sample.elements, directWires, sample.transient, undefined, undefined, 'legacy'), /не поддерживает произвольные углы/, 'legacy export never silently changes a free-angle route');
 const legacyScm = exportToYamlScm(moved, sample.wires, sample.transient, undefined, undefined, 'legacy');
 assert.match(legacyScm, /MajorVersion: 6/);

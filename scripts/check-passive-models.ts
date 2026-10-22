@@ -37,6 +37,12 @@ const currentDrivenResistor = resistor.map(item => item.id === 'V' ? { ...item, 
 const currentResult = solveCircuitTransient(currentDrivenResistor, resistorWires, transient('U(R)', 0.1, 0.1));
 const currentVoltage = currentResult.signals['U(R)'][0];
 near(currentVoltage / 10 + 0.5 * currentVoltage ** 3, 2);
+for (const drive of [1000, 1e12]) {
+  const stressed = [element('I', 'I_DC', -drive), element('R', 'R', 1000, nonlinear(1)), element('G', 'GND', 0)];
+  const stressedWires = [wire('I', '1', 'R', '1'), wire('I', '2', 'G', '1'), wire('R', '2', 'G', '1')];
+  const voltage = [...solveDCOperatingPoint(stressed, stressedWires).potentials.values()].find(value => value > 0)!;
+  near(voltage / 1000 + voltage ** 3, drive, 1e-8);
+}
 
 const capacitor = [element('V', 'I_DC', -2),
   element('C', 'C', 0.001, { ...nonlinear(0.001), initialCondition: 0 }), element('G', 'GND', 0)];

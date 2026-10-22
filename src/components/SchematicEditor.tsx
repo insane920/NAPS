@@ -71,6 +71,16 @@ type EditorAppearance = { element: string; wire: string; designation: string; no
 const DEFAULT_APPEARANCE: EditorAppearance = {
   element: '#1d4ed8', wire: '#15803d', designation: '#15803d', node: '#db2777', grid: '#cbd5e1',
 };
+const SOURCE_WAVEFORMS: Partial<Record<ComponentType, ComponentType[]>> = {
+  V_DC: ['V_DC', 'V_AC', 'V_PULSE'], V_AC: ['V_DC', 'V_AC', 'V_PULSE'], V_PULSE: ['V_DC', 'V_AC', 'V_PULSE'],
+  I_DC: ['I_DC', 'I_AC', 'I_PULSE'], I_AC: ['I_DC', 'I_AC', 'I_PULSE'], I_PULSE: ['I_DC', 'I_AC', 'I_PULSE'],
+};
+function cycleSourceWaveform(type: ComponentType, deltaY: number): ComponentType | null {
+  const variants = SOURCE_WAVEFORMS[type];
+  if (!variants) return null;
+  const current = variants.indexOf(type);
+  return variants[(current + (deltaY > 0 ? 1 : variants.length - 1)) % variants.length];
+}
 function loadAppearance(): EditorAppearance {
   try {
     const saved = JSON.parse(localStorage.getItem('naps_editor_appearance') || '{}');
@@ -1034,11 +1044,15 @@ export function SchematicEditor({
   useEffect(() => {
     if (!paletteDragGroup) return;
     const cycleDraggedType = (event: WheelEvent) => {
+      if (pendingComponentType && !event.shiftKey) {
+        const waveform = cycleSourceWaveform(pendingComponentType, event.deltaY);
+        if (waveform) { event.preventDefault(); setPendingComponentType(waveform); return; }
+      }
       const options = PLACEMENT_CATALOG.filter(item => terminalGroupForType(item.type) === paletteDragGroup);
       if (!options.length) return;
       event.preventDefault();
       const current = quickTypes[paletteDragGroup] ?? options[0].type;
-      const index = Math.max(0, options.findIndex(item => item.type === current));
+      const index = Math.max(0, options.findIndex(item => item.type === (SOURCE_WAVEFORMS[current]?.[0] ?? current)));
       const next = options[(index + (event.deltaY > 0 ? 1 : options.length - 1)) % options.length].type;
       setQuickTypes(types => ({ ...types, [paletteDragGroup]: next }));
       setPendingComponentType(next);
@@ -1049,7 +1063,7 @@ export function SchematicEditor({
     window.addEventListener('wheel', cycleDraggedType, { passive: false });
     window.addEventListener('mouseup', finishOutsideCanvas);
     return () => { window.removeEventListener('wheel', cycleDraggedType); window.removeEventListener('mouseup', finishOutsideCanvas); };
-  }, [paletteDragGroup, quickTypes]);
+  }, [paletteDragGroup, quickTypes, pendingComponentType]);
 
   // Режим рисования провода
   const [wiringFrom, setWiringFrom] = useState<{
@@ -1083,6 +1097,10 @@ export function SchematicEditor({
     const onWheel = (event: WheelEvent) => {
       if (pendingComponentType && !paletteDragGroup && !event.ctrlKey && !event.metaKey) {
         event.preventDefault();
+        if (!event.shiftKey) {
+          const waveform = cycleSourceWaveform(pendingComponentType, event.deltaY);
+          if (waveform) { setPendingComponentType(waveform); return; }
+        }
         if (['R', 'C', 'L'].includes(pendingComponentType) && !event.shiftKey) {
           const family = pendingComponentType as 'R' | 'C' | 'L';
           setPlacementPassiveModels(models => ({ ...models, [family]: models[family] === 'linear' ? 'nonlinear' : 'linear' }));
@@ -1091,7 +1109,7 @@ export function SchematicEditor({
         const group = terminalGroupForType(pendingComponentType);
         const variants = PLACEMENT_CATALOG.filter(item => group && terminalGroupForType(item.type) === group);
         if (variants.length > 1) {
-          const current = variants.findIndex(item => item.type === pendingComponentType);
+          const current = variants.findIndex(item => item.type === (SOURCE_WAVEFORMS[pendingComponentType]?.[0] ?? pendingComponentType));
           const next = variants[(current + (event.deltaY > 0 ? 1 : variants.length - 1)) % variants.length].type;
           setPendingComponentType(next);
           setQuickTypes(types => group ? { ...types, [group]: next } : types);
@@ -2524,6 +2542,13 @@ export function SchematicEditor({
             >
               <option value="linear">Линейный</option><option value="nonlinear">Нелинейный</option>
             </select>}
+            {pendingComponentType && SOURCE_WAVEFORMS[pendingComponentType] && <select
+              aria-label="Вариант размещаемого источника"
+              value={pendingComponentType}
+              onChange={event => setPendingComponentType(event.target.value as ComponentType)}
+              className="rounded border border-slate-300 bg-white px-1 py-1 text-xs text-slate-700"
+              title="Колесо над схемой переключает форму сигнала"
+            ><option value={SOURCE_WAVEFORMS[pendingComponentType]![0]}>Постоянный</option><option value={SOURCE_WAVEFORMS[pendingComponentType]![1]}>Синус</option><option value={SOURCE_WAVEFORMS[pendingComponentType]![2]}>Прямоугольный</option></select>}
 
             {/* Кнопка открытия полной библиотеки компонентов */}
             <button
@@ -2698,7 +2723,7 @@ export function SchematicEditor({
         {pendingComponentType && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 bg-blue-600 text-white px-4 py-1.5 rounded-full shadow-lg text-xs font-semibold flex items-center gap-2 animate-in fade-in slide-in-from-top-2 duration-150">
             <span className="w-2 h-2 rounded-full bg-amber-300 animate-ping" />
-            <span>Размещайте элементы кликами; колесо — вариант{['R', 'C', 'L'].includes(pendingComponentType) ? ', Shift+колесо — тип' : ''}, Esc или ПКМ — выход</span>
+            <span>Размещайте элементы кликами; колесо — вариант, Shift+колесо — тип, Esc или ПКМ — выход</span>
             <button
               type="button"
               onClick={() => setPendingComponentType(null)}

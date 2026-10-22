@@ -98,7 +98,7 @@ const fs = require('node:fs/promises');
     await fresh.getByRole('button', { name: 'Редактор файла схемы' }).click();
     await fresh.getByRole('textbox', { name: 'Код схемы YAML' }).fill(scm);
     await fresh.getByRole('button', { name: 'Применить схему из YAML' }).click();
-    await fresh.getByRole('button', { name: 'Рассчитать схему' }).click();
+    await fresh.getByRole('button', { name: 'Переходный процесс' }).click();
     await fresh.getByRole('dialog', { name: 'Результаты расчёта' }).waitFor();
     assert.equal(await fresh.getByRole('alert').count(), 0, 'valid fresh circuit must calculate without demo expressions');
     await fresh.close();

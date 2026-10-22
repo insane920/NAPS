@@ -5,6 +5,7 @@ import { useModalFocus } from '../hooks/useModalFocus';
 
 interface TransientSetupModalProps {
   isOpen: boolean;
+  dock?: boolean;
   onClose: () => void;
   settings: TransientSettings;
   onSave: (settings: TransientSettings) => void;
@@ -17,6 +18,7 @@ export function TransientSetupModal(props: TransientSetupModalProps) {
 
 function TransientSetupContent({
   isOpen,
+  dock = false,
   onClose,
   settings,
   onSave,
@@ -27,7 +29,7 @@ function TransientSetupContent({
   const [epsStr, setEpsStr] = useState(String(settings.eps || '0.001'));
   const [signals, setSignals] = useState<TransientSignalConfig[]>(settings.signals);
   const [error, setError] = useState('');
-  const dialogRef = useModalFocus<HTMLDivElement>(isOpen, 'input[type="text"]');
+  const dialogRef = useModalFocus<HTMLDivElement>(isOpen && !dock, 'input[type="text"]');
 
   // Список доступных сигналов из схемы
   const availableSignals = [
@@ -90,9 +92,11 @@ function TransientSetupContent({
   };
 
   return (
-    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Параметры переходного процесса" className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 backdrop-blur-2xs">
+    <div ref={dialogRef} role="dialog" aria-modal={dock ? undefined : 'true'} aria-label="Параметры переходного процесса" className={dock
+      ? 'fixed bottom-6 right-0 top-20 z-50 w-[min(38rem,calc(100vw-1rem))] overflow-y-auto border-l border-slate-300 bg-white shadow-2xl'
+      : 'fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 backdrop-blur-2xs'}>
         {/* Окно настроек переходного процесса. */}
-      <div className="bg-white border border-slate-200 rounded-xl shadow-2xl w-full max-w-2xl text-slate-800 text-xs font-sans overflow-hidden">
+      <div className={`bg-white border border-slate-200 shadow-2xl w-full text-slate-800 text-xs font-sans ${dock ? 'min-h-full' : 'max-w-2xl rounded-xl overflow-hidden'}`}>
         {/* Заголовок окна */}
         <div className="bg-slate-50 border-b border-slate-200 text-slate-800 px-5 py-3 flex items-center justify-between text-sm font-semibold select-none">
           <span>Переходный процесс (NAPS)</span>

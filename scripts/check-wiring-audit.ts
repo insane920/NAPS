@@ -11,6 +11,7 @@ import {
   normalizeCrossingTopology,
   freezeCrossingProvenance,
   removeWiresPreservingTopology,
+  reconnectWireEndpoint,
   projectPointToWire,
   simplifyPoints,
   snapManualWirePoint,
@@ -23,6 +24,34 @@ import { SpatialIndex, type SpatialEntry } from '../src/utils/spatialIndex';
 import type { CircuitElement, CircuitWire } from '../src/types';
 
 const close = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y) < 1e-6;
+const reconnectElements: CircuitElement[] = ['A', 'B', 'C', 'D'].map((name, index) => ({
+  id: name, name, type: 'JUNCTION', x: index * 100, y: 0, rotation: 0, value: 0, valueStr: '', unit: '',
+}));
+const reconnectWires: CircuitWire[] = [
+  { id: 'ab', fromCompId: 'A', fromPinId: '1', toCompId: 'B', toPinId: '1', manual: true, waypoints: [{ x: 40, y: 20 }, { x: 60, y: 20 }] },
+  { id: 'cd', fromCompId: 'C', fromPinId: '1', toCompId: 'D', toPinId: '1' },
+];
+const reconnectRoutes = reconnectWires.map(wire => ({ wire, points: wire.id === 'ab'
+  ? [{ x: 0, y: 0 }, { x: 40, y: 20 }, { x: 60, y: 20 }, { x: 100, y: 0 }]
+  : [{ x: 200, y: 0 }, { x: 300, y: 0 }] }));
+const toPin = reconnectWireEndpoint(reconnectElements, reconnectWires, reconnectRoutes, 'ab', 'to', { kind: 'pin', compId: 'C', pinId: '1' });
+assert.equal(toPin.wires[0].toCompId, 'C');
+assert.deepEqual(toPin.wires[0].waypoints, reconnectWires[0].waypoints, 'manual bends survive reconnection');
+let reconnectNodes = buildCircuitGraph(toPin.elements, toPin.wires).pinToNode;
+assert.equal(reconnectNodes.get('A_1'), reconnectNodes.get('D_1'), 'target network joined');
+assert.notEqual(reconnectNodes.get('B_1'), reconnectNodes.get('A_1'), 'old terminal separated');
+const detached = reconnectWireEndpoint(reconnectElements, reconnectWires, reconnectRoutes, 'ab', 'to', { kind: 'free', point: { x: 120, y: 80 } });
+assert.equal(detached.wires[0].disabled, true, 'free endpoint is visibly and electrically disconnected');
+reconnectNodes = buildCircuitGraph(detached.elements, detached.wires).pinToNode;
+assert.notEqual(reconnectNodes.get('A_1'), reconnectNodes.get('B_1'));
+const toNetwork = reconnectWireEndpoint(reconnectElements, reconnectWires, reconnectRoutes, 'ab', 'to',
+  { kind: 'wire', wireId: 'cd', segmentIndex: 0, point: { x: 240, y: 0 } });
+assert.equal(toNetwork.elements.length, reconnectElements.length + 1, 'joining wire creates an explicit node');
+assert.equal(toNetwork.wires.length, 3, 'target route splits into two preserved branches');
+reconnectNodes = buildCircuitGraph(toNetwork.elements, toNetwork.wires).pinToNode;
+assert.equal(reconnectNodes.get('A_1'), reconnectNodes.get('D_1'));
+assert.equal(parseYamlScm(exportToYamlScm(toNetwork.elements, toNetwork.wires, SAMPLE_CIRCUITS[0].transient,
+  undefined, undefined, 'current', 'explicit')).crossingMode, 'explicit', 'SCM 7 keeps explicit crossings');
 const key = (a: Point, b: Point) => [a, b]
   .map(point => `${point.x},${point.y}`).sort().join('|');
 

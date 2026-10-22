@@ -3,8 +3,8 @@ import type { CircuitElement, ComponentType } from '../types';
 import { SYMBOL_METRICS } from './symbolMetrics';
 import { chipPins } from '../utils/chipPins';
 
-export function renderComponentSymbol(el: CircuitElement, selected = false, showEmbeddedLabel = true) {
-  const stroke = selected ? '#dc2626' : '#1e293b';
+export function renderComponentSymbol(el: CircuitElement, selected = false, showEmbeddedLabel = true, elementColor = '#1d4ed8') {
+  const stroke = selected ? '#dc2626' : elementColor;
   const strokeW = SYMBOL_METRICS.normalStroke;
 
   switch (el.type) {

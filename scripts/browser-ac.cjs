@@ -21,7 +21,7 @@ const fs = require('node:fs/promises');
     return exportToYamlScm(elements, sample.wires, sample.transient, ac);
   }, corner);
   await page.locator('input[type="file"]').setInputFiles({ name: 'ac-test.scm', mimeType: 'text/plain', buffer: Buffer.from(content) });
-  await page.getByRole('button', { name: 'АЧХ/ФЧХ' }).click();
+  await page.getByRole('button', { name: 'Частотные характеристики' }).click();
   await page.getByRole('dialog', { name: 'Результаты расчёта' }).waitFor({ timeout: 30000 });
   const graph = page.getByRole('dialog', { name: 'Результаты расчёта' });
   await page.getByRole('button', { name: 'Математический расчёт' }).waitFor();

@@ -313,7 +313,7 @@ export default function App() {
           <button onClick={openCircuit} title="Открыть схему (Ctrl+O)"><FolderOpen size={16} /><span>Открыть</span></button>
           <button onClick={() => void saveCircuit()} title={`Сохранить SCM ${crossingMode === 'connect' ? '8' : '7'} с координатами в мм (Ctrl+S). Для старой версии используйте копию 0.6.0.`}><Save size={16} /><span>Сохранить</span></button>
           <button onClick={() => void saveCircuit('legacy')} title="Сохранить отдельную копию для NAPS 0.6.0. Произвольные углы и сетка 0,5 мм несовместимы."><span>Копия 0.6.0</span></button>
-          <button onClick={runAC} title="Рассчитать АЧХ и ФЧХ"><Activity size={16} /><span>АЧХ/ФЧХ</span></button>
+          <button onClick={runAC} title="Рассчитать АЧХ и ФЧХ"><Activity size={16} /><span>Частотные характеристики</span></button>
           <button onClick={() => setAcSettingsOpen(true)} title="Параметры частотного анализа" aria-label="Параметры частотного анализа"><SlidersHorizontal size={16} /></button>
           <button onClick={() => setYamlOpen(true)} title="Редактор файла схемы" aria-label="Редактор файла схемы"><FileCode2 size={17} /></button>
           <button onClick={() => { setDescriptionDraft({ ...description }); setDescriptionOpen(true); }} title="Название, назначение и комментарий схемы"><FileText size={16} /><span>Описание</span></button>
@@ -364,10 +364,10 @@ export default function App() {
         }
         endContinuousHistory(); setSelected(null);
       }} />
-      <TransientSetupModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} settings={settings} elements={elements} onSave={value => {
+      <TransientSetupModal isOpen={settingsOpen} dock onClose={() => setSettingsOpen(false)} settings={settings} elements={elements} onSave={value => {
         changeSettings(value);
       }} />
-      <ACSetupModal isOpen={acSettingsOpen} onClose={() => setAcSettingsOpen(false)} settings={ac} elements={elements} onSave={value => {
+      <ACSetupModal isOpen={acSettingsOpen} dock onClose={() => setAcSettingsOpen(false)} settings={ac} elements={elements} onSave={value => {
         beginHistoryChange(); currentSnapshot.current = { ...currentSnapshot.current, ac: value, dirty: true };
         setAc(value); markChanged(); setGraphOpen(false);
       }} />

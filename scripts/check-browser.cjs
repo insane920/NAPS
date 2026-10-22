@@ -14,6 +14,13 @@ cases.push('browser-label-layout.cjs');
 cases.push('browser-group-selection.cjs');
 cases.push('browser-new-crossings.cjs');
 cases.push('browser-description.cjs');
+cases.push('browser-reconnect.cjs');
+cases.push('browser-appearance.cjs');
+if (process.env.NAPS_BROWSER_CASE) {
+  const selected = process.env.NAPS_BROWSER_CASE;
+  if (!cases.includes(selected)) throw new Error(`Unknown browser case: ${selected}`);
+  cases.splice(0, cases.length, selected);
+}
 mkdirSync(path.join(root, '.work'), { recursive: true });
 
 const server = spawn(process.execPath, [vite, '--host', '127.0.0.1', '--port', String(port), '--strictPort'], {

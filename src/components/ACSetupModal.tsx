@@ -5,6 +5,7 @@ import { useModalFocus } from '../hooks/useModalFocus';
 
 interface Props {
   isOpen: boolean;
+  dock?: boolean;
   settings: ACSettings;
   elements: CircuitElement[];
   onClose: () => void;
@@ -13,14 +14,14 @@ interface Props {
 
 export function ACSetupModal(props: Props) { return props.isOpen ? <Content {...props} /> : null; }
 
-function Content({ isOpen, settings, elements, onClose, onSave }: Props) {
+function Content({ isOpen, dock = false, settings, elements, onClose, onSave }: Props) {
   const [fMinStr, setFMinStr] = useState(settings.fMinStr || String(settings.fMin));
   const [fMaxStr, setFMaxStr] = useState(settings.fMaxStr || String(settings.fMax));
   const [points, setPoints] = useState(String(settings.points));
   const [scaleType, setScaleType] = useState(settings.scaleType);
   const [signals, setSignals] = useState(settings.signals);
   const [error, setError] = useState('');
-  const ref = useModalFocus<HTMLDivElement>(isOpen, 'input');
+  const ref = useModalFocus<HTMLDivElement>(isOpen && !dock, 'input');
   const ports = elements.filter(e => e.type === 'PORT').map(e => e.portName || e.name);
   const candidates = [...ports.map(p => `U(${p})`), ...elements.filter(e => !['GND', 'PORT', 'JUNCTION', 'TEXT'].includes(e.type)).map(e => `U(${e.name})`)];
   const add = () => setSignals(prev => [...prev, { id: `ac_${Date.now()}`, plotIndex: 1 as const, exprX: 'f', exprY: candidates[0] ? `db(${candidates[0]})` : '', color: '#2563eb', enabled: true }]);
@@ -33,8 +34,10 @@ function Content({ isOpen, settings, elements, onClose, onSave }: Props) {
     onSave({ fMin, fMax, fMinStr, fMaxStr, points: count, scaleType, signals });
     onClose();
   };
-  return <div ref={ref} role="dialog" aria-modal="true" aria-label="Частотный анализ" className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-    <div className="bg-white border border-slate-200 rounded-xl shadow-2xl w-full max-w-2xl text-slate-800 text-xs overflow-hidden">
+  return <div ref={ref} role="dialog" aria-modal={dock ? undefined : 'true'} aria-label="Частотный анализ" className={dock
+    ? 'fixed bottom-6 right-0 top-20 z-50 w-[min(38rem,calc(100vw-1rem))] overflow-y-auto border-l border-slate-300 bg-white shadow-2xl'
+    : 'fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4'}>
+    <div className={`bg-white border border-slate-200 shadow-2xl w-full text-slate-800 text-xs ${dock ? 'min-h-full' : 'max-w-2xl rounded-xl overflow-hidden'}`}>
       <header className="px-5 py-3 bg-slate-50 border-b border-slate-200 flex justify-between items-center text-sm font-semibold"><span>Частотный анализ (АЧХ / ФЧХ)</span><button onClick={onClose} aria-label="Закрыть">✕</button></header>
       <div className="p-5 space-y-4">
         {error && <p role="alert" className="text-red-700">{error}</p>}

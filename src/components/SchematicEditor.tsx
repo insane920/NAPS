@@ -36,7 +36,7 @@ import { getComponentLabelLayout, getComponentValueLabel, arrangeComponentLabels
 import { useModalFocus } from '../hooks/useModalFocus';
 import { ComponentPalette, COMPONENT_CATALOG, PLACEMENT_CATALOG, TERMINAL_GROUPS, terminalGroupForType, TerminalGroup } from './ComponentPalette';
 import { SYMBOL_METRICS } from './symbolMetrics';
-import { SCHEMATIC_UNITS_PER_MM, computePrintPlacement, printScaleLabel, type PrintLayout, type PrintPlacement } from '../utils/printLayout';
+import { SCHEMATIC_UNITS_PER_MM, computePrintPlacement, paperSize, printScaleLabel, type PrintLayout, type PrintPlacement } from '../utils/printLayout';
 import { SpatialIndex } from '../utils/spatialIndex';
 import { rasterPagePdf } from '../utils/rasterPdf';
 import { chipPins, DEFAULT_CHIP_PINS } from '../utils/chipPins';
@@ -67,6 +67,17 @@ interface SchematicEditorProps {
 }
 
 const GRID_SIZE = 20;
+type EditorAppearance = { element: string; wire: string; designation: string; node: string; grid: string };
+const DEFAULT_APPEARANCE: EditorAppearance = {
+  element: '#1d4ed8', wire: '#15803d', designation: '#15803d', node: '#db2777', grid: '#cbd5e1',
+};
+function loadAppearance(): EditorAppearance {
+  try {
+    const saved = JSON.parse(localStorage.getItem('naps_editor_appearance') || '{}');
+    return Object.fromEntries(Object.entries(DEFAULT_APPEARANCE).map(([key, fallback]) =>
+      [key, typeof saved[key] === 'string' && /^#[0-9a-f]{6}$/i.test(saved[key]) ? saved[key] : fallback])) as EditorAppearance;
+  } catch { return { ...DEFAULT_APPEARANCE }; }
+}
 type EditorShortcut = string;
 const COMPONENT_SHORTCUT_CODES: Partial<Record<ComponentType, string>> = {
   R: 'Digit1', C: 'KeyC', L: 'KeyL', TR3: 'KeyT', DIODE: 'KeyD', THYRISTOR: 'KeyY',
@@ -256,6 +267,79 @@ export function removeWiresPreservingTopology(elements: CircuitElement[], wires:
   const automatic = new Set(elements.filter(element => element.autoCrossing).map(element => element.id));
   const orphans = new Set([...automatic].filter(id => !attached.has(id)));
   return { elements: orphans.size ? frozen.elements.filter(element => !orphans.has(element.id)) : frozen.elements, wires: remaining };
+}
+
+type ReconnectTarget = { kind: 'pin'; compId: string; pinId: string } |
+  { kind: 'wire'; wireId: string; segmentIndex: number; point: Point } |
+  { kind: 'free'; point: Point };
+
+/** Reconnect exactly one conductor end; its other end and manual bends are unchanged. */
+export function reconnectWireEndpoint(
+  elements: CircuitElement[], wires: CircuitWire[], routed: RoutedWire[],
+  wireId: string, end: 'from' | 'to', target: ReconnectTarget,
+): { elements: CircuitElement[]; wires: CircuitWire[]; changed: boolean } {
+  const source = wires.find(wire => wire.id === wireId);
+  if (!source || target.kind === 'wire' && target.wireId === wireId) return { elements, wires, changed: false };
+  const originalCompId = end === 'from' ? source.fromCompId : source.toCompId;
+  const originalPinId = end === 'from' ? source.fromPinId : source.toPinId;
+  const fixedCompId = end === 'from' ? source.toCompId : source.fromCompId;
+  const fixedPinId = end === 'from' ? source.toPinId : source.fromPinId;
+  if (target.kind === 'pin' && target.compId === fixedCompId && target.pinId === fixedPinId) {
+    return { elements, wires, changed: false };
+  }
+  if (target.kind === 'pin' && target.compId === originalCompId && target.pinId === originalPinId && !source.disabled) {
+    return { elements, wires, changed: false };
+  }
+  const affected = new Set([wireId, ...(target.kind === 'wire' ? [target.wireId] : [])]);
+  const frozen = freezeCrossingProvenance(elements, wires, affected);
+  let nextElements = frozen.elements;
+  let nextWires = frozen.wires;
+  let destination: { compId: string; pinId: string };
+  if (target.kind === 'pin') {
+    const component = nextElements.find(element => element.id === target.compId);
+    if (!component || !getComponentPins(component).some(pin => pin.id === target.pinId)) return { elements, wires, changed: false };
+    destination = { compId: target.compId, pinId: target.pinId };
+  } else {
+    const geometry = target.kind === 'wire' ? routed.find(item => item.wire.id === target.wireId) : null;
+    const other = target.kind === 'wire' ? nextWires.find(wire => wire.id === target.wireId) : null;
+    if (target.kind === 'wire' && (!geometry || !other || other.disabled)) return { elements, wires, changed: false };
+    if (target.kind === 'wire' && geometry && other) {
+      const first = geometry.points[0], last = geometry.points.at(-1)!;
+      if (samePoint(target.point, first)) destination = { compId: other.fromCompId, pinId: other.fromPinId };
+      else if (samePoint(target.point, last)) destination = { compId: other.toCompId, pinId: other.toPinId };
+      else {
+        const nodeId = `junction_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        nextElements = [...nextElements, { id: nodeId, type: 'JUNCTION', name: nextComponentName(nextElements, 'N'),
+          x: target.point.x, y: target.point.y, rotation: 0, value: 0, valueStr: '', unit: '' }];
+        const split = splitWireRoute(geometry.points, target.segmentIndex, target.point);
+        nextWires = nextWires.flatMap(wire => wire.id !== other.id ? [wire] : [
+          { ...wire, id: `${nodeId}_a`, toCompId: nodeId, toPinId: '1', waypoints: split.first.slice(1, -1), manual: true, originWireId: undefined },
+          { ...wire, id: `${nodeId}_b`, fromCompId: nodeId, fromPinId: '1', waypoints: split.second.slice(1, -1), manual: true, originWireId: undefined },
+        ]);
+        destination = { compId: nodeId, pinId: '1' };
+      }
+    } else {
+      const nodeId = `reconnect_free_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      nextElements = [...nextElements, { id: nodeId, type: 'JUNCTION', name: nextComponentName(nextElements, 'N'),
+        x: target.point.x, y: target.point.y, rotation: 0, value: 0, valueStr: '', unit: '' }];
+      destination = { compId: nodeId, pinId: '1' };
+    }
+  }
+  if (destination.compId === fixedCompId && destination.pinId === fixedPinId) {
+    return { elements, wires, changed: false };
+  }
+  nextWires = nextWires.map(wire => wire.id !== wireId ? wire : {
+    ...wire,
+    ...(end === 'from' ? { fromCompId: destination.compId, fromPinId: destination.pinId }
+      : { toCompId: destination.compId, toPinId: destination.pinId }),
+    disabled: target.kind === 'free' ? true : undefined,
+  });
+  const oldEndpoint = nextElements.find(element => element.id === originalCompId);
+  if (oldEndpoint?.type === 'JUNCTION' && oldEndpoint.id.startsWith('reconnect_free_') &&
+      !nextWires.some(wire => wire.fromCompId === originalCompId || wire.toCompId === originalCompId)) {
+    nextElements = nextElements.filter(element => element.id !== originalCompId);
+  }
+  return { elements: nextElements, wires: nextWires, changed: true };
 }
 
 /** Undo automatic intersections before editing their underlying conductors. */
@@ -887,6 +971,10 @@ export function SchematicEditor({
   const [shortcutMessage, setShortcutMessage] = useState('Нажмите сочетание и затем щёлкните по схеме, чтобы разместить элемент.');
   const [editorShortcuts, setEditorShortcuts] = useState<Record<EditorShortcut, string>>(loadEditorShortcuts);
   useEffect(() => { localStorage.setItem('naps_editor_shortcuts', JSON.stringify(editorShortcuts)); }, [editorShortcuts]);
+  const [appearance, setAppearance] = useState<EditorAppearance>(loadAppearance);
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  useEffect(() => { localStorage.setItem('naps_editor_appearance', JSON.stringify(appearance)); }, [appearance]);
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [wireContextMenu, setWireContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [overlapChoice, setOverlapChoice] = useState<{
@@ -904,6 +992,8 @@ export function SchematicEditor({
   const [requestedPrintScale, setRequestedPrintScale] = useState(1);
   const [printMarginMm, setPrintMarginMm] = useState(5);
   const [centerPrint, setCenterPrint] = useState(true);
+  const [printMonochrome, setPrintMonochrome] = useState(true);
+  const [printFrame, setPrintFrame] = useState(true);
   const [exportPlan, setExportPlan] = useState<{ xml: string; html: string; placement: PrintPlacement } | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const printPreviewRef = useRef<HTMLIFrameElement>(null);
@@ -979,6 +1069,7 @@ export function SchematicEditor({
   const groupDragIds = useRef<Set<string> | null>(null);
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const wireSegmentDrag = useRef<{ wireId: string; segmentIndex: number; points: Point[]; started: boolean; prepared?: boolean } | null>(null);
+  const [endpointDrag, setEndpointDrag] = useState<{ wireId: string; end: 'from' | 'to'; points: Point[]; cursor: Point } | null>(null);
   const geometryDragChanged = useRef(false);
   const normalizedThisDrag = useRef(false);
   const normalizeReleasedDrag = useRef<() => void>(() => {});
@@ -1035,6 +1126,7 @@ export function SchematicEditor({
     setHoveredPin(null);
     setHoveredWirePoint(null);
     setDraggingElemId(null);
+    setEndpointDrag(null);
     setPendingComponentType(null);
   }, [viewRevision]);
   useEffect(() => {
@@ -1050,6 +1142,7 @@ export function SchematicEditor({
       if (draggingElemId) onEndContinuousEdit?.();
       if (wireSegmentDrag.current?.started) onEndContinuousEdit?.();
       wireSegmentDrag.current = null;
+      setEndpointDrag(null);
       wirePointerDown.current = false;
       if (event.type === 'blur') {
         setOverlapChoice(null);
@@ -1067,6 +1160,26 @@ export function SchematicEditor({
     return () => { window.removeEventListener('mouseup', releaseDrag); window.removeEventListener('blur', releaseDrag); };
   }, [draggingElemId, onEndContinuousEdit]);
   const fittedProject = useRef<number | null>(null);
+  const zoomAtCenter = (value: number) => {
+    const next = Math.max(0.01, Math.min(2.5, value));
+    const canvas = containerRef.current;
+    if (canvas) {
+      const cx = canvas.clientWidth / 2, cy = canvas.clientHeight / 2;
+      setPan(current => ({ x: cx - (cx - current.x) * next / zoom,
+        y: cy - (cy - current.y) * next / zoom }));
+    }
+    setZoom(next);
+  };
+  const fitSheetToView = () => {
+    const canvas = containerRef.current;
+    if (!canvas || canvas.clientWidth <= 48 || canvas.clientHeight <= 48) return;
+    const sheet = paperSize(printLayout);
+    const next = Math.min(2.5, (canvas.clientWidth - 48) / sheet.width, (canvas.clientHeight - 48) / sheet.height);
+    setZoom(next);
+    // The paper is a viewport guide only: the editor remains an infinite canvas.
+    setPan({ x: (canvas.clientWidth - sheet.width * next) / 2,
+      y: (canvas.clientHeight - sheet.height * next) / 2 });
+  };
   const fitToView = useCallback(() => {
     const bounds = containerRef.current?.getBoundingClientRect();
     const world = svgRef.current?.querySelector<SVGGElement>('#schematic-world');
@@ -1150,7 +1263,7 @@ export function SchematicEditor({
   // Горячие клавиши редактора и быстрый выбор элемента из библиотеки.
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (shortcutSettingsOpen) return;
+      if (shortcutSettingsOpen || appearanceOpen) return;
       if (isPaletteOpen) {
         if (e.key === 'Escape') setIsPaletteOpen(false);
         return;
@@ -1235,6 +1348,7 @@ export function SchematicEditor({
       if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
 
       if (e.key === 'Escape') {
+        setEndpointDrag(null);
         setOverlapChoice(null);
         setWiringFrom(null);
         wiringFromRef.current = null;
@@ -1284,7 +1398,7 @@ export function SchematicEditor({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedId, selectedIds, selectedSet, selectedWireId, copiedElement, copiedGroup, elements, wires, onElementsChange, onWiresChange, changeElementGeometry, onOpenProperties, onSelectElement, onRunSimulation, shortcutsEnabled, isPaletteOpen, shortcutSettingsOpen, editorShortcuts]);
+    }, [selectedId, selectedIds, selectedSet, selectedWireId, copiedElement, copiedGroup, elements, wires, onElementsChange, onWiresChange, changeElementGeometry, onOpenProperties, onSelectElement, onRunSimulation, shortcutsEnabled, isPaletteOpen, shortcutSettingsOpen, appearanceOpen, editorShortcuts]);
 
   // Добавление нового компонента на схему
   const handlePlaceNewComponent = (type: ComponentType, worldX: number, worldY: number, replaceId = replacingId) => {
@@ -1617,6 +1731,32 @@ export function SchematicEditor({
     })
   )), [wireGeometries]);
 
+  const endpointTargetAt = (x: number, y: number, sourceWireId: string):
+    { target: ReconnectTarget; point: Point } => {
+    let nearestPin: ReturnType<typeof pinPositions.get>;
+    let pinDistance = 12 / zoom;
+    for (const pin of pinSpatialIndex.query(x, y, pinDistance)) {
+      const distance = Math.hypot(x - pin.x, y - pin.y);
+      if (distance <= pinDistance) { nearestPin = pin; pinDistance = distance; }
+    }
+    if (nearestPin) return { target: { kind: 'pin', compId: nearestPin.compId, pinId: nearestPin.pinId },
+      point: { x: nearestPin.x, y: nearestPin.y } };
+    let wireHit: { target: ReconnectTarget; point: Point } | null = null;
+    let wireDistance = 8 / zoom;
+    for (const segment of wireSpatialIndex.query(x, y, wireDistance)) {
+      if (segment.wireId === sourceWireId) continue;
+      const geometry = wireGeometries.find(item => item.wire.id === segment.wireId);
+      if (!geometry || geometry.wire.disabled) continue;
+      const hit = projectPointToWire(geometry.points, { x, y }, gridUnits);
+      if (hit && hit.distance <= wireDistance) {
+        wireDistance = hit.distance;
+        wireHit = { target: { kind: 'wire', wireId: segment.wireId, segmentIndex: hit.segmentIndex, point: hit.point }, point: hit.point };
+      }
+    }
+    return wireHit ?? { target: { kind: 'free', point: { x: snapToGrid(x), y: snapToGrid(y) } },
+      point: { x: snapToGrid(x), y: snapToGrid(y) } };
+  };
+
   // Разделение провода и создание подвижного узла (JUNCTION)
   const handleWirePointClick = (wireId: string, px: number, py: number) => {
     if (pendingComponentType || !(wiringFromRef.current ?? wiringFrom)) return;
@@ -1801,6 +1941,20 @@ export function SchematicEditor({
 
     const pos = screenToWorld(e.clientX, e.clientY);
 
+    if (endpointDrag) {
+      if (!(e.buttons & 1)) return;
+      const hit = endpointTargetAt(pos.rawX, pos.rawY, endpointDrag.wireId);
+      setEndpointDrag(current => current ? { ...current, cursor: hit.point } : null);
+      if (hit.target.kind === 'pin') {
+        const pin = pinPositions.get(`${hit.target.compId}_${hit.target.pinId}`);
+        setHoveredPin(pin ? { compId: pin.compId, pinId: pin.pinId, x: pin.x, y: pin.y,
+          name: `${pin.componentName}.${pin.name}` } : null);
+      } else setHoveredPin(null);
+      setHoveredWirePoint(hit.target.kind === 'wire' ? { wireId: hit.target.wireId,
+        x: hit.point.x, y: hit.point.y } : null);
+      return;
+    }
+
     if (marquee) {
       setMarquee(current => current && { ...current, end: { x: pos.rawX, y: pos.rawY } });
       return;
@@ -1941,6 +2095,22 @@ export function SchematicEditor({
   };
 
   const handleCanvasMouseUp = (event?: React.MouseEvent) => {
+    if (endpointDrag) {
+      if (event) {
+        const pos = screenToWorld(event.clientX, event.clientY);
+        const hit = endpointTargetAt(pos.rawX, pos.rawY, endpointDrag.wireId);
+        const next = reconnectWireEndpoint(elements, wires, wireGeometries, endpointDrag.wireId, endpointDrag.end, hit.target);
+        if (next.changed) {
+          onBeginContinuousEdit?.();
+          geometryActionPending.current = crossingMode === 'connect';
+          if (next.elements !== elements) onElementsChange(next.elements);
+          onWiresChange(next.wires);
+          if (crossingMode !== 'connect') onEndContinuousEdit?.();
+        }
+      }
+      setEndpointDrag(null); setHoveredPin(null); setHoveredWirePoint(null);
+      return;
+    }
     if (marquee) {
       const cursor = event ? screenToWorld(event.clientX, event.clientY) : null;
       const end = cursor ? { x: cursor.rawX, y: cursor.rawY } : marquee.end;
@@ -2239,7 +2409,7 @@ export function SchematicEditor({
       const bounds = elements.length || wires.length
         ? { x: box.x - padding, y: box.y - padding, width: Math.max(box.width, 1) + 2 * padding, height: Math.max(box.height, 1) + 2 * padding }
         : { x: 0, y: 0, width: 1, height: 1 };
-      const placement = computePrintPlacement(bounds, printLayout, printMarginMm, printMode, requestedPrintScale, centerPrint);
+      const placement = computePrintPlacement(bounds, printLayout, printFrame ? Math.max(20, printMarginMm) : printMarginMm, printMode, requestedPrintScale, centerPrint);
       clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
       clone.setAttribute('width', `${placement.widthMm}mm`);
       clone.setAttribute('height', `${placement.heightMm}mm`);
@@ -2250,7 +2420,25 @@ export function SchematicEditor({
       background.setAttribute('width', String(placement.width)); background.setAttribute('height', String(placement.height));
       background.setAttribute('fill', '#ffffff');
       clone.insertBefore(background, world || clone.firstChild);
-      const xml = new XMLSerializer().serializeToString(clone).replaceAll('#dc2626', '#1e293b').replaceAll('#2563eb', '#1e293b');
+      if (printFrame) {
+        const frame = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        frame.setAttribute('x', String(20 * SCHEMATIC_UNITS_PER_MM));
+        frame.setAttribute('y', String(5 * SCHEMATIC_UNITS_PER_MM));
+        frame.setAttribute('width', String((placement.widthMm - 25) * SCHEMATIC_UNITS_PER_MM));
+        frame.setAttribute('height', String((placement.heightMm - 10) * SCHEMATIC_UNITS_PER_MM));
+        frame.setAttribute('fill', 'none'); frame.setAttribute('stroke', '#111111'); frame.setAttribute('stroke-width', '0.8');
+        frame.setAttribute('data-eskd-frame', 'true');
+        clone.insertBefore(frame, world);
+      }
+      if (printMonochrome) world.querySelectorAll<SVGElement>('[stroke], [fill]').forEach(node => {
+        for (const attribute of ['stroke', 'fill'] as const) {
+          const value = node.getAttribute(attribute);
+          if (value && !['none', 'transparent', '#ffffff', 'white'].includes(value.toLowerCase()) && !value.startsWith('url(')) {
+            node.setAttribute(attribute, '#111111');
+          }
+        }
+      });
+      const xml = new XMLSerializer().serializeToString(clone);
       const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><style>@page{size:${placement.widthMm}mm ${placement.heightMm}mm;margin:0}body{margin:0;background:#e2e8f0;display:flex;justify-content:center}svg{display:block;max-width:100%;height:auto;background:white;box-shadow:0 4px 24px #0002}@media print{body{display:block;background:white}svg{width:${placement.widthMm}mm!important;height:${placement.heightMm}mm!important;max-width:none;box-shadow:none}}</style></head><body>${xml}</body></html>`;
       setExportPlan({ xml, html, placement });
       setExportError(null);
@@ -2258,7 +2446,7 @@ export function SchematicEditor({
       setExportPlan(null);
       setExportError(error instanceof Error ? error.message : 'Не удалось подготовить лист.');
     }
-  }, [exportTarget, printLayout, printMarginMm, printMode, requestedPrintScale, centerPrint, elements, wires, zoom, pan, showElementNames, showElementValues, showNodeNumbers]);
+  }, [exportTarget, printLayout, printMarginMm, printMode, requestedPrintScale, centerPrint, printMonochrome, printFrame, elements, wires, zoom, pan, showElementNames, showElementValues, showNodeNumbers]);
 
   const downloadSchematic = (format: 'png' | 'svg' | 'pdf' | 'print') => {
     if (!exportPlan || !exportPlan.placement.fits) return;
@@ -2407,14 +2595,16 @@ export function SchematicEditor({
             <button type="button" aria-pressed={wireMode === 'direct'} onClick={() => { setWireMode('direct'); setWiringWaypoints([]); }} className={`rounded px-2 py-1 text-xs ${wireMode === 'direct' ? 'bg-blue-600 text-white' : 'text-slate-700'}`}>Прямой</button>
           </div>
 
-          <div className="flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 p-1 shadow-2xs" aria-label="Отображение схемы">
-            <span className="px-1 text-[10px] font-bold uppercase tracking-wide text-blue-700">Вид</span>
-            {[
-              { label: 'Обозначения', short: 'R1', value: showElementNames, toggle: () => setShowElementNames(value => !value) },
-              { label: 'Номиналы', short: '1к', value: showElementValues, toggle: () => setShowElementValues(value => !value) },
-              { label: 'Номера узлов', short: '#', value: showNodeNumbers, toggle: () => setShowNodeNumbers(value => !value) },
-              { label: `Сетка ${printLayout.gridMm} мм`, short: 'Сетка', value: showGrid, toggle: () => setShowGrid(value => !value) },
-            ].map(item => <button key={item.label} type="button" aria-pressed={item.value} onClick={item.toggle} className={`rounded border px-2 py-1 text-xs font-semibold ${item.value ? 'border-blue-500 bg-blue-600 text-white' : 'border-slate-300 bg-white text-slate-500'}`} title={`${item.value ? 'Скрыть' : 'Показать'}: ${item.label}`}>{item.short}</button>)}
+          <div className="relative" onMouseLeave={() => setViewMenuOpen(false)}>
+            <button type="button" aria-haspopup="menu" aria-expanded={viewMenuOpen} onClick={() => setViewMenuOpen(value => !value)} className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-bold text-blue-700">Вид ▾</button>
+            {viewMenuOpen && <div role="menu" aria-label="Отображение схемы" className="absolute left-0 top-full z-50 min-w-44 rounded border border-slate-300 bg-white p-1 shadow-lg">
+              {[
+                { label: 'Обозначения', value: showElementNames, toggle: () => setShowElementNames(value => !value) },
+                { label: 'Номиналы', value: showElementValues, toggle: () => setShowElementValues(value => !value) },
+                { label: 'Номера узлов', value: showNodeNumbers, toggle: () => setShowNodeNumbers(value => !value) },
+                { label: 'Сетка', value: showGrid, toggle: () => setShowGrid(value => !value) },
+              ].map(item => <button key={item.label} type="button" role="menuitemcheckbox" aria-checked={item.value} onClick={item.toggle} className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-blue-50">{item.value ? '✓ ' : '　'}{item.label}</button>)}
+            </div>}
           </div>
 
           {/* Загрузка готовых схем из руководства */}
@@ -2465,39 +2655,6 @@ export function SchematicEditor({
 
         {/* Правая часть тулбара: Масштаб и ВЫДЕЛЕННАЯ КНОПКА «Построить график» */}
         <div className="relative z-10 flex min-w-0 flex-1 basis-[620px] flex-wrap items-center justify-end gap-2">
-          {/* Масштабирование */}
-          <div className="flex items-center gap-0.5 bg-white border border-slate-300 rounded p-0.5 shadow-2xs">
-            <button
-              type="button"
-              onClick={() => setZoom((z) => Math.max(Math.min(0.01, z), z / 1.25))}
-              className="p-1 hover:bg-slate-100 rounded text-slate-700 cursor-pointer"
-              title="Уменьшить масштаб"
-            >
-              <ZoomOut className="w-3.5 h-3.5" />
-            </button>
-            <span className="text-3xs font-mono px-1 font-semibold text-slate-600">
-              {Math.round(zoom * 100)}%
-            </span>
-            <button
-              type="button"
-              onClick={() => setZoom((z) => Math.min(2.5, z + 0.1))}
-              className="p-1 hover:bg-slate-100 rounded text-slate-700 cursor-pointer"
-              title="Увеличить масштаб"
-            >
-              <ZoomIn className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={fitToView}
-              className="p-1 hover:bg-slate-100 rounded text-slate-700 cursor-pointer"
-              title="Показать схему целиком"
-            >
-              <Maximize2 className="w-3 h-3" />
-            </button>
-          </div>
-
-          <div className="h-5 w-px bg-slate-300 mx-0.5" />
-
           <select aria-label="Шаг сетки в миллиметрах" value={printLayout.gridMm} onChange={event => onPrintLayoutChange({ ...printLayout, gridMm: Number(event.target.value) as PrintLayout['gridMm'] })} className="rounded border border-slate-300 bg-white px-1 py-1 text-xs" title="Шаг основной сетки в миллиметрах"><option value={0.5}>0,5 мм</option><option value={1}>1 мм</option><option value={2}>2 мм</option><option value={2.5}>2,5 мм</option><option value={5}>5 мм</option><option value={10}>10 мм</option></select>
           <div className="relative" onMouseLeave={() => setExportMenuOpen(false)}>
             <button type="button" aria-haspopup="menu" aria-expanded={exportMenuOpen} onClick={() => { setPendingComponentType(null); setExportMenuOpen(open => !open); }} className="flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100" title="Экспорт и печать"><ImageDown className="h-3.5 w-3.5" />Экспорт ▾</button>
@@ -2519,7 +2676,7 @@ export function SchematicEditor({
             title="Построить график сигналов схемы"
           >
             <Activity className="w-4 h-4" />
-            <span>{isSimulating ? 'Расчёт…' : 'Рассчитать схему'}</span>
+            <span>{isSimulating ? 'Расчёт…' : 'Переходный процесс'}</span>
           </button>
 
           {/* Настройки переходного процесса */}
@@ -2531,6 +2688,7 @@ export function SchematicEditor({
           >
             <Settings className="w-3.5 h-3.5" />
           </button>
+          <button type="button" aria-label="Общие настройки" title="Общие настройки редактора" onClick={() => setAppearanceOpen(true)} className="rounded border border-slate-300 bg-white p-1.5 text-slate-700 hover:bg-slate-100"><Settings size={15} /></button>
         </div>
       </div>
 
@@ -2603,6 +2761,16 @@ export function SchematicEditor({
             <div role="status" className="mt-2 min-h-5 text-xs text-slate-600">{shortcutMessage}</div>
             <div className="mt-3 flex items-center justify-between border-t border-slate-200 pt-3"><button type="button" onClick={() => { setEditorShortcuts({ ...DEFAULT_SHORTCUTS }); setRecordingShortcut(null); setShortcutMessage('Восстановлены назначения по умолчанию.'); }} className="text-xs font-semibold text-blue-700">Сбросить всё</button><span className="text-xs text-slate-500">R — поворот 90° · Shift + R — 45°</span></div>
           </div>
+        </div>}
+        {appearanceOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50" onClick={event => { if (event.target === event.currentTarget) setAppearanceOpen(false); }}>
+          <section role="dialog" aria-modal="true" aria-label="Общие настройки редактора" className="w-[min(26rem,calc(100vw-2rem))] rounded-xl bg-white p-5 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between"><strong>Оформление редактора</strong><button type="button" onClick={() => setAppearanceOpen(false)} aria-label="Закрыть общие настройки">×</button></div>
+            {([
+              ['element', 'Элементы'], ['wire', 'Провода'], ['designation', 'Обозначения элементов'],
+              ['node', 'Обозначения узлов'], ['grid', 'Сетка'],
+            ] as const).map(([key, label]) => <label key={key} className="mb-2 flex items-center justify-between text-sm">{label}<input type="color" aria-label={`Цвет: ${label}`} value={appearance[key]} onChange={event => setAppearance(current => ({ ...current, [key]: event.target.value }))} /></label>)}
+            <div className="mt-4 flex justify-between"><button type="button" onClick={() => setAppearance({ ...DEFAULT_APPEARANCE })} className="text-sm text-blue-700">Цвета по умолчанию</button><button type="button" onClick={() => setAppearanceOpen(false)} className="rounded bg-blue-600 px-3 py-1 text-sm text-white">Готово</button></div>
+          </section>
         </div>}
         {/* МОДАЛЬНОЕ ОКНО ПОЛНОЙ БИБЛИОТЕКИ ЭЛЕМЕНТОВ (НЕ СЖИМАЕТ И НЕ ПЕРЕКРЫВАЕТ СХЕМУ) */}
         {isPaletteOpen && (
@@ -2680,13 +2848,14 @@ export function SchematicEditor({
               {zoom >= 0.65 && gridUnits > 10 && <path
                 d={Array.from({ length: gridUnits / 10 - 1 }, (_, i) => { const p = (i + 1) * 10 * zoom; return `M ${p} 0 V ${gridUnits * zoom} M 0 ${p} H ${gridUnits * zoom}`; }).join(' ')}
                 fill="none"
-                stroke="#e4eaf2"
+                stroke={appearance.grid}
+                strokeOpacity={0.45}
                 strokeWidth={0.7}
               />}
               <path
                 d={`M 0 0 H ${gridUnits * zoom} M 0 0 V ${gridUnits * zoom}`}
                 fill="none"
-                stroke="#b8c8dc"
+                stroke={appearance.grid}
                 strokeWidth={0.9}
               />
             </pattern>
@@ -2757,7 +2926,7 @@ export function SchematicEditor({
                   <path
                     d={pathD}
                     fill="none"
-                    stroke={wire.disabled ? '#94a3b8' : isSelected ? '#2563eb' : '#1e293b'}
+                    stroke={wire.disabled ? '#94a3b8' : isSelected ? '#2563eb' : appearance.wire}
                     strokeWidth={isSelected ? 2.5 : 1.75}
                     strokeDasharray={wire.disabled ? wireGapDashArray(wg.points) : undefined}
                     strokeLinecap="round"
@@ -2769,7 +2938,7 @@ export function SchematicEditor({
                       cx={coincidentEndpoint.x}
                       cy={coincidentEndpoint.y}
                       r={6}
-                      fill={wire.disabled ? '#ffffff' : isSelected ? '#2563eb' : '#1e293b'}
+                      fill={wire.disabled ? '#ffffff' : isSelected ? '#2563eb' : appearance.wire}
                       stroke={wire.disabled ? '#94a3b8' : '#ffffff'}
                       strokeWidth={1.5 / zoom}
                       className="cursor-pointer"
@@ -2777,7 +2946,12 @@ export function SchematicEditor({
                   )}
                 </g>
               );
-            }), [wireGeometries, selectedWireId, zoom, wiringFrom, pendingComponentType, wires, elements, gridUnits, wiringWaypoints, wireMode, pan, onWiresChange, onElementsChange])}
+            }), [wireGeometries, selectedWireId, zoom, wiringFrom, pendingComponentType, wires, elements, gridUnits, wiringWaypoints, wireMode, pan, appearance.wire, onWiresChange, onElementsChange])}
+            {endpointDrag && <path data-export-hide="true" data-reconnect-preview="true" pointerEvents="none"
+              d={pointsToSvgPath(endpointDrag.end === 'from'
+                ? [endpointDrag.cursor, ...endpointDrag.points.slice(1)]
+                : [...endpointDrag.points.slice(0, -1), endpointDrag.cursor])}
+              fill="none" stroke="#2563eb" strokeWidth={2 / zoom} strokeDasharray="6 4" />}
             {hoveredWirePoint && (() => {
               const geometry = wireGeometries.find(item => item.wire.id === hoveredWirePoint.wireId);
               return geometry && !geometry.wire.disabled && selectedWireId !== geometry.wire.id
@@ -2914,19 +3088,19 @@ export function SchematicEditor({
                     {el.type === 'JUNCTION'
                       ? <g className="group">
                           <circle r={10} fill="transparent" />
-                          <circle r={3.5} fill={isSelected ? '#dc2626' : '#1e293b'} pointerEvents="none" />
+                          <circle r={3.5} fill={isSelected ? '#dc2626' : appearance.wire} pointerEvents="none" />
                           <circle data-export-hide="true" r={6} fill="none" stroke="#2563eb" strokeWidth={1.5} pointerEvents="none" className={isSelected ? '' : 'opacity-0 group-hover:opacity-100'} />
                           <circle r={6 / zoom} fill="transparent" className="cursor-pointer"
                             onMouseDown={(e) => handlePinClick(e, el.id, '1', el.x, el.y)}
                             onMouseUp={(e) => handlePinMouseUp(e, el.id, '1', el.x, el.y)} />
                         </g>
-                      : renderComponentSymbol(el, isSelected && !el.isolation, el.type !== 'PORT')}
+                      : renderComponentSymbol(el, isSelected && !el.isolation, el.type !== 'PORT', appearance.element)}
                   </g>
                   {el.type === 'PORT' && <text x={0} y={3} textAnchor="middle" fontSize={9} fontWeight="bold" fill={isSelected ? '#dc2626' : '#1e293b'} className="pointer-events-none select-none">{el.portName || el.name}</text>}
 
                   {/* Подписи следуют ориентации элемента, но остаются горизонтальными и читаемыми. */}
                   {el.type !== 'TEXT' && el.type !== 'JUNCTION' && (showElementNames || showElementValues || el.isolation === 'short') && <g data-element-labels={el.id} className="pointer-events-none select-none" style={{ fontFamily: 'GOST type A, GOST 2.304, Arial Narrow, sans-serif', paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 3.5, strokeLinejoin: 'round' }}>
-                    {showElementNames && <text data-label-kind="name" x={labelLayout.name.x} y={labelLayout.name.y} textAnchor={labelLayout.name.anchor} fontSize={11} fontWeight="bold" textDecoration={el.type === 'VCCS' || el.type === 'CCCS' ? 'underline' : undefined} fill={el.isolation === 'open' ? '#94a3b8' : '#1e293b'}>{el.name}</text>}
+                    {showElementNames && <text data-label-kind="name" x={labelLayout.name.x} y={labelLayout.name.y} textAnchor={labelLayout.name.anchor} fontSize={11} fontWeight="bold" textDecoration={el.type === 'VCCS' || el.type === 'CCCS' ? 'underline' : undefined} fill={el.isolation === 'open' ? '#94a3b8' : appearance.designation}>{el.name}</text>}
                     {showElementValues && valueLabel && <text data-label-kind="value" x={labelLayout.value.x} y={labelLayout.value.y} textAnchor={labelLayout.value.anchor} fontSize={11} fill={el.isolation === 'open' ? '#94a3b8' : '#3730a3'}>{valueLabel}</text>}
                     {el.isolation === 'short' && <text data-label-kind="isolation" x={labelLayout.isolation.x} y={labelLayout.isolation.y} textAnchor={labelLayout.isolation.anchor} fontSize={9} fill="#b91c1c" fontWeight="bold">КЗ</text>}
                   </g>}
@@ -2939,7 +3113,7 @@ export function SchematicEditor({
                       const pinKey = `${el.id}_${pin.id}`;
                       const nodeNum = circuitGraph.pinToNode.get(pinKey);
                       const isWiringSource = wiringFrom?.compId === el.id && wiringFrom?.pinId === pin.id;
-                      const isHovered = false;
+                      const isHovered = hoveredPin?.compId === el.id && hoveredPin?.pinId === pin.id;
                       const isConnected = connectedPinKeys.has(pinKey);
 
                       return (
@@ -3019,7 +3193,8 @@ export function SchematicEditor({
                             <text
                               x={pin.x + 8}
                               y={pin.y - 6}
-                              className="font-mono text-3xs fill-slate-500 font-semibold select-none pointer-events-none"
+                              className="font-mono text-3xs font-semibold select-none pointer-events-none"
+                              fill={appearance.node}
                               style={{ fontSize: '9px' }}
                             >
                               [{nodeNum === 0 ? '0' : nodeNum}]
@@ -3031,7 +3206,7 @@ export function SchematicEditor({
 
                 </g>
               );
-            }), [sceneLabels, elements, wires, selectedId, selectedIds, wiringFrom, pendingComponentType, zoom, showElementNames, showElementValues, showNodeNumbers, circuitGraph, connectedPinKeys, copiedElement, gridUnits, wireMode, pan, draggingElemId, dragOffset, wiringWaypoints, onHoverStatus, onWiresChange, onElementsChange, onOpenProperties, onBeginContinuousEdit, onEndContinuousEdit])}
+            }), [sceneLabels, elements, wires, selectedId, selectedIds, wiringFrom, pendingComponentType, zoom, showElementNames, showElementValues, showNodeNumbers, circuitGraph, connectedPinKeys, copiedElement, gridUnits, wireMode, pan, draggingElemId, dragOffset, wiringWaypoints, appearance, onHoverStatus, onWiresChange, onElementsChange, onOpenProperties, onBeginContinuousEdit, onEndContinuousEdit])}
             {hoveredPin && (wiringFrom?.compId !== hoveredPin.compId || wiringFrom.pinId !== hoveredPin.pinId) && (() => {
               const pin = pinPositions.get(`${hoveredPin.compId}_${hoveredPin.pinId}`);
               return pin && <g data-export-hide="true" transform={`translate(${pin.x}, ${pin.y})`} pointerEvents="none">
@@ -3040,6 +3215,17 @@ export function SchematicEditor({
                   : <circle r={6} fill="#10b981" stroke="#ffffff" strokeWidth={1.5} />}
                 {wiringFrom && <g transform="translate(8, -18)"><rect width={70} height={16} rx={3} fill="#0f172a" fillOpacity={0.9} /><text x={35} y={11} textAnchor="middle" fill="#ffffff" fontSize={9} fontWeight="bold">Соединить</text></g>}
               </g>;
+            })()}
+            {selectedWireId && !wiringFrom && !pendingComponentType && (() => {
+              const geometry = wireGeometries.find(item => item.wire.id === selectedWireId);
+              return geometry && (['from', 'to'] as const).map(end => {
+                const point = end === 'from' ? geometry.points[0] : geometry.points.at(-1)!;
+                return <circle key={end} data-export-hide="true" data-wire-end={`${selectedWireId}:${end}`}
+                  cx={point.x} cy={point.y} r={7 / zoom} fill="#ffffff" stroke="#2563eb" strokeWidth={2 / zoom}
+                  className="cursor-grab" aria-label={`Переподключить ${end === 'from' ? 'начало' : 'конец'} провода`}
+                  onMouseDown={event => { if (event.button !== 0) return; event.stopPropagation();
+                    wireSegmentDrag.current = null; setEndpointDrag({ wireId: selectedWireId, end, points: geometry.points, cursor: point }); }} />;
+              });
             })()}
           </g>
 
@@ -3067,6 +3253,21 @@ export function SchematicEditor({
           )}
         </svg>
         {showGrid && <div className="pointer-events-none absolute bottom-2 right-2 rounded border border-slate-200 bg-white/90 px-2 py-1 font-mono text-[10px] text-slate-500 shadow-sm">Сетка: {printLayout.gridMm} мм</div>}
+      </div>
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-slate-300 bg-white px-3 py-1 text-xs text-slate-600">
+        <div className="flex items-center gap-2">
+          <select aria-label="Формат документа" value={printLayout.format} onChange={event => onPrintLayoutChange({ ...printLayout, format: event.target.value as PrintLayout['format'] })} className="rounded border border-slate-200 bg-white px-1"><option>A0</option><option>A1</option><option>A2</option><option>A3</option><option>A4</option></select>
+          <select aria-label="Ориентация документа" value={printLayout.orientation} onChange={event => onPrintLayoutChange({ ...printLayout, orientation: event.target.value as PrintLayout['orientation'] })} className="rounded border border-slate-200 bg-white px-1"><option value="landscape">Альбомная</option><option value="portrait">Книжная</option></select>
+          <span className="font-mono">{(zoom * SCHEMATIC_UNITS_PER_MM).toFixed(2)} px/мм</span>
+        </div>
+        <div className="flex items-center gap-2" aria-label="Масштаб просмотра">
+          <button type="button" title="Показать схему целиком" onClick={fitToView} className="rounded px-1 hover:bg-slate-100"><Maximize2 size={14} /></button>
+          <button type="button" title="Вписать лист в окно" onClick={fitSheetToView} className="rounded px-1 hover:bg-slate-100">Лист</button>
+          <button type="button" title="Уменьшить масштаб" onClick={() => zoomAtCenter(zoom / 1.25)} className="rounded px-1 hover:bg-slate-100"><ZoomOut size={14} /></button>
+          <input type="range" aria-label="Масштаб просмотра в процентах" min={1} max={250} step={1} value={Math.round(zoom * 100)} onChange={event => zoomAtCenter(Number(event.target.value) / 100)} className="w-32 accent-blue-600" />
+          <button type="button" title="Увеличить масштаб" onClick={() => zoomAtCenter(zoom * 1.25)} className="rounded px-1 hover:bg-slate-100"><ZoomIn size={14} /></button>
+          <output className="w-10 text-right font-mono">{Math.round(zoom * 100)}%</output>
+        </div>
       </div>
       {contextMenu && (() => {
         const el = elements.find(item => item.id === contextMenu.id);
@@ -3113,6 +3314,8 @@ export function SchematicEditor({
           {printMode === 'actual' && <label>Масштаб <select aria-label="Масштаб печати" value={requestedPrintScale} onChange={event => setRequestedPrintScale(Number(event.target.value))} className="rounded border border-slate-300 p-1"><option value={2}>2:1</option><option value={1}>1:1</option><option value={0.5}>1:2</option><option value={0.4}>1:2,5</option><option value={0.25}>1:4</option></select></label>}
           <label>Поля, мм <input aria-label="Поля страницы в миллиметрах" type="number" min="0" max="100" step="1" value={printMarginMm} onChange={event => setPrintMarginMm(Number(event.target.value))} className="w-14 rounded border border-slate-300 p-1" /></label>
           <label className="flex items-center gap-1"><input type="checkbox" checked={centerPrint} onChange={event => setCenterPrint(event.target.checked)} />По центру</label>
+          <label className="flex items-center gap-1"><input type="checkbox" checked={printFrame} onChange={event => setPrintFrame(event.target.checked)} />Рамка ЕСКД</label>
+          <label className="flex items-center gap-1"><input type="checkbox" checked={printMonochrome} onChange={event => setPrintMonochrome(event.target.checked)} />Ч/б</label>
           <div className="ml-auto flex gap-2"><button type="button" disabled={!exportPlan?.placement.fits} onClick={() => downloadSchematic(exportTarget)} className="rounded bg-blue-600 px-3 py-1.5 text-white disabled:opacity-40">{exportTarget === 'print' ? 'Печать…' : `Скачать ${exportTarget.toUpperCase()}`}</button><button type="button" onClick={() => setExportTarget(null)} className="rounded border border-slate-300 px-3 py-1.5">Закрыть</button></div>
         </div>
         <div className="mx-auto w-full max-w-6xl bg-white px-4 py-1 text-xs text-slate-600">{exportPlan && <>Схема: {exportPlan.placement.contentWidthMm.toFixed(1)} × {exportPlan.placement.contentHeightMm.toFixed(1)} мм · фактический масштаб {printScaleLabel(exportPlan.placement.scale)} · лист {exportPlan.placement.widthMm} × {exportPlan.placement.heightMm} мм</>}{exportError && <span className="text-red-700">{exportError}</span>}{exportPlan && !exportPlan.placement.fits && <span className="ml-2 text-red-700">Схема не помещается: выберите А3, уменьшите масштаб или включите «Вписать в страницу». Автоматическое обрезание отключено.</span>}</div>

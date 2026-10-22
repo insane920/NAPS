@@ -2,13 +2,13 @@
 export const SYMBOL_METRICS = {
   pinReach: 30,
   analogPinReach: 35,
-  bodyHalfWidth: 18,
-  passiveHalfHeight: 7,
+  bodyHalfWidth: 20,
+  passiveHalfHeight: 8,
   sourceRadius: 14,
   gateDrop: 25,
   logicInputOffset: 10,
   flipFlopInputOffset: 12,
   transformerWindingOffset: 15,
   groundPinOffset: 20,
-  normalStroke: 1.75,
+  normalStroke: 2,
 } as const;

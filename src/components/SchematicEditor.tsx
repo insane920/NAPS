@@ -3040,7 +3040,7 @@ export function SchematicEditor({
                     d={pathD}
                     fill="none"
                     stroke={wg.unrouted ? '#dc2626' : wire.disabled ? '#94a3b8' : isSelected ? '#2563eb' : appearance.wire}
-                    strokeWidth={isSelected ? 2.5 : 1.75}
+                    strokeWidth={isSelected ? 2.5 : 2}
                     strokeDasharray={wg.unrouted ? '5 4' : wire.disabled ? wireGapDashArray(wg.points) : undefined}
                     strokeLinecap="round"
                     strokeLinejoin="round"

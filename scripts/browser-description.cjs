@@ -14,6 +14,7 @@ const assert = require('node:assert/strict');
     await page.getByRole('textbox', { name: 'Разработал' }).fill('Шевчук В. Р.');
     await page.getByRole('button', { name: 'Сохранить описание' }).click();
     await page.getByRole('button', { name: 'Редактор файла схемы' }).click();
+    await page.waitForFunction(() => document.querySelector('[role="dialog"] textarea')?.value.includes('Document:'), null, { timeout: 5000 });
     const yaml = await page.getByRole('dialog', { name: 'Редактор кода схемы' }).locator('textarea').inputValue();
     assert.match(yaml, /Document:\n  Title: "Фильтр RC"\n  Purpose: "Контроль АЧХ"\n  Comment: "Проверить с преподавателем"/);
     assert.match(yaml, /Designation: "NAPS-Э3-001"/);

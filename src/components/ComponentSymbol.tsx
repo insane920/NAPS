@@ -15,17 +15,17 @@ export function renderComponentSymbol(el: CircuitElement, selected = false, show
       // Резистор (прямоугольник с выводами по ГОСТ)
       return (
         <g>
-          <line x1={-30} y1={0} x2={-18} y2={0} stroke={stroke} strokeWidth={strokeW} />
+          <line x1={-30} y1={0} x2={-20} y2={0} stroke={stroke} strokeWidth={strokeW} />
           <rect
-            x={-18}
-            y={-7}
-            width={36}
-            height={14}
+            x={-20}
+            y={-8}
+            width={40}
+            height={16}
             fill="#ffffff"
             stroke={stroke}
             strokeWidth={strokeW}
           />
-          <line x1={18} y1={0} x2={30} y2={0} stroke={stroke} strokeWidth={strokeW} />
+          <line x1={20} y1={0} x2={30} y2={0} stroke={stroke} strokeWidth={strokeW} />
         </g>
       );
 

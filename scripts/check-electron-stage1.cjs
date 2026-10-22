@@ -8,7 +8,7 @@ const path = require('node:path');
   const output = await fs.mkdtemp(path.resolve('.work/electron-stage1-'));
   const saved = path.join(output, 'roundtrip.scm');
   const app = await electron.launch({
-    executablePath: process.env.NAPS_ELECTRON_EXE || path.resolve('release/modernization-20261011-stage1/win-unpacked/NAPS.exe'),
+    executablePath: process.env.NAPS_ELECTRON_EXE || path.resolve('release/win-unpacked/NAPS.exe'),
     args: [`--user-data-dir=${path.join(output, 'profile')}`], timeout: 30000,
   });
   try {

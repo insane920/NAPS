@@ -83,6 +83,8 @@ const fs = require('node:fs/promises');
     assert.match(landscapePreview, /data-height-mm="185"/);
     assert.match(landscapePreview, /data-rotation="90"/);
     assert.match(landscapePreview, /data-eskd-field="scale"/);
+    assert.match(landscapePreview, /<rect x="-20" y="-8" width="40" height="16"/,
+      'the 10 × 4 mm resistor body is exported at physical size');
     const [pdfDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать PDF' }).click()]);
     const pdf = await fs.readFile(await pdfDownload.path());
     if (process.env.NAPS_CAPTURE_PDF_PATH) await fs.writeFile(process.env.NAPS_CAPTURE_PDF_PATH, pdf);

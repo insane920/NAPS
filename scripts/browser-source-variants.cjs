@@ -37,13 +37,29 @@ const fs = require('node:fs/promises');
     await page.mouse.wheel(0, 100);
     assert.equal(await waveform.inputValue(), 'V_AC', 'wheel also changes the source while dragging from the quick palette');
     await page.mouse.up();
+    for (const [type, x, y] of [['VCVS', 240, 330], ['CCVS', 420, 330]]) {
+      await waveform.selectOption(type);
+      await page.mouse.click(canvas.x + x, canvas.y + y);
+    }
+    await family.selectOption('I_DC');
+    for (const [type, x, y] of [['VCCS', 600, 330], ['CCCS', 780, 330]]) {
+      await waveform.selectOption(type);
+      await page.mouse.click(canvas.x + x, canvas.y + y);
+    }
+    await page.keyboard.press('Escape');
+    await page.locator('[data-component-id]').nth(6).dblclick();
+    const controlledProperties = page.getByRole('dialog', { name: 'Параметры: ИНУТ (CCVS)' });
+    await controlledProperties.waitFor();
+    assert.ok((await controlledProperties.locator('#control-source option').count()) >= 2,
+      'current-controlled source offers actual independent voltage branches');
+    await controlledProperties.getByRole('button', { name: 'Отмена' }).click();
     const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
     const text = await fs.readFile(await download.path(), 'utf8');
     const types = await page.evaluate(async content => {
       const { parseYamlScm } = await import('/src/utils/yamlScm.ts');
       return parseYamlScm(content).elements.map(element => element.type);
     }, text);
-    assert.deepEqual(types, ['V_AC', 'V_PULSE', 'I_AC', 'I_PULSE', 'V_AC']);
-    console.log('PASS: five-family library, source waveform wheel/select variants and SCM persistence.');
+    assert.deepEqual(types, ['V_AC', 'V_PULSE', 'I_AC', 'I_PULSE', 'V_AC', 'VCVS', 'CCVS', 'VCCS', 'CCCS']);
+    console.log('PASS: five-family library, independent and controlled source variants and SCM persistence.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -21,9 +21,25 @@ import { buildCircuitGraph, getCircuitPinIds } from '../src/math/circuitSolver';
 import { exportToYamlScm, parseYamlScm } from '../src/utils/yamlScm';
 import { SAMPLE_CIRCUITS } from '../src/data/sampleCircuits';
 import { SpatialIndex, type SpatialEntry } from '../src/utils/spatialIndex';
+import { componentObstacle, routeAroundObstacles, routeIsClear } from '../src/utils/orthogonalRouter';
 import type { CircuitElement, CircuitWire } from '../src/types';
 
 const close = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y) < 1e-6;
+const blockingElements: CircuitElement[] = [80, 140].map((x, index) => ({
+  id: `block_${index}`, name: `R${index + 1}`, type: 'R', x, y: 0,
+  rotation: index ? 45 : 0, value: 1000, valueStr: '1к', unit: 'Ом',
+}));
+const blocks = blockingElements.map(element => componentObstacle(element)!);
+const competingNet = [[{ x: 110, y: -60 }, { x: 110, y: 30 }]];
+const safePath = routeAroundObstacles({ x: 0, y: 0 }, { x: 220, y: 0 }, { x: 1, y: 0 },
+  { x: -1, y: 0 }, 20, [{ x: 0, y: 0 }, { x: 220, y: 0 }], blocks, competingNet);
+assert(safePath && safePath.length >= 4, 'multiple obstacles and a foreign network require a detour');
+assert.deepEqual(safePath[0], { x: 0, y: 0 });
+assert.deepEqual(safePath.at(-1), { x: 220, y: 0 });
+assert(safePath[1].x > safePath[0].x && safePath[1].y === safePath[0].y, 'route exits the source terminal outward');
+assert(routeIsClear(safePath, blocks, competingNet), 'detour avoids all bodies and the other electrical network');
+assert.equal(routeAroundObstacles({ x: 0, y: 0 }, { x: 220, y: 0 }, { x: 1, y: 0 },
+  { x: -1, y: 0 }, 20, safePath, blocks, competingNet), safePath, 'valid existing geometry is not rebuilt');
 const reconnectElements: CircuitElement[] = ['A', 'B', 'C', 'D'].map((name, index) => ({
   id: name, name, type: 'JUNCTION', x: index * 100, y: 0, rotation: 0, value: 0, valueStr: '', unit: '',
 }));

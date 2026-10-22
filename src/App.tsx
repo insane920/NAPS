@@ -342,7 +342,7 @@ export default function App() {
       </div>}
       {recoveryError && <div role="alert" className="bg-amber-50 px-3 py-2 text-sm text-amber-900">{recoveryError}</div>}
       <main className="workspace">
-        <SchematicEditor elements={elements} wires={wires} printLayout={printLayout} onPrintLayoutChange={value => { beginHistoryChange(); currentSnapshot.current = { ...currentSnapshot.current, printLayout: value, dirty: true }; setPrintLayout(value); markChanged(); }} onElementsChange={changeElements} onWiresChange={changeWires}
+        <SchematicEditor elements={elements} wires={wires} printLayout={printLayout} description={description} onPrintLayoutChange={value => { beginHistoryChange(); currentSnapshot.current = { ...currentSnapshot.current, printLayout: value, dirty: true }; setPrintLayout(value); markChanged(); }} onElementsChange={changeElements} onWiresChange={changeWires}
           onBeginContinuousEdit={beginContinuousHistory} onEndContinuousEdit={endContinuousHistory}
           onSelectElement={() => {}} onOpenProperties={setSelected} onRunSimulation={runSimulation}
           onOpenTransientSettings={() => setSettingsOpen(true)} onLoadSample={loadSample} onClearProject={clearProject} crossingMode={crossingMode}
@@ -375,10 +375,19 @@ export default function App() {
         replaceProject(data, name, true); setYamlOpen(false);
       }} /></Suspense>}
       {descriptionOpen && <div className="modal-backdrop" role="presentation"><section ref={descriptionDialogRef} className="help-dialog max-w-xl" role="dialog" aria-modal="true" aria-labelledby="description-title"><header><h2 id="description-title">Описание схемы</h2><button onClick={() => setDescriptionOpen(false)} aria-label="Закрыть описание"><X size={20} /></button></header>
-        <div className="grid gap-3 p-4 text-sm">
+        <div className="grid max-h-[75vh] gap-3 overflow-y-auto p-4 text-sm">
           <label className="grid gap-1">Название схемы<input className="rounded border border-slate-300 px-3 py-2" value={descriptionDraft.title} onChange={event => setDescriptionDraft({ ...descriptionDraft, title: event.target.value })} maxLength={200} /></label>
           <label className="grid gap-1">Назначение<textarea className="min-h-20 rounded border border-slate-300 px-3 py-2" value={descriptionDraft.purpose} onChange={event => setDescriptionDraft({ ...descriptionDraft, purpose: event.target.value })} maxLength={2000} /></label>
           <label className="grid gap-1">Комментарий<textarea className="min-h-28 rounded border border-slate-300 px-3 py-2" value={descriptionDraft.comment} onChange={event => setDescriptionDraft({ ...descriptionDraft, comment: event.target.value })} maxLength={5000} /></label>
+          <strong className="border-t pt-3">Основная надпись для экспорта</strong>
+          {([
+            ['designation', 'Обозначение документа'], ['organization', 'Организация'], ['author', 'Разработал'],
+            ['checker', 'Проверил'], ['normController', 'Нормоконтроль'], ['approver', 'Утвердил'],
+            ['issueDate', 'Дата'], ['sheetNumber', 'Лист'], ['sheetCount', 'Листов'],
+          ] as const).map(([field, label]) => <label key={field} className="grid gap-1">{label}
+            <input className="rounded border border-slate-300 px-3 py-2" value={descriptionDraft[field] ?? ''}
+              onChange={event => setDescriptionDraft({ ...descriptionDraft, [field]: event.target.value })} maxLength={120} />
+          </label>)}
           <div className="flex justify-end gap-2"><button onClick={() => setDescriptionOpen(false)}>Отмена</button><button className="primary-action" onClick={() => { beginHistoryChange(); const next = { ...descriptionDraft }; currentSnapshot.current = { ...currentSnapshot.current, description: next, dirty: true }; setDescription(next); markChanged(); setDescriptionOpen(false); }}>Сохранить описание</button></div>
         </div>
       </section></div>}

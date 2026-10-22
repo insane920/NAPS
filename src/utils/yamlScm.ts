@@ -61,6 +61,15 @@ export interface CircuitDescription {
   title: string;
   purpose: string;
   comment: string;
+  designation?: string;
+  organization?: string;
+  author?: string;
+  checker?: string;
+  normController?: string;
+  approver?: string;
+  issueDate?: string;
+  sheetNumber?: string;
+  sheetCount?: string;
 }
 
 export const EMPTY_CIRCUIT_DESCRIPTION: CircuitDescription = { title: '', purpose: '', comment: '' };
@@ -84,7 +93,7 @@ export function exportToYamlScm(
   if (format === 'legacy' && printLayout.gridMm === 0.5) {
     throw new Error('SCM 0.6.0 не поддерживает шаг сетки 0,5 мм. Выберите шаг от 1 мм для совместимой копии; координаты компонентов при этом не меняются.');
   }
-  if (format === 'legacy' && Object.values(description).some(value => value.trim())) {
+  if (format === 'legacy' && Object.values(description).some(value => value?.trim())) {
     throw new Error('SCM 0.6.0 не поддерживает описание схемы. Сохраните проект в текущем формате, чтобы не потерять текст.');
   }
   const unitsPerStoredUnit = format === 'current' ? SCHEMATIC_UNITS_PER_MM : 1;
@@ -178,8 +187,13 @@ export function exportToYamlScm(
     ? `scm:\n  MajorVersion: ${crossingMode === 'connect' ? 8 : 7}\n  MinorVersion: 0\n\nGeometry:\n  Version: 1\n  Unit: mm\n${crossingMode === 'connect' ? '\nTopology:\n  Crossings: connect\n' : ''}`
     : 'scm:\n  MajorVersion: 6\n  MinorVersion: 0\n';
   yaml += `\nPage:\n  Format: ${printLayout.format}\n  Orientation: ${printLayout.orientation}\n  GridMm: ${printLayout.gridMm}\n`;
-  if (format === 'current' && Object.values(description).some(value => value.trim())) {
+  if (format === 'current' && Object.values(description).some(value => value?.trim())) {
     yaml += `\nDocument:\n  Title: ${JSON.stringify(description.title)}\n  Purpose: ${JSON.stringify(description.purpose)}\n  Comment: ${JSON.stringify(description.comment)}\n`;
+    for (const [key, field] of [['Designation', 'designation'], ['Organization', 'organization'], ['Author', 'author'],
+      ['Checker', 'checker'], ['NormController', 'normController'], ['Approver', 'approver'],
+      ['IssueDate', 'issueDate'], ['SheetNumber', 'sheetNumber'], ['SheetCount', 'sheetCount']] as const) {
+      if (description[field]) yaml += `  ${key}: ${JSON.stringify(description[field])}\n`;
+    }
   }
   yaml += '\nObjects:\n';
   for (const obj of objects) {
@@ -403,7 +417,10 @@ export function parseYamlScm(yamlText: string): {
       else if (trimmed.startsWith('Orientation:')) pageOrientation = readScalar(trimmed.slice(12));
       else if (trimmed.startsWith('GridMm:')) gridMm = finiteScmNumber(trimmed.slice(7), 'GridMm');
     } else if (currentSection === 'document') {
-      for (const [key, field] of [['Title', 'title'], ['Purpose', 'purpose'], ['Comment', 'comment']] as const) {
+      for (const [key, field] of [['Title', 'title'], ['Purpose', 'purpose'], ['Comment', 'comment'],
+        ['Designation', 'designation'], ['Organization', 'organization'], ['Author', 'author'],
+        ['Checker', 'checker'], ['NormController', 'normController'], ['Approver', 'approver'],
+        ['IssueDate', 'issueDate'], ['SheetNumber', 'sheetNumber'], ['SheetCount', 'sheetCount']] as const) {
         if (trimmed.startsWith(`${key}:`)) description[field] = readScalar(trimmed.slice(key.length + 1));
       }
     } else if (currentSection === 'objects') {

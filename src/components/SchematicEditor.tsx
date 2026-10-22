@@ -37,6 +37,9 @@ import { useModalFocus } from '../hooks/useModalFocus';
 import { ComponentPalette, COMPONENT_CATALOG, PLACEMENT_CATALOG, TERMINAL_GROUPS, terminalGroupForType, TerminalGroup } from './ComponentPalette';
 import { SYMBOL_METRICS } from './symbolMetrics';
 import { SCHEMATIC_UNITS_PER_MM, computePrintPlacement, paperSize, printScaleLabel, type PrintLayout, type PrintPlacement } from '../utils/printLayout';
+import { componentObstacle, routeAroundObstacles, routeIsClear } from '../utils/orthogonalRouter';
+import type { CircuitDescription } from '../utils/yamlScm';
+import { createTitleBlock } from '../utils/eskdTitleBlock';
 import { SpatialIndex } from '../utils/spatialIndex';
 import { rasterPagePdf } from '../utils/rasterPdf';
 import { chipPins, DEFAULT_CHIP_PINS } from '../utils/chipPins';
@@ -45,6 +48,7 @@ interface SchematicEditorProps {
   elements: CircuitElement[];
   wires: CircuitWire[];
   printLayout: PrintLayout;
+  description?: CircuitDescription;
   crossingMode: WireCrossingMode;
   onPrintLayoutChange: (value: PrintLayout) => void;
   onElementsChange: (elements: CircuitElement[]) => void;
@@ -72,8 +76,12 @@ const DEFAULT_APPEARANCE: EditorAppearance = {
   element: '#1d4ed8', wire: '#15803d', designation: '#15803d', node: '#db2777', grid: '#cbd5e1',
 };
 const SOURCE_WAVEFORMS: Partial<Record<ComponentType, ComponentType[]>> = {
-  V_DC: ['V_DC', 'V_AC', 'V_PULSE'], V_AC: ['V_DC', 'V_AC', 'V_PULSE'], V_PULSE: ['V_DC', 'V_AC', 'V_PULSE'],
-  I_DC: ['I_DC', 'I_AC', 'I_PULSE'], I_AC: ['I_DC', 'I_AC', 'I_PULSE'], I_PULSE: ['I_DC', 'I_AC', 'I_PULSE'],
+  V_DC: ['V_DC', 'V_AC', 'V_PULSE', 'VCVS', 'CCVS'], V_AC: ['V_DC', 'V_AC', 'V_PULSE', 'VCVS', 'CCVS'],
+  V_PULSE: ['V_DC', 'V_AC', 'V_PULSE', 'VCVS', 'CCVS'], VCVS: ['V_DC', 'V_AC', 'V_PULSE', 'VCVS', 'CCVS'],
+  CCVS: ['V_DC', 'V_AC', 'V_PULSE', 'VCVS', 'CCVS'],
+  I_DC: ['I_DC', 'I_AC', 'I_PULSE', 'VCCS', 'CCCS'], I_AC: ['I_DC', 'I_AC', 'I_PULSE', 'VCCS', 'CCCS'],
+  I_PULSE: ['I_DC', 'I_AC', 'I_PULSE', 'VCCS', 'CCCS'], VCCS: ['I_DC', 'I_AC', 'I_PULSE', 'VCCS', 'CCCS'],
+  CCCS: ['I_DC', 'I_AC', 'I_PULSE', 'VCCS', 'CCCS'],
 };
 function cycleSourceWaveform(type: ComponentType, deltaY: number): ComponentType | null {
   const variants = SOURCE_WAVEFORMS[type];
@@ -698,6 +706,18 @@ function overlappingLength(points: Point[], occupied: Point[][]): number {
   return total;
 }
 
+function automaticWireRoute(start: Point, end: Point, startRel: Point, endRel: Point,
+  startType: string, endType: string, grid: number, elements: CircuitElement[], foreign: Point[][]): Point[] {
+  const obstacles = elements.map(element => componentObstacle(element)).filter((box): box is NonNullable<typeof box> => box !== null);
+  const offsets = [0, grid, -grid, grid * 2, -grid * 2, grid * 3, -grid * 3];
+  const candidates = offsets.map(offset => computeOrthogonalWirePoints(
+    start, end, startRel, endRel, startType, endType, offset, grid));
+  const clear = candidates.filter(route => routeIsClear(route, obstacles, foreign));
+  if (clear.length) return clear.reduce((best, route) =>
+    route.length < best.length || route.length === best.length && overlappingLength(route, foreign) < overlappingLength(best, foreign) ? route : best);
+  return routeAroundObstacles(start, end, startRel, endRel, grid, candidates[0], obstacles, foreign) ?? candidates[0];
+}
+
 export function pointsToSvgPath(pts: Point[]): string {
   if (pts.length === 0) return '';
   let d = `M ${pts[0].x} ${pts[0].y}`;
@@ -953,6 +973,7 @@ export function SchematicEditor({
   elements,
   wires,
   printLayout,
+  description,
   crossingMode,
   onPrintLayoutChange,
   onElementsChange,
@@ -1106,7 +1127,7 @@ export function SchematicEditor({
           setPlacementPassiveModels(models => ({ ...models, [family]: models[family] === 'linear' ? 'nonlinear' : 'linear' }));
           return;
         }
-        const group = terminalGroupForType(pendingComponentType);
+        const group = SOURCE_WAVEFORMS[pendingComponentType] ? 'two' : terminalGroupForType(pendingComponentType);
         const variants = PLACEMENT_CATALOG.filter(item => group && terminalGroupForType(item.type) === group);
         if (variants.length > 1) {
           const current = variants.findIndex(item => item.type === (SOURCE_WAVEFORMS[pendingComponentType]?.[0] ?? pendingComponentType));
@@ -1197,6 +1218,14 @@ export function SchematicEditor({
     // The paper is a viewport guide only: the editor remains an infinite canvas.
     setPan({ x: (canvas.clientWidth - sheet.width * next) / 2,
       y: (canvas.clientHeight - sheet.height * next) / 2 });
+  };
+  const fitSheetWidth = () => {
+    const canvas = containerRef.current;
+    if (!canvas || canvas.clientWidth <= 48) return;
+    const sheet = paperSize(printLayout);
+    const next = Math.min(2.5, (canvas.clientWidth - 48) / sheet.width);
+    setZoom(next);
+    setPan({ x: (canvas.clientWidth - sheet.width * next) / 2, y: 24 });
   };
   const fitToView = useCallback(() => {
     const bounds = containerRef.current?.getBoundingClientRect();
@@ -1650,10 +1679,36 @@ export function SchematicEditor({
   const pinSpatialIndex = useMemo(() => new SpatialIndex(Array.from(pinPositions.values()).map(pin => ({
     minX: pin.x, maxX: pin.x, minY: pin.y, maxY: pin.y, value: pin,
   }))), [pinPositions]);
+  const automaticRouteCache = useRef<Map<string, Point[]>>(new Map());
+  const automaticRouteRevision = useRef(fitRevision);
 
   // Геометрия всех проводов с ортогональной трассировкой (под прямым углом)
   const wireGeometries = useMemo(() => {
+    if (automaticRouteRevision.current !== fitRevision) {
+      automaticRouteCache.current.clear();
+      automaticRouteRevision.current = fitRevision;
+    }
     const occupiedByNode = new Map<number | undefined, Point[][]>();
+    const fixedRoutes = new Map<string, Point[]>();
+    const nodeFor = (wire: CircuitWire) => circuitGraph.pinToNode.get(`${wire.fromCompId}_${wire.fromPinId}`);
+    const remember = (wire: CircuitWire, points: Point[]) => {
+      const node = nodeFor(wire), routes = occupiedByNode.get(node);
+      if (routes) routes.push(points);
+      else occupiedByNode.set(node, [points]);
+    };
+    // A manually edited conductor has priority even when it appears later in SCM.
+    for (const wire of wires) {
+      if (!wire.manual && !wire.waypoints?.length && wire.routeMode !== 'direct') continue;
+      const p1 = pinPositions.get(`${wire.fromCompId}_${wire.fromPinId}`);
+      const p2 = pinPositions.get(`${wire.toCompId}_${wire.toPinId}`);
+      if (!p1 || !p2) continue;
+      const points = wire.routeMode === 'direct'
+        ? simplifyPoints([p1, ...(wire.waypoints ?? []), p2])
+        : buildStoredWireRoute(p1, p2, wire.waypoints ?? [],
+          { x: p1.relX, y: p1.relY }, { x: p2.relX, y: p2.relY }, p1.elType, p2.elType, gridUnits);
+      fixedRoutes.set(wire.id, points);
+      if (!wire.disabled) remember(wire, points);
+    }
     const geometries: Array<{
       wire: CircuitWire;
       p1: NonNullable<ReturnType<typeof pinPositions.get>>;
@@ -1666,44 +1721,30 @@ export function SchematicEditor({
       const p1 = pinPositions.get(`${wire.fromCompId}_${wire.fromPinId}`);
       const p2 = pinPositions.get(`${wire.toCompId}_${wire.toPinId}`);
       if (!p1 || !p2) continue;
-      const node = circuitGraph.pinToNode.get(`${wire.fromCompId}_${wire.fromPinId}`);
+      const node = nodeFor(wire);
       const foreignRoutes = Array.from(occupiedByNode.entries())
         .filter(([occupiedNode]) => occupiedNode !== node)
         .flatMap(([, routes]) => routes);
 
       let pts: Point[];
-      if (wire.routeMode === 'direct') {
-        pts = simplifyPoints([p1, ...(wire.waypoints ?? []), p2]);
-      } else if (wire.manual || wire.waypoints?.length) {
-        pts = buildStoredWireRoute(
-          p1, p2, wire.waypoints ?? [],
-          { x: p1.relX, y: p1.relY },
-          { x: p2.relX, y: p2.relY },
-          p1.elType, p2.elType, gridUnits
-        );
+      if (fixedRoutes.has(wire.id)) {
+        pts = fixedRoutes.get(wire.id)!;
       } else {
-        const offsets = [0, gridUnits, -gridUnits, gridUnits * 2, -gridUnits * 2, gridUnits * 3, -gridUnits * 3];
-        const candidates = offsets.map(offset => computeOrthogonalWirePoints(
-          p1,
-          p2,
-          { x: p1.relX, y: p1.relY },
-          { x: p2.relX, y: p2.relY },
-          p1.elType,
-          p2.elType,
-          offset, gridUnits
-        ));
-        pts = candidates.reduce((best, candidate) =>
-          overlappingLength(candidate, foreignRoutes) < overlappingLength(best, foreignRoutes) ? candidate : best
-        );
+        const old = automaticRouteCache.current.get(wire.id);
+        const previous = old && buildStoredWireRoute(p1, p2, old.slice(1, -1),
+          { x: p1.relX, y: p1.relY }, { x: p2.relX, y: p2.relY }, p1.elType, p2.elType, gridUnits);
+        const obstacles = elements.map(element => componentObstacle(element)).filter((box): box is NonNullable<typeof box> => box !== null);
+        pts = previous && routeIsClear(previous, obstacles, foreignRoutes) ? previous
+          : automaticWireRoute(p1, p2, { x: p1.relX, y: p1.relY }, { x: p2.relX, y: p2.relY },
+            p1.elType, p2.elType, gridUnits, elements, foreignRoutes);
+        automaticRouteCache.current.set(wire.id, pts);
       }
-
-      const routes = occupiedByNode.get(node);
-      if (routes) routes.push(pts);
-      else occupiedByNode.set(node, [pts]);
+      if (!fixedRoutes.has(wire.id) && !wire.disabled) remember(wire, pts);
       geometries.push({ wire, p1, p2, points: pts, pathD: pointsToSvgPath(pts) });
     }
+    for (const id of automaticRouteCache.current.keys()) if (!wires.some(wire => wire.id === id)) automaticRouteCache.current.delete(id);
     return geometries;
-  }, [wires, pinPositions, circuitGraph, gridUnits]);
+  }, [wires, pinPositions, circuitGraph, gridUnits, elements, fitRevision]);
   useEffect(() => {
     if (!geometryActionPending.current) return;
     geometryActionPending.current = false;
@@ -2217,18 +2258,23 @@ export function SchematicEditor({
             const foreignRoutes = wireGeometries.filter(geometry =>
               connectedGraph.pinToNode.get(`${geometry.wire.fromCompId}_${geometry.wire.fromPinId}`) !== newNode)
               .map(geometry => geometry.points);
-            const offsets = [0, gridUnits, -gridUnits, gridUnits * 2, -gridUnits * 2, gridUnits * 3, -gridUnits * 3];
+            const initialRoute = computeOrthogonalWirePoints(sourcePin, targetPin,
+              { x: sourcePin.relX, y: sourcePin.relY }, { x: targetPin.relX, y: targetPin.relY },
+              sourcePin.elType, targetPin.elType, 0, gridUnits);
+            const bodies = elements.map(element => componentObstacle(element)).filter((box): box is NonNullable<typeof box> => box !== null);
+            // A new gesture that directly crosses another conductor is an explicit
+            // connection in SCM 8. Later automatic rerouting must avoid new contacts.
+            const intentionalCrossing = routeIsClear(initialRoute, bodies, []) &&
+              !routeIsClear(initialRoute, [], foreignRoutes);
             const route = newWire.routeMode === 'direct'
               ? simplifyPoints([sourcePin, ...(newWire.waypoints ?? []), targetPin])
               : newWire.manual
               ? buildStoredWireRoute(sourcePin, targetPin, newWire.waypoints ?? [],
                 { x: sourcePin.relX, y: sourcePin.relY }, { x: targetPin.relX, y: targetPin.relY },
                 sourcePin.elType, targetPin.elType, gridUnits)
-              : offsets.map(offset => computeOrthogonalWirePoints(sourcePin, targetPin,
-                { x: sourcePin.relX, y: sourcePin.relY }, { x: targetPin.relX, y: targetPin.relY },
-                sourcePin.elType, targetPin.elType, offset, gridUnits))
-                .reduce((best, candidate) => overlappingLength(candidate, foreignRoutes) < overlappingLength(best, foreignRoutes)
-                  ? candidate : best);
+              : intentionalCrossing ? initialRoute
+              : automaticWireRoute(sourcePin, targetPin, { x: sourcePin.relX, y: sourcePin.relY },
+                { x: targetPin.relX, y: targetPin.relY }, sourcePin.elType, targetPin.elType, gridUnits, elements, foreignRoutes);
             try {
               const connected = normalizeCrossingTopology(elements, [...wires, newWire],
                 [...wireGeometries, { wire: newWire, points: route }], crossingMode);
@@ -2427,7 +2473,8 @@ export function SchematicEditor({
       const bounds = elements.length || wires.length
         ? { x: box.x - padding, y: box.y - padding, width: Math.max(box.width, 1) + 2 * padding, height: Math.max(box.height, 1) + 2 * padding }
         : { x: 0, y: 0, width: 1, height: 1 };
-      const placement = computePrintPlacement(bounds, printLayout, printFrame ? Math.max(20, printMarginMm) : printMarginMm, printMode, requestedPrintScale, centerPrint);
+      const placement = computePrintPlacement(bounds, printLayout, printFrame ? Math.max(20, printMarginMm) : printMarginMm,
+        printMode, requestedPrintScale, centerPrint, printFrame ? 65 : 0);
       clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
       clone.setAttribute('width', `${placement.widthMm}mm`);
       clone.setAttribute('height', `${placement.heightMm}mm`);
@@ -2444,9 +2491,10 @@ export function SchematicEditor({
         frame.setAttribute('y', String(5 * SCHEMATIC_UNITS_PER_MM));
         frame.setAttribute('width', String((placement.widthMm - 25) * SCHEMATIC_UNITS_PER_MM));
         frame.setAttribute('height', String((placement.heightMm - 10) * SCHEMATIC_UNITS_PER_MM));
-        frame.setAttribute('fill', 'none'); frame.setAttribute('stroke', '#111111'); frame.setAttribute('stroke-width', '0.8');
+        frame.setAttribute('fill', 'none'); frame.setAttribute('stroke', '#111111'); frame.setAttribute('stroke-width', '2');
         frame.setAttribute('data-eskd-frame', 'true');
         clone.insertBefore(frame, world);
+        clone.appendChild(createTitleBlock(document, printLayout, description ?? { title: '', purpose: '', comment: '' }, printScaleLabel(placement.scale)));
       }
       if (printMonochrome) world.querySelectorAll<SVGElement>('[stroke], [fill]').forEach(node => {
         for (const attribute of ['stroke', 'fill'] as const) {
@@ -2464,7 +2512,7 @@ export function SchematicEditor({
       setExportPlan(null);
       setExportError(error instanceof Error ? error.message : 'Не удалось подготовить лист.');
     }
-  }, [exportTarget, printLayout, printMarginMm, printMode, requestedPrintScale, centerPrint, printMonochrome, printFrame, elements, wires, zoom, pan, showElementNames, showElementValues, showNodeNumbers]);
+  }, [exportTarget, printLayout, printMarginMm, printMode, requestedPrintScale, centerPrint, printMonochrome, printFrame, description, elements, wires, zoom, pan, showElementNames, showElementValues, showNodeNumbers]);
 
   const downloadSchematic = (format: 'png' | 'svg' | 'pdf' | 'print') => {
     if (!exportPlan || !exportPlan.placement.fits) return;
@@ -2548,7 +2596,11 @@ export function SchematicEditor({
               onChange={event => setPendingComponentType(event.target.value as ComponentType)}
               className="rounded border border-slate-300 bg-white px-1 py-1 text-xs text-slate-700"
               title="Колесо над схемой переключает форму сигнала"
-            ><option value={SOURCE_WAVEFORMS[pendingComponentType]![0]}>Постоянный</option><option value={SOURCE_WAVEFORMS[pendingComponentType]![1]}>Синус</option><option value={SOURCE_WAVEFORMS[pendingComponentType]![2]}>Прямоугольный</option></select>}
+            ><option value={SOURCE_WAVEFORMS[pendingComponentType]![0]}>Независимый · постоянный</option>
+              <option value={SOURCE_WAVEFORMS[pendingComponentType]![1]}>Независимый · синус</option>
+              <option value={SOURCE_WAVEFORMS[pendingComponentType]![2]}>Независимый · прямоугольный</option>
+              <option value={SOURCE_WAVEFORMS[pendingComponentType]![3]}>Зависимый · от напряжения</option>
+              <option value={SOURCE_WAVEFORMS[pendingComponentType]![4]}>Зависимый · от тока</option></select>}
 
             {/* Кнопка открытия полной библиотеки компонентов */}
             <button
@@ -2905,6 +2957,7 @@ export function SchematicEditor({
               return (
                 <g
                   key={wire.id}
+                  data-wire-id={wire.id}
                   onMouseDown={(e) => {
                     if (e.button === 1 || e.shiftKey) return;
                     e.stopPropagation();
@@ -3288,6 +3341,7 @@ export function SchematicEditor({
         <div className="flex items-center gap-2" aria-label="Масштаб просмотра">
           <button type="button" title="Показать схему целиком" onClick={fitToView} className="rounded px-1 hover:bg-slate-100"><Maximize2 size={14} /></button>
           <button type="button" title="Вписать лист в окно" onClick={fitSheetToView} className="rounded px-1 hover:bg-slate-100">Лист</button>
+          <button type="button" title="По ширине листа" onClick={fitSheetWidth} className="rounded px-1 hover:bg-slate-100">Ширина</button>
           <button type="button" title="Уменьшить масштаб" onClick={() => zoomAtCenter(zoom / 1.25)} className="rounded px-1 hover:bg-slate-100"><ZoomOut size={14} /></button>
           <input type="range" aria-label="Масштаб просмотра в процентах" min={1} max={250} step={1} value={Math.round(zoom * 100)} onChange={event => zoomAtCenter(Number(event.target.value) / 100)} className="w-32 accent-blue-600" />
           <button type="button" title="Увеличить масштаб" onClick={() => zoomAtCenter(zoom * 1.25)} className="rounded px-1 hover:bg-slate-100"><ZoomIn size={14} /></button>

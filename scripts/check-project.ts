@@ -12,6 +12,7 @@ import { buildStoredWireRoute, computeOrthogonalWirePoints, getComponentPins, is
 import { buildCircuitGraph } from '../src/math/circuitSolver';
 import { nextComponentName } from '../src/utils/componentNames';
 import { paperSize, parsePrintLayout, computePrintPlacement, SCHEMATIC_UNITS_PER_MM } from '../src/utils/printLayout';
+import { titleBlockBounds, TITLE_BLOCK_HEIGHT_MM, TITLE_BLOCK_WIDTH_MM } from '../src/utils/eskdTitleBlock';
 import { rasterPagePdf } from '../src/utils/rasterPdf';
 import { DEFAULT_CHIP_PINS } from '../src/utils/chipPins';
 
@@ -26,6 +27,10 @@ const recoveryContent = exportToYamlScm(SAMPLE_CIRCUITS[0].elements, SAMPLE_CIRC
 const described = { title: 'Усилитель: каскад 1', purpose: 'Проверка\nАЧХ', comment: 'Узел "Выход" • β=100' };
 const describedScm = exportToYamlScm([], [], SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect', described);
 assert.deepEqual(parseYamlScm(describedScm).description, described, 'Document description survives SCM 8');
+const withTitleBlock = { ...described, designation: 'NAPS-Э3-001', author: 'Шевчук',
+  checker: 'Иванов', sheetNumber: '1', sheetCount: '2' };
+assert.deepEqual(parseYamlScm(exportToYamlScm([], [], SAMPLE_CIRCUITS[0].transient, undefined, undefined,
+  'current', 'connect', withTitleBlock)).description, withTitleBlock, 'title-block fields survive SCM 8');
 assert.deepEqual(parseYamlScm(recoveryContent).description, { title: '', purpose: '', comment: '' }, 'Old SCM opens without document metadata');
 assert.throws(() => exportToYamlScm([], [], SAMPLE_CIRCUITS[0].transient, undefined,
   { format: 'A4', orientation: 'landscape', gridMm: 1 }, 'legacy', 'explicit', described), /не поддерживает описание/);
@@ -44,6 +49,15 @@ assert.equal(readRecovery(recoveryStorage)?.name, 'First');
 
 assert.deepEqual(paperSize({ format: 'A4', orientation: 'landscape', gridMm: 5 }), { widthMm: 297, heightMm: 210, width: 1188, height: 840 });
 assert.deepEqual(paperSize({ format: 'A3', orientation: 'portrait', gridMm: 5 }), { widthMm: 297, heightMm: 420, width: 1188, height: 1680 });
+for (const format of ['A0', 'A1', 'A2', 'A3', 'A4'] as const) for (const orientation of ['portrait', 'landscape'] as const) {
+  const layout = { format, orientation, gridMm: 5 } as const;
+  const block = titleBlockBounds(layout), page = paperSize(layout);
+  assert.equal(block.widthMm, TITLE_BLOCK_WIDTH_MM);
+  assert.equal(block.heightMm, TITLE_BLOCK_HEIGHT_MM);
+  assert.equal(block.xMm + block.widthMm, page.widthMm - 5);
+  assert.equal(block.yMm + block.heightMm, page.heightMm - 5);
+  assert(block.xMm >= 20, `${format} ${orientation}: title block stays inside the binding margin`);
+}
 for (const [format, short, long] of [['A0', 841, 1189], ['A1', 594, 841], ['A2', 420, 594]] as const) {
   assert.deepEqual(paperSize({ format, orientation: 'portrait', gridMm: 5 }),
     { widthMm: short, heightMm: long, width: short * SCHEMATIC_UNITS_PER_MM, height: long * SCHEMATIC_UNITS_PER_MM });

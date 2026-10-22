@@ -238,6 +238,26 @@ export function splitWireRoute(points: Point[], segmentIndex: number, point: Poi
 
 type RoutedWire = { wire: CircuitWire; points: Point[] };
 
+/** An explicit cut or isolation turns automatically split routes into editable branches. */
+export function freezeCrossingProvenance(elements: CircuitElement[], wires: CircuitWire[], changedWireIds: ReadonlySet<string>):
+  { elements: CircuitElement[]; wires: CircuitWire[] } {
+  if (!wires.some(wire => changedWireIds.has(wire.id) && wire.originWireId)) return { elements, wires };
+  return {
+    elements: elements.map(element => element.autoCrossing ? { ...element, autoCrossing: undefined } : element),
+    wires: wires.map(wire => wire.originWireId ? { ...wire, originWireId: undefined } : wire),
+  };
+}
+
+export function removeWiresPreservingTopology(elements: CircuitElement[], wires: CircuitWire[], removedWireIds: ReadonlySet<string>):
+  { elements: CircuitElement[]; wires: CircuitWire[] } {
+  const frozen = freezeCrossingProvenance(elements, wires, removedWireIds);
+  const remaining = frozen.wires.filter(wire => !removedWireIds.has(wire.id));
+  const attached = new Set(remaining.flatMap(wire => [wire.fromCompId, wire.toCompId]));
+  const automatic = new Set(elements.filter(element => element.autoCrossing).map(element => element.id));
+  const orphans = new Set([...automatic].filter(id => !attached.has(id)));
+  return { elements: orphans.size ? frozen.elements.filter(element => !orphans.has(element.id)) : frozen.elements, wires: remaining };
+}
+
 /** Undo automatic intersections before editing their underlying conductors. */
 export function collapseAutomaticCrossings(
   elements: CircuitElement[], wires: CircuitWire[], routed: RoutedWire[],
@@ -1080,6 +1100,16 @@ export function SchematicEditor({
     }
   }, [elements, wires, crossingMode, onBeginContinuousEdit, onElementsChange, onWiresChange]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const removeWireIds = (ids: ReadonlySet<string>) => {
+    const next = removeWiresPreservingTopology(elements, wires, ids);
+    if (next.elements !== elements) onElementsChange(next.elements);
+    onWiresChange(next.wires);
+  };
+  const toggleWireConnection = (id: string) => {
+    const frozen = freezeCrossingProvenance(elements, wires, new Set([id]));
+    if (frozen.elements !== elements) onElementsChange(frozen.elements);
+    onWiresChange(frozen.wires.map(wire => wire.id === id ? { ...wire, disabled: !wire.disabled } : wire));
+  };
   const transformSelection = (transform: (element: CircuitElement) => CircuitElement) => {
     if (!selectedSet.size) return;
     if (crossingMode === 'connect') { geometryActionPending.current = true; onBeginContinuousEdit?.(); }
@@ -1093,8 +1123,10 @@ export function SchematicEditor({
   };
   const deleteSelection = () => {
     if (!selectedSet.size) return;
-    onElementsChange(elements.filter(element => !selectedSet.has(element.id)));
-    onWiresChange(wires.filter(wire => !selectedSet.has(wire.fromCompId) && !selectedSet.has(wire.toCompId)));
+    const removed = new Set(wires.filter(wire => selectedSet.has(wire.fromCompId) || selectedSet.has(wire.toCompId)).map(wire => wire.id));
+    const next = removeWiresPreservingTopology(elements, wires, removed);
+    onElementsChange(next.elements.filter(element => !selectedSet.has(element.id)));
+    onWiresChange(next.wires);
     setSelectedIds([]); setSelectedId(null);
   };
 
@@ -1240,7 +1272,7 @@ export function SchematicEditor({
           deleteSelection();
         } else if (selectedWireId) {
           e.preventDefault();
-          onWiresChange(wires.filter((w) => w.id !== selectedWireId));
+          removeWireIds(new Set([selectedWireId]));
           setSelectedWireId(null);
         }
       } else if (e.key === 'F9') {
@@ -2165,8 +2197,10 @@ export function SchematicEditor({
       setSelectedIds([copy.id]);
     }
     if (action === 'delete') {
-      onElementsChange(elements.filter(item => item.id !== id));
-      onWiresChange(wires.filter(w => w.fromCompId !== id && w.toCompId !== id));
+      const removed = new Set(wires.filter(wire => wire.fromCompId === id || wire.toCompId === id).map(wire => wire.id));
+      const next = removeWiresPreservingTopology(elements, wires, removed);
+      onElementsChange(next.elements.filter(item => item.id !== id));
+      onWiresChange(next.wires);
       setSelectedId(null);
       setSelectedIds([]);
     }
@@ -2358,7 +2392,7 @@ export function SchematicEditor({
               if (selectedId) {
                 deleteSelection();
               } else if (selectedWireId) {
-                onWiresChange(wires.filter((w) => w.id !== selectedWireId));
+                removeWireIds(new Set([selectedWireId]));
                 setSelectedWireId(null);
               }
             }}
@@ -2367,7 +2401,7 @@ export function SchematicEditor({
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
-          <button type="button" disabled={!selectedWireId} onClick={() => onWiresChange(wires.map(wire => wire.id === selectedWireId ? { ...wire, disabled: !wire.disabled } : wire))} className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-40" title="Разорвать или восстановить выбранный провод">{wires.find(wire => wire.id === selectedWireId)?.disabled ? 'Соединить' : 'Разорвать'}</button>
+          <button type="button" disabled={!selectedWireId} onClick={() => selectedWireId && toggleWireConnection(selectedWireId)} className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-40" title="Разорвать или восстановить выбранный провод">{wires.find(wire => wire.id === selectedWireId)?.disabled ? 'Соединить' : 'Разорвать'}</button>
           <div role="group" aria-label="Режим прокладки провода" className="flex items-center rounded border border-slate-300 p-0.5">
             <button type="button" aria-pressed={wireMode === 'orthogonal'} onClick={() => { setWireMode('orthogonal'); setWiringWaypoints([]); }} className={`rounded px-2 py-1 text-xs ${wireMode === 'orthogonal' ? 'bg-blue-600 text-white' : 'text-slate-700'}`}>Ортогональный</button>
             <button type="button" aria-pressed={wireMode === 'direct'} onClick={() => { setWireMode('direct'); setWiringWaypoints([]); }} className={`rounded px-2 py-1 text-xs ${wireMode === 'direct' ? 'bg-blue-600 text-white' : 'text-slate-700'}`}>Прямой</button>
@@ -3066,8 +3100,8 @@ export function SchematicEditor({
         const wire = wires.find(item => item.id === wireContextMenu.id);
         if (!wire) return null;
         return <div role="menu" aria-label="Действия с проводом" className="fixed z-[100] min-w-44 rounded-lg border border-slate-200 bg-white p-1 shadow-xl text-sm" style={{ left: wireContextMenu.x, top: wireContextMenu.y }}>
-          <button type="button" role="menuitem" className="block w-full rounded px-3 py-1.5 text-left hover:bg-blue-50" onClick={() => { onWiresChange(wires.map(item => item.id === wire.id ? { ...item, disabled: !item.disabled } : item)); setWireContextMenu(null); }}>{wire.disabled ? 'Восстановить соединение' : 'Разорвать соединение'}</button>
-          <button type="button" role="menuitem" className="block w-full rounded px-3 py-1.5 text-left hover:bg-rose-50" onClick={() => { onWiresChange(wires.filter(item => item.id !== wire.id)); setWireContextMenu(null); setSelectedWireId(null); }}>Удалить провод</button>
+          <button type="button" role="menuitem" className="block w-full rounded px-3 py-1.5 text-left hover:bg-blue-50" onClick={() => { toggleWireConnection(wire.id); setWireContextMenu(null); }}>{wire.disabled ? 'Восстановить соединение' : 'Разорвать соединение'}</button>
+          <button type="button" role="menuitem" className="block w-full rounded px-3 py-1.5 text-left hover:bg-rose-50" onClick={() => { removeWireIds(new Set([wire.id])); setWireContextMenu(null); setSelectedWireId(null); }}>Удалить провод</button>
         </div>;
       })()}
       {exportTarget && <div role="dialog" aria-modal="true" aria-label="Настройки печати и экспорта" className="fixed inset-0 z-[110] flex flex-col bg-slate-900/70 p-4">

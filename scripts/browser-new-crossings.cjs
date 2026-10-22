@@ -95,7 +95,40 @@ const center = locator => locator.evaluate(circle => {
         joined: graph.pinToNode.get(`${ids.R1}_2`) === graph.pinToNode.get(`${ids.R3}_2`) };
     }, rotatedScm);
     assert.deepEqual(rotationResult, { junctions: 1, joined: true }, 'rotation preserves the connected junction');
+    await page.keyboard.press('Control+z');
+    const branchTop = await center(pin(2, 1));
+    const branchJunction = await parts.nth(4).evaluate(group => {
+      const point = group.ownerSVGElement.createSVGPoint();
+      const screen = point.matrixTransform(group.getScreenCTM());
+      return { x: screen.x, y: screen.y };
+    });
+    await page.mouse.click((branchTop.x + branchJunction.x) / 2, (branchTop.y + branchJunction.y) / 2);
+    await page.keyboard.press('Delete');
+    assert.equal(await page.locator('#schematic-world path[stroke="transparent"]').count(), 3,
+      'deleting one crossing fragment retains the other branches');
+    const [cutDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
+    const cutScm = await fs.readFile(await cutDownload.path(), 'utf8');
+    const cut = await page.evaluate(async scm => {
+      const { parseYamlScm } = await import('/src/utils/yamlScm.ts');
+      const { buildCircuitGraph } = await import('/src/math/circuitSolver.ts');
+      const parsed = parseYamlScm(scm);
+      const ids = Object.fromEntries(parsed.elements.map(item => [item.name, item.id]));
+      const nodes = buildCircuitGraph(parsed.elements, parsed.wires).pinToNode;
+      return { wires: parsed.wires.length, automatic: parsed.elements.filter(item => item.autoCrossing).length,
+        provenance: parsed.wires.filter(item => item.originWireId).length,
+        separated: nodes.get(`${ids.R3}_2`) !== nodes.get(`${ids.R1}_2`),
+        intact: nodes.get(`${ids.R1}_2`) === nodes.get(`${ids.R4}_1`) };
+    }, cutScm);
+    assert.deepEqual(cut, { wires: 3, automatic: 0, provenance: 0, separated: true, intact: true },
+      'explicit deletion freezes incomplete provenance and separates only the removed branch');
+    await page.keyboard.press('Control+z');
+    assert.equal(await page.locator('#schematic-world path[stroke="transparent"]').count(), 4, 'undo restores the cut fragment');
+    await page.keyboard.press('Control+y');
+    assert.equal(await page.locator('#schematic-world path[stroke="transparent"]').count(), 3, 'redo restores the cut');
+    await page.locator('input[type="file"]').setInputFiles({ name: 'cut-crossing.scm', mimeType: 'text/plain', buffer: Buffer.from(cutScm) });
+    await page.getByText('cut-crossing', { exact: true }).waitFor();
+    assert.equal(await page.locator('#schematic-world path[stroke="transparent"]').count(), 3, 'reloading preserves the edited branched topology');
     assert.deepEqual(errors, []);
-    console.log('PASS: SCM 8 crossing creation, segment edit, rotation, save and undo/redo.');
+    console.log('PASS: SCM 8 crossing creation, segment edit, branch deletion, rotation, save and undo/redo.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

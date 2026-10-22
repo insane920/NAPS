@@ -9,6 +9,8 @@ import {
   materializeWireCrossings,
   collapseAutomaticCrossings,
   normalizeCrossingTopology,
+  freezeCrossingProvenance,
+  removeWiresPreservingTopology,
   projectPointToWire,
   simplifyPoints,
   snapManualWirePoint,
@@ -165,6 +167,25 @@ const cutWires = tripleCross.wires.filter(wire => wire.id !== cutFragment.id);
 assert.notEqual(buildCircuitGraph(tripleCross.elements, cutWires).pinToNode.get('cross_4_1'),
   buildCircuitGraph(tripleCross.elements, cutWires).pinToNode.get('cross_0_1'),
   'removing one branch fragment disconnects only its removed endpoint');
+const cutTopology = removeWiresPreservingTopology(tripleCross.elements, tripleCross.wires, new Set([cutFragment.id]));
+assert.equal(cutTopology.wires.length, tripleCross.wires.length - 1);
+assert(!cutTopology.elements.some(element => element.autoCrossing),
+  'an explicitly cut automatic intersection becomes a stable editable junction');
+assert(!cutTopology.wires.some(wire => wire.originWireId),
+  'an incomplete wire family cannot block later intersection normalization');
+assert.notEqual(buildCircuitGraph(cutTopology.elements, cutTopology.wires).pinToNode.get('cross_4_1'),
+  buildCircuitGraph(cutTopology.elements, cutTopology.wires).pinToNode.get('cross_0_1'),
+  'cutting a branch fragment splits the electrical network');
+const cutRoundTrip = parseYamlScm(exportToYamlScm(cutTopology.elements, cutTopology.wires, sample.transient,
+  undefined, undefined, 'current', 'connect'));
+const cutNames = new Map(cutRoundTrip.elements.map(element => [element.name, element.id]));
+const cutGraph = buildCircuitGraph(cutRoundTrip.elements, cutRoundTrip.wires).pinToNode;
+assert.notEqual(cutGraph.get(`${cutNames.get('R5')}_1`), cutGraph.get(`${cutNames.get('R1')}_1`),
+  'SCM reload does not resurrect the removed electrical branch');
+assert(!cutRoundTrip.wires.some(wire => wire.originWireId), 'the cut remains independent after SCM reload');
+const frozenIsolation = freezeCrossingProvenance(tripleCross.elements, tripleCross.wires, new Set([cutFragment.id]));
+assert(!frozenIsolation.elements.some(element => element.autoCrossing) &&
+  !frozenIsolation.wires.some(wire => wire.originWireId), 'an isolated fragment also freezes the split topology');
 const multipleCrossings = normalizeCrossingTopology(threeElements, [...crossingWires, thirdWire], [
   { wire: crossingWires[0], points: [{ x: -100, y: 0 }, { x: 100, y: 0 }] },
   { wire: crossingWires[1], points: [{ x: -50, y: -100 }, { x: -50, y: 100 }] },
@@ -184,6 +205,22 @@ const multiroutes = multipleCrossings.wires.map(wire => ({ wire, points: [
 ] }));
 const multipleCollapsed = collapseAutomaticCrossings(multipleCrossings.elements, multipleCrossings.wires, multiroutes);
 assert.equal(multipleCollapsed.wires.length, 3, 'multi-crossing conductors reconstruct without losing endpoints');
+const detouredRoutes = multipleCollapsed.routes.map(item => item.wire.id === crossingWires[0].id
+  ? { ...item, points: [{ x: -100, y: 0 }, { x: -100, y: 200 }, { x: 100, y: 200 }, { x: 100, y: 0 }] }
+  : item);
+const movedAwayFromNets = normalizeCrossingTopology(multipleCollapsed.elements, multipleCollapsed.wires, detouredRoutes, 'connect');
+assert.equal(movedAwayFromNets.elements.filter(element => element.autoCrossing).length, 0,
+  'dragging one conductor away from two networks removes both automatic junctions');
+assert.notEqual(buildCircuitGraph(movedAwayFromNets.elements, movedAwayFromNets.wires).pinToNode.get('cross_0_1'),
+  buildCircuitGraph(movedAwayFromNets.elements, movedAwayFromNets.wires).pinToNode.get('cross_2_1'),
+  'both crossed electrical networks separate after the detour');
+const returnedRoutes = movedAwayFromNets.wires.map(wire => ({ wire,
+  points: wire.id === crossingWires[0].id
+    ? [{ x: -100, y: 0 }, { x: -100, y: 50 }, { x: 100, y: 50 }, { x: 100, y: 0 }]
+    : multipleCollapsed.routes.find(item => item.wire.id === wire.id)!.points }));
+const movedAcrossNets = normalizeCrossingTopology(movedAwayFromNets.elements, movedAwayFromNets.wires, returnedRoutes, 'connect');
+assert.equal(movedAcrossNets.elements.filter(element => element.autoCrossing).length, 2,
+  'dragging the conductor back across two networks recreates exactly two junctions');
 for (const [shape, horizontal, vertical] of [
   ['X', [{ x: -100, y: 0 }, { x: 100, y: 0 }], [{ x: 0, y: -100 }, { x: 0, y: 100 }]],
   ['T', [{ x: -100, y: 0 }, { x: 100, y: 0 }], [{ x: 0, y: -100 }, { x: 0, y: 0 }]],
@@ -235,6 +272,9 @@ assert.notEqual(buildCircuitGraph(movedCross.elements, movedCross.wires).pinToNo
   'group movement separates the electrical nets');
 const legacyMoved = normalizeCrossingTopology(editorElements, editorWires, routedFor(editorElements, editorWires), 'explicit');
 assert.equal(legacyMoved.elements, editorElements, 'SCM 7 mode never normalizes visible crossings');
+const legacyCut = removeWiresPreservingTopology(editorElements, editorWires, new Set(['v']));
+assert.equal(legacyCut.elements, editorElements, 'cutting a legacy SCM wire never rewrites its components');
+assert.deepEqual(legacyCut.wires.map(wire => wire.id), ['h'], 'legacy wire deletion leaves the other route intact');
 assert.throws(() => exportToYamlScm(sample.elements, directWires, sample.transient, undefined, undefined, 'legacy'), /не поддерживает произвольные углы/, 'legacy export never silently changes a free-angle route');
 const legacyScm = exportToYamlScm(moved, sample.wires, sample.transient, undefined, undefined, 'legacy');
 assert.match(legacyScm, /MajorVersion: 6/);

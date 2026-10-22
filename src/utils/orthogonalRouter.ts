@@ -2,7 +2,10 @@ import type { CircuitElement } from '../types';
 import { SYMBOL_METRICS } from '../components/symbolMetrics';
 
 export interface RoutePoint { x: number; y: number }
-export interface RouteBox { left: number; top: number; right: number; bottom: number }
+export interface RouteBox {
+  left: number; top: number; right: number; bottom: number;
+  centerX?: number; centerY?: number; halfWidth?: number; halfHeight?: number; angle?: number;
+}
 const EPS = 1e-6;
 
 /** A conservative body envelope, excluding terminal leads. All dimensions are schematic units. */
@@ -15,9 +18,11 @@ export function componentObstacle(element: CircuitElement, clearance = 4): Route
     : ['OPAMP', 'COMPARATOR', 'NPN', 'PNP', 'NMOS', 'PMOS', 'TR3'].includes(element.type) ? 23
       : element.type === 'R' ? SYMBOL_METRICS.passiveHalfHeight : SYMBOL_METRICS.sourceRadius;
   const angle = (element.rotation || 0) * Math.PI / 180;
-  const x = Math.abs(Math.cos(angle)) * halfWidth + Math.abs(Math.sin(angle)) * halfHeight + clearance;
-  const y = Math.abs(Math.sin(angle)) * halfWidth + Math.abs(Math.cos(angle)) * halfHeight + clearance;
-  return { left: element.x - x, top: element.y - y, right: element.x + x, bottom: element.y + y };
+  const paddedWidth = halfWidth + clearance, paddedHeight = halfHeight + clearance;
+  const x = Math.abs(Math.cos(angle)) * paddedWidth + Math.abs(Math.sin(angle)) * paddedHeight;
+  const y = Math.abs(Math.sin(angle)) * paddedWidth + Math.abs(Math.cos(angle)) * paddedHeight;
+  return { left: element.x - x, top: element.y - y, right: element.x + x, bottom: element.y + y,
+    centerX: element.x, centerY: element.y, halfWidth: paddedWidth, halfHeight: paddedHeight, angle };
 }
 
 function inside(point: RoutePoint, box: RouteBox): boolean {
@@ -39,7 +44,7 @@ function segmentsMeet(a: RoutePoint, b: RoutePoint, c: RoutePoint, d: RoutePoint
   if (Math.abs(cdB) <= EPS && onSegment(c, d, b)) return true;
   return abC * abD < 0 && cdA * cdB < 0;
 }
-function hitsBox(a: RoutePoint, b: RoutePoint, box: RouteBox): boolean {
+function hitsAxisBox(a: RoutePoint, b: RoutePoint, box: RouteBox): boolean {
   if (inside(a, box) || inside(b, box)) return true;
   if (Math.abs(a.y - b.y) <= EPS) return a.y > box.top + EPS && a.y < box.bottom - EPS &&
     Math.max(a.x, b.x) > box.left + EPS && Math.min(a.x, b.x) < box.right - EPS;
@@ -49,6 +54,18 @@ function hitsBox(a: RoutePoint, b: RoutePoint, box: RouteBox): boolean {
   const corners = [{ x: box.left, y: box.top }, { x: box.right, y: box.top },
     { x: box.right, y: box.bottom }, { x: box.left, y: box.bottom }];
   return corners.some((corner, index) => segmentsMeet(a, b, corner, corners[(index + 1) % 4]));
+}
+function hitsBox(a: RoutePoint, b: RoutePoint, box: RouteBox): boolean {
+  if (box.centerX === undefined || box.centerY === undefined || box.halfWidth === undefined ||
+      box.halfHeight === undefined || !box.angle) return hitsAxisBox(a, b, box);
+  const cosine = Math.cos(box.angle), sine = Math.sin(box.angle);
+  const local = (point: RoutePoint) => {
+    const x = point.x - box.centerX!, y = point.y - box.centerY!;
+    return { x: x * cosine + y * sine, y: -x * sine + y * cosine };
+  };
+  return hitsAxisBox(local(a), local(b), {
+    left: -box.halfWidth, right: box.halfWidth, top: -box.halfHeight, bottom: box.halfHeight,
+  });
 }
 
 export function routeIsClear(points: RoutePoint[], obstacles: RouteBox[], foreign: RoutePoint[][]): boolean {
@@ -86,12 +103,22 @@ export function routeAroundObstacles(start: RoutePoint, end: RoutePoint, startDi
   };
   const from = lead(start, startDirection), to = lead(end, endDirection);
   if (!routeIsClear([start, from], obstacles, foreign) || !routeIsClear([to, end], obstacles, foreign)) return null;
+  // Only geometry near these endpoints can constrain this bounded search. Far-away
+  // components must not make the Cartesian visibility grid grow quadratically.
+  const reach = Math.max(200, Math.abs(start.x - end.x) + Math.abs(start.y - end.y));
+  const region = { left: Math.min(start.x, end.x) - reach, right: Math.max(start.x, end.x) + reach,
+    top: Math.min(start.y, end.y) - reach, bottom: Math.max(start.y, end.y) + reach };
+  const nearbyBoxes = obstacles.filter(box => box.right >= region.left && box.left <= region.right &&
+    box.bottom >= region.top && box.top <= region.bottom);
+  const nearbyRoutes = foreign.filter(route => route.some((point, index) => index > 0 &&
+    Math.max(point.x, route[index - 1].x) >= region.left && Math.min(point.x, route[index - 1].x) <= region.right &&
+    Math.max(point.y, route[index - 1].y) >= region.top && Math.min(point.y, route[index - 1].y) <= region.bottom));
   const xs = [from.x, to.x], ys = [from.y, to.y];
-  for (const box of obstacles) {
+  for (const box of nearbyBoxes) {
     xs.push(box.left - step, box.right + step);
     ys.push(box.top - step, box.bottom + step);
   }
-  for (const route of foreign) for (const point of route) {
+  for (const route of nearbyRoutes) for (const point of route) {
     xs.push(point.x - step, point.x + step);
     ys.push(point.y - step, point.y + step);
   }
@@ -133,7 +160,7 @@ export function routeAroundObstacles(start: RoutePoint, end: RoutePoint, startDi
       const nx = x + dx, ny = y + dy;
       if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
       const a = at(x, y), b = at(nx, ny);
-      if (!routeIsClear([a, b], obstacles, foreign)) continue;
+      if (!routeIsClear([a, b], nearbyBoxes, nearbyRoutes)) continue;
       const nextId = index(nx, ny, nextAxis), length = Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
       const nextCost = cost[current.id] + length + (axis && axis !== nextAxis ? step * 0.4 : 0);
       if (nextCost >= cost[nextId] - EPS) continue;

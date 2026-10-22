@@ -25,6 +25,24 @@ const fs = require('node:fs/promises');
     await page.getByTitle('По ширине листа').click();
     const widthPercent = Number((await page.locator('[aria-label="Масштаб просмотра"] output').innerText()).replace('%', ''));
     assert.ok(widthPercent > fittedPercent, 'width fit uses more of the viewport than full-sheet fit');
+    const componentScreen = () => page.locator('[data-component-id]').first().evaluate(group => ({
+      x: group.getScreenCTM().e, y: group.getScreenCTM().f,
+    }));
+    const beforeScroll = await componentScreen();
+    await page.getByLabel('Горизонтальная прокрутка схемы').evaluate(element => {
+      element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); element.scrollLeft += 100;
+    });
+    await page.waitForTimeout(100);
+    const afterHorizontal = await componentScreen();
+    assert.ok(Math.abs(afterHorizontal.x - beforeScroll.x + 100) < 2, 'horizontal scrollbar pans the viewport');
+    await page.getByLabel('Вертикальная прокрутка схемы').evaluate(element => {
+      element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); element.scrollTop += 80;
+    });
+    await page.waitForTimeout(100);
+    const afterVertical = await componentScreen();
+    assert.ok(Math.abs(afterVertical.y - beforeScroll.y + 80) < 2, 'vertical scrollbar pans the viewport');
+    assert.equal(widthPercent, Number((await page.locator('[aria-label="Масштаб просмотра"] output').innerText()).replace('%', '')),
+      'scrolling does not change document scale');
     await page.getByTitle('Параметры расчета (t_max, шаг)').click();
     const transientPanel = page.getByRole('dialog', { name: 'Параметры переходного процесса' });
     assert.equal(await transientPanel.getAttribute('aria-modal'), null);
@@ -56,6 +74,20 @@ const fs = require('node:fs/promises');
     assert.match(a4Preview, /#111111/);
     assert.match(a4Preview, /width="210mm"/);
     assert.match(a4Preview, /height="297mm"/);
+    await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Ориентация документа' }).selectOption('landscape');
+    await page.getByRole('button', { name: 'Экспорт ▾' }).click();
+    await page.getByRole('menuitem', { name: 'PDF' }).click();
+    const landscapePreview = await page.getByTitle('Предварительный просмотр листа').getAttribute('srcdoc');
+    assert.match(landscapePreview, /data-width-mm="55"/);
+    assert.match(landscapePreview, /data-height-mm="185"/);
+    assert.match(landscapePreview, /data-rotation="90"/);
+    assert.match(landscapePreview, /data-eskd-field="scale"/);
+    const [pdfDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать PDF' }).click()]);
+    const pdf = await fs.readFile(await pdfDownload.path());
+    if (process.env.NAPS_CAPTURE_PDF_PATH) await fs.writeFile(process.env.NAPS_CAPTURE_PDF_PATH, pdf);
+    assert.match(pdf.toString('latin1'), /\/MediaBox \[0 0 841\.889[0-9]* 595\.275[0-9]*\]/,
+      'A4 landscape PDF retains physical MediaBox dimensions');
     await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
     await page.reload({ waitUntil: 'networkidle' });
     await page.getByRole('button', { name: 'Общие настройки' }).click();

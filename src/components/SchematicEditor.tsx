@@ -1,5 +1,5 @@
 import { renderComponentSymbol, ComponentSymbol } from './ComponentSymbol';
-import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
 import {
   RotateCw,
   Trash2,
@@ -707,7 +707,7 @@ function overlappingLength(points: Point[], occupied: Point[][]): number {
 }
 
 function automaticWireRoute(start: Point, end: Point, startRel: Point, endRel: Point,
-  startType: string, endType: string, grid: number, elements: CircuitElement[], foreign: Point[][]): Point[] {
+  startType: string, endType: string, grid: number, elements: CircuitElement[], foreign: Point[][]): Point[] | null {
   const obstacles = elements.map(element => componentObstacle(element)).filter((box): box is NonNullable<typeof box> => box !== null);
   const offsets = [0, grid, -grid, grid * 2, -grid * 2, grid * 3, -grid * 3];
   const candidates = offsets.map(offset => computeOrthogonalWirePoints(
@@ -715,7 +715,7 @@ function automaticWireRoute(start: Point, end: Point, startRel: Point, endRel: P
   const clear = candidates.filter(route => routeIsClear(route, obstacles, foreign));
   if (clear.length) return clear.reduce((best, route) =>
     route.length < best.length || route.length === best.length && overlappingLength(route, foreign) < overlappingLength(best, foreign) ? route : best);
-  return routeAroundObstacles(start, end, startRel, endRel, grid, candidates[0], obstacles, foreign) ?? candidates[0];
+  return routeAroundObstacles(start, end, startRel, endRel, grid, candidates[0], obstacles, foreign);
 }
 
 export function pointsToSvgPath(pts: Point[]): string {
@@ -1112,6 +1112,32 @@ export function SchematicEditor({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const horizontalScrollRef = useRef<HTMLDivElement>(null);
+  const verticalScrollRef = useRef<HTMLDivElement>(null);
+  const scrollTargetRef = useRef({ horizontal: 0, vertical: 0 });
+  const scrollEnabledRef = useRef({ horizontal: false, vertical: false });
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    const canvas = containerRef.current;
+    if (!canvas) return;
+    const observer = new ResizeObserver(() => setViewportSize({ width: canvas.clientWidth, height: canvas.clientHeight }));
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
+  const sheetPixels = paperSize(printLayout);
+  const horizontalViewport = Math.max(1, viewportSize.width - 16);
+  const verticalViewport = Math.max(1, viewportSize.height - 16);
+  const horizontalSpan = Math.max(sheetPixels.width * zoom + horizontalViewport * 2,
+    horizontalViewport * 3, Math.abs(pan.x) * 2 + horizontalViewport * 3);
+  const verticalSpan = Math.max(sheetPixels.height * zoom + verticalViewport * 2,
+    verticalViewport * 3, Math.abs(pan.y) * 2 + verticalViewport * 3);
+  const horizontalOrigin = (horizontalSpan - horizontalViewport) / 2;
+  const verticalOrigin = (verticalSpan - verticalViewport) / 2;
+  useLayoutEffect(() => {
+    scrollTargetRef.current = { horizontal: horizontalOrigin - pan.x, vertical: verticalOrigin - pan.y };
+    if (horizontalScrollRef.current) horizontalScrollRef.current.scrollLeft = scrollTargetRef.current.horizontal;
+    if (verticalScrollRef.current) verticalScrollRef.current.scrollTop = scrollTargetRef.current.vertical;
+  }, [horizontalOrigin, verticalOrigin, pan.x, pan.y]);
   useEffect(() => {
     const canvas = containerRef.current;
     if (!canvas) return;
@@ -1715,6 +1741,7 @@ export function SchematicEditor({
       p2: NonNullable<ReturnType<typeof pinPositions.get>>;
       points: Point[];
       pathD: string;
+      unrouted: boolean;
     }> = [];
 
     for (const wire of wires) {
@@ -1727,6 +1754,7 @@ export function SchematicEditor({
         .flatMap(([, routes]) => routes);
 
       let pts: Point[];
+      let unrouted = false;
       if (fixedRoutes.has(wire.id)) {
         pts = fixedRoutes.get(wire.id)!;
       } else {
@@ -1734,13 +1762,16 @@ export function SchematicEditor({
         const previous = old && buildStoredWireRoute(p1, p2, old.slice(1, -1),
           { x: p1.relX, y: p1.relY }, { x: p2.relX, y: p2.relY }, p1.elType, p2.elType, gridUnits);
         const obstacles = elements.map(element => componentObstacle(element)).filter((box): box is NonNullable<typeof box> => box !== null);
-        pts = previous && routeIsClear(previous, obstacles, foreignRoutes) ? previous
+        const safeRoute = previous && routeIsClear(previous, obstacles, foreignRoutes) ? previous
           : automaticWireRoute(p1, p2, { x: p1.relX, y: p1.relY }, { x: p2.relX, y: p2.relY },
             p1.elType, p2.elType, gridUnits, elements, foreignRoutes);
-        automaticRouteCache.current.set(wire.id, pts);
+        unrouted = !safeRoute;
+        pts = safeRoute ?? computeOrthogonalWirePoints(p1, p2, { x: p1.relX, y: p1.relY },
+          { x: p2.relX, y: p2.relY }, p1.elType, p2.elType, 0, gridUnits);
+        if (safeRoute) automaticRouteCache.current.set(wire.id, safeRoute);
       }
       if (!fixedRoutes.has(wire.id) && !wire.disabled) remember(wire, pts);
-      geometries.push({ wire, p1, p2, points: pts, pathD: pointsToSvgPath(pts) });
+      geometries.push({ wire, p1, p2, points: pts, pathD: pointsToSvgPath(pts), unrouted });
     }
     for (const id of automaticRouteCache.current.keys()) if (!wires.some(wire => wire.id === id)) automaticRouteCache.current.delete(id);
     return geometries;
@@ -2275,7 +2306,9 @@ export function SchematicEditor({
               : intentionalCrossing ? initialRoute
               : automaticWireRoute(sourcePin, targetPin, { x: sourcePin.relX, y: sourcePin.relY },
                 { x: targetPin.relX, y: targetPin.relY }, sourcePin.elType, targetPin.elType, gridUnits, elements, foreignRoutes);
-            try {
+            if (!route || !routeIsClear(route, bodies, [])) {
+              window.alert('Не удалось проложить провод без пересечения элемента или другой сети. Освободите место или задайте точки изгиба вручную.');
+            } else try {
               const connected = normalizeCrossingTopology(elements, [...wires, newWire],
                 [...wireGeometries, { wire: newWire, points: route }], crossingMode);
               if (connected.elements !== elements) onElementsChange(connected.elements);
@@ -2474,7 +2507,9 @@ export function SchematicEditor({
         ? { x: box.x - padding, y: box.y - padding, width: Math.max(box.width, 1) + 2 * padding, height: Math.max(box.height, 1) + 2 * padding }
         : { x: 0, y: 0, width: 1, height: 1 };
       const placement = computePrintPlacement(bounds, printLayout, printFrame ? Math.max(20, printMarginMm) : printMarginMm,
-        printMode, requestedPrintScale, centerPrint, printFrame ? 65 : 0);
+        printMode, requestedPrintScale, centerPrint,
+        printFrame && !(printLayout.format === 'A4' && printLayout.orientation === 'landscape') ? 65 : 0,
+        printFrame && printLayout.format === 'A4' && printLayout.orientation === 'landscape' ? 65 : 0);
       clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
       clone.setAttribute('width', `${placement.widthMm}mm`);
       clone.setAttribute('height', `${placement.heightMm}mm`);
@@ -3004,9 +3039,9 @@ export function SchematicEditor({
                   <path
                     d={pathD}
                     fill="none"
-                    stroke={wire.disabled ? '#94a3b8' : isSelected ? '#2563eb' : appearance.wire}
+                    stroke={wg.unrouted ? '#dc2626' : wire.disabled ? '#94a3b8' : isSelected ? '#2563eb' : appearance.wire}
                     strokeWidth={isSelected ? 2.5 : 1.75}
-                    strokeDasharray={wire.disabled ? wireGapDashArray(wg.points) : undefined}
+                    strokeDasharray={wg.unrouted ? '5 4' : wire.disabled ? wireGapDashArray(wg.points) : undefined}
                     strokeLinecap="round"
                     strokeLinejoin="round"
                   />
@@ -3330,6 +3365,38 @@ export function SchematicEditor({
             </g>
           )}
         </svg>
+        <div ref={horizontalScrollRef} aria-label="Горизонтальная прокрутка схемы" tabIndex={0}
+          className="absolute bottom-0 left-0 right-4 z-20 h-4 overflow-x-scroll overflow-y-hidden bg-slate-100/90"
+          onMouseDown={event => { event.stopPropagation(); scrollEnabledRef.current.horizontal = true; }}
+          onWheel={event => { event.stopPropagation(); scrollEnabledRef.current.horizontal = true; }}
+          onTouchStart={() => { scrollEnabledRef.current.horizontal = true; }}
+          onKeyDown={() => { scrollEnabledRef.current.horizontal = true; }}
+          onScroll={event => {
+            if (!scrollEnabledRef.current.horizontal) return;
+            if (Math.abs(event.currentTarget.scrollLeft - scrollTargetRef.current.horizontal) <= 0.5) return;
+            const next = horizontalOrigin - event.currentTarget.scrollLeft;
+            setPan(current => Math.abs(current.x - next) > 0.5 ? { ...current, x: next } : current);
+          }}>
+          <div style={{ width: horizontalSpan, height: 1 }} />
+        </div>
+        <div ref={verticalScrollRef} aria-label="Вертикальная прокрутка схемы" tabIndex={0}
+          className="absolute bottom-4 right-0 top-0 z-20 w-4 overflow-y-scroll overflow-x-hidden bg-slate-100/90"
+          onMouseDown={event => { event.stopPropagation(); scrollEnabledRef.current.vertical = true; }}
+          onWheel={event => { event.stopPropagation(); scrollEnabledRef.current.vertical = true; }}
+          onTouchStart={() => { scrollEnabledRef.current.vertical = true; }}
+          onKeyDown={() => { scrollEnabledRef.current.vertical = true; }}
+          onScroll={event => {
+            if (!scrollEnabledRef.current.vertical) return;
+            if (Math.abs(event.currentTarget.scrollTop - scrollTargetRef.current.vertical) <= 0.5) return;
+            const next = verticalOrigin - event.currentTarget.scrollTop;
+            setPan(current => Math.abs(current.y - next) > 0.5 ? { ...current, y: next } : current);
+          }}>
+          <div style={{ height: verticalSpan, width: 1 }} />
+        </div>
+        {wireGeometries.some(geometry => geometry.unrouted) &&
+          <div role="status" className="pointer-events-none absolute left-3 bottom-3 max-w-md rounded border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800 shadow-sm">
+            Для выделенных красным проводов не найден свободный маршрут. Освободите место или измените точки изгиба вручную.
+          </div>}
         {showGrid && <div className="pointer-events-none absolute bottom-2 right-2 rounded border border-slate-200 bg-white/90 px-2 py-1 font-mono text-[10px] text-slate-500 shadow-sm">Сетка: {printLayout.gridMm} мм</div>}
       </div>
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-slate-300 bg-white px-3 py-1 text-xs text-slate-600">

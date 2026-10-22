@@ -52,8 +52,10 @@ assert.deepEqual(paperSize({ format: 'A3', orientation: 'portrait', gridMm: 5 })
 for (const format of ['A0', 'A1', 'A2', 'A3', 'A4'] as const) for (const orientation of ['portrait', 'landscape'] as const) {
   const layout = { format, orientation, gridMm: 5 } as const;
   const block = titleBlockBounds(layout), page = paperSize(layout);
-  assert.equal(block.widthMm, TITLE_BLOCK_WIDTH_MM);
-  assert.equal(block.heightMm, TITLE_BLOCK_HEIGHT_MM);
+  const rotated = format === 'A4' && orientation === 'landscape';
+  assert.equal(block.widthMm, rotated ? TITLE_BLOCK_HEIGHT_MM : TITLE_BLOCK_WIDTH_MM);
+  assert.equal(block.heightMm, rotated ? TITLE_BLOCK_WIDTH_MM : TITLE_BLOCK_HEIGHT_MM);
+  assert.equal(block.rotated, rotated);
   assert.equal(block.xMm + block.widthMm, page.widthMm - 5);
   assert.equal(block.yMm + block.heightMm, page.heightMm - 5);
   assert(block.xMm >= 20, `${format} ${orientation}: title block stays inside the binding margin`);
@@ -87,6 +89,11 @@ const fitted = computePrintPlacement(wideScheme, a4Layout, 5, 'fit');
 assert.ok(fitted.fits);
 assert.ok(wideScheme.width * fitted.scale <= fitted.width - 10 * SCHEMATIC_UNITS_PER_MM);
 assert.ok(wideScheme.height * fitted.scale <= fitted.height - 10 * SCHEMATIC_UNITS_PER_MM);
+const rotatedBlockFit = computePrintPlacement({ x: 0, y: 0, width: 240 * SCHEMATIC_UNITS_PER_MM,
+  height: 100 * SCHEMATIC_UNITS_PER_MM }, a4Layout, 20, 'fit', 1, true, 0, 65);
+assert(rotatedBlockFit.fits && rotatedBlockFit.scale < 1, 'A4 landscape reserves the title-block column');
+assert(rotatedBlockFit.translateX + 240 * SCHEMATIC_UNITS_PER_MM * rotatedBlockFit.scale <=
+  rotatedBlockFit.width - 65 * SCHEMATIC_UNITS_PER_MM + 1e-6, 'drawing does not overlap the rotated title block');
 const paperPdf = await rasterPagePdf(new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], { type: 'image/jpeg' }), 3508, 2480, 297, 210);
 const pdfText = await paperPdf.text();
 assert.ok(pdfText.startsWith('%PDF-1.4'));

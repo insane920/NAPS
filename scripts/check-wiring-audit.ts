@@ -40,6 +40,31 @@ assert(safePath[1].x > safePath[0].x && safePath[1].y === safePath[0].y, 'route 
 assert(routeIsClear(safePath, blocks, competingNet), 'detour avoids all bodies and the other electrical network');
 assert.equal(routeAroundObstacles({ x: 0, y: 0 }, { x: 220, y: 0 }, { x: 1, y: 0 },
   { x: -1, y: 0 }, 20, safePath, blocks, competingNet), safePath, 'valid existing geometry is not rebuilt');
+const rotatedSource = { ...blockingElements[0], x: 0, y: 0, rotation: 45 };
+const rotatedPin = getComponentPins(rotatedSource).find(pin => pin.id === '2')!;
+const rotatedBox = componentObstacle(rotatedSource)!;
+const rotatedStart = { x: rotatedPin.x, y: rotatedPin.y };
+const outward = { x: rotatedStart.x + Math.SQRT1_2 * 20, y: rotatedStart.y + Math.SQRT1_2 * 20 };
+assert(routeIsClear([rotatedStart, outward], [rotatedBox], []),
+  '45° terminal lead is outside its rotated component body');
+const denseBlocks = Array.from({ length: 90 }, (_, index) => ({
+  ...blockingElements[0], id: `dense_${index}`, x: 50 + index % 10 * 40,
+  y: -180 + Math.floor(index / 10) * 40,
+})).map(element => componentObstacle(element)!);
+const remoteBlocks = Array.from({ length: 500 }, (_, index) => ({
+  ...blockingElements[0], id: `remote_${index}`, x: 5000 + index * 35, y: 5000 + index * 17,
+})).map(element => componentObstacle(element)!);
+const denseStart = Date.now();
+const denseRoute = routeAroundObstacles({ x: 0, y: 0 }, { x: 450, y: 0 }, { x: 1, y: 0 },
+  { x: -1, y: 0 }, 20, [{ x: 0, y: 0 }, { x: 450, y: 0 }],
+  [...denseBlocks, ...remoteBlocks], [[{ x: 220, y: -240 }, { x: 220, y: -190 }]]);
+assert(denseRoute && routeIsClear(denseRoute, [...denseBlocks, ...remoteBlocks],
+  [[{ x: 220, y: -240 }, { x: 220, y: -190 }]]), 'dense route avoids 90 local and 500 remote bodies');
+assert(Date.now() - denseStart < 10000, 'dense route search remains bounded');
+assert.equal(routeAroundObstacles({ x: 0, y: 0 }, { x: 200, y: 0 }, { x: 1, y: 0 },
+  { x: -1, y: 0 }, 20, [{ x: 0, y: 0 }, { x: 200, y: 0 }],
+  [{ left: 5, right: 15, top: -5, bottom: 5 }], []), null,
+  'blocked terminal reports failure instead of returning an invalid baseline');
 const reconnectElements: CircuitElement[] = ['A', 'B', 'C', 'D'].map((name, index) => ({
   id: name, name, type: 'JUNCTION', x: index * 100, y: 0, rotation: 0, value: 0, valueStr: '', unit: '',
 }));

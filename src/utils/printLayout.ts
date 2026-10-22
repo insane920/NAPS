@@ -26,11 +26,13 @@ export function paperSize(layout: PrintLayout) {
 }
 
 /** Scheme units are physical coordinates. Zoom and monitor DPI never enter this calculation. */
-export function computePrintPlacement(bounds: SchemeBounds, layout: PrintLayout, marginMm: number, mode: 'actual' | 'fit', requestedScale = 1, center = true, reservedBottomMm = 0): PrintPlacement {
-  if (![bounds.x, bounds.y, bounds.width, bounds.height, marginMm, requestedScale, reservedBottomMm].every(Number.isFinite) ||
-      bounds.width < 0 || bounds.height < 0 || marginMm < 0 || reservedBottomMm < 0 || requestedScale <= 0) throw new Error('Некорректные размеры схемы или параметры печати.');
+export function computePrintPlacement(bounds: SchemeBounds, layout: PrintLayout, marginMm: number, mode: 'actual' | 'fit', requestedScale = 1, center = true, reservedBottomMm = 0, reservedRightMm = 0): PrintPlacement {
+  if (![bounds.x, bounds.y, bounds.width, bounds.height, marginMm, requestedScale, reservedBottomMm, reservedRightMm].every(Number.isFinite) ||
+      bounds.width < 0 || bounds.height < 0 || marginMm < 0 || reservedBottomMm < 0 || reservedRightMm < 0 || requestedScale <= 0) throw new Error('Некорректные размеры схемы или параметры печати.');
   const page = paperSize(layout);
-  const usableWidth = page.width - 2 * marginMm * SCHEMATIC_UNITS_PER_MM;
+  const left = marginMm * SCHEMATIC_UNITS_PER_MM;
+  const right = Math.max(marginMm, reservedRightMm) * SCHEMATIC_UNITS_PER_MM;
+  const usableWidth = page.width - left - right;
   const top = marginMm * SCHEMATIC_UNITS_PER_MM;
   const bottom = Math.max(marginMm, reservedBottomMm) * SCHEMATIC_UNITS_PER_MM;
   const usableHeight = page.height - top - bottom;
@@ -39,7 +41,7 @@ export function computePrintPlacement(bounds: SchemeBounds, layout: PrintLayout,
     ? Math.min(1, usableWidth / Math.max(bounds.width, 1), usableHeight / Math.max(bounds.height, 1))
     : requestedScale;
   const fits = bounds.width * scale <= usableWidth + 1e-8 && bounds.height * scale <= usableHeight + 1e-8;
-  const translateX = (center ? (page.width - bounds.width * scale) / 2 : marginMm * SCHEMATIC_UNITS_PER_MM) - bounds.x * scale;
+  const translateX = (center ? left + (usableWidth - bounds.width * scale) / 2 : left) - bounds.x * scale;
   const translateY = (center ? top + (usableHeight - bounds.height * scale) / 2 : top) - bounds.y * scale;
   return { ...page, scale, translateX, translateY, fits,
     contentWidthMm: bounds.width / SCHEMATIC_UNITS_PER_MM, contentHeightMm: bounds.height / SCHEMATIC_UNITS_PER_MM };

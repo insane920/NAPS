@@ -57,6 +57,14 @@ export interface YamlScmProject {
   Analysis: YamlScmAnalysis;
 }
 
+export interface CircuitDescription {
+  title: string;
+  purpose: string;
+  comment: string;
+}
+
+export const EMPTY_CIRCUIT_DESCRIPTION: CircuitDescription = { title: '', purpose: '', comment: '' };
+
 /**
  * Преобразование внутренней модели элементов САПР в структуру YAML проекта .scm
  */
@@ -67,13 +75,17 @@ export function exportToYamlScm(
   ac?: ACSettings,
   printLayout: PrintLayout = DEFAULT_PRINT_LAYOUT,
   format: 'current' | 'legacy' = 'current',
-  crossingMode: WireCrossingMode = 'explicit'
+  crossingMode: WireCrossingMode = 'explicit',
+  description: CircuitDescription = EMPTY_CIRCUIT_DESCRIPTION
 ): string {
   if (format === 'legacy' && wires.some(wire => wire.routeMode === 'direct')) {
     throw new Error('SCM 0.6.0 не поддерживает произвольные углы проводов. Сохраните проект в новом формате; совместимая копия не создана, чтобы не изменить маршрут.');
   }
   if (format === 'legacy' && printLayout.gridMm === 0.5) {
     throw new Error('SCM 0.6.0 не поддерживает шаг сетки 0,5 мм. Выберите шаг от 1 мм для совместимой копии; координаты компонентов при этом не меняются.');
+  }
+  if (format === 'legacy' && Object.values(description).some(value => value.trim())) {
+    throw new Error('SCM 0.6.0 не поддерживает описание схемы. Сохраните проект в текущем формате, чтобы не потерять текст.');
   }
   const unitsPerStoredUnit = format === 'current' ? SCHEMATIC_UNITS_PER_MM : 1;
   // Карта строковых ID в числовые индексы ID (1, 2, 3...)
@@ -165,7 +177,11 @@ export function exportToYamlScm(
   let yaml = format === 'current'
     ? `scm:\n  MajorVersion: ${crossingMode === 'connect' ? 8 : 7}\n  MinorVersion: 0\n\nGeometry:\n  Version: 1\n  Unit: mm\n${crossingMode === 'connect' ? '\nTopology:\n  Crossings: connect\n' : ''}`
     : 'scm:\n  MajorVersion: 6\n  MinorVersion: 0\n';
-  yaml += `\nPage:\n  Format: ${printLayout.format}\n  Orientation: ${printLayout.orientation}\n  GridMm: ${printLayout.gridMm}\n\nObjects:\n`;
+  yaml += `\nPage:\n  Format: ${printLayout.format}\n  Orientation: ${printLayout.orientation}\n  GridMm: ${printLayout.gridMm}\n`;
+  if (format === 'current' && Object.values(description).some(value => value.trim())) {
+    yaml += `\nDocument:\n  Title: ${JSON.stringify(description.title)}\n  Purpose: ${JSON.stringify(description.purpose)}\n  Comment: ${JSON.stringify(description.comment)}\n`;
+  }
+  yaml += '\nObjects:\n';
   for (const obj of objects) {
     yaml += `  - ID: ${obj.ID}\n`;
     yaml += `    Type: "${obj.Type}"\n`;
@@ -310,12 +326,13 @@ export function parseYamlScm(yamlText: string): {
   transient: TransientSettings;
   ac?: ACSettings;
   printLayout: PrintLayout;
+  description: CircuitDescription;
 } {
   const lines = yamlText.split('\n');
   const elements: CircuitElement[] = [];
   const wires: CircuitWire[] = [];
 
-  let currentSection: 'none' | 'geometry' | 'topology' | 'page' | 'objects' | 'wires' | 'transient' | 'ac' = 'none';
+  let currentSection: 'none' | 'geometry' | 'topology' | 'page' | 'document' | 'objects' | 'wires' | 'transient' | 'ac' = 'none';
   let majorVersion = 6;
   let crossings: string | undefined;
   let geometryVersion: number | undefined;
@@ -323,6 +340,7 @@ export function parseYamlScm(yamlText: string): {
   let pageFormat: string | undefined;
   let pageOrientation: string | undefined;
   let gridMm: number | undefined;
+  const description: CircuitDescription = { ...EMPTY_CIRCUIT_DESCRIPTION };
   let currentObj: Partial<YamlScmObject> | null = null;
   let pendingFrom: RegExpMatchArray | null = null;
   const numIdToElemId = new Map<number, string>();
@@ -350,6 +368,7 @@ export function parseYamlScm(yamlText: string): {
     if (trimmed === 'Topology:') { currentSection = 'topology'; continue; }
 
     if (trimmed === 'Page:') { currentSection = 'page'; continue; }
+    if (trimmed === 'Document:') { currentSection = 'document'; continue; }
     if (trimmed === 'AC:') {
       hasAc = true;
       currentSection = 'ac';
@@ -383,6 +402,10 @@ export function parseYamlScm(yamlText: string): {
       if (trimmed.startsWith('Format:')) pageFormat = readScalar(trimmed.slice(7));
       else if (trimmed.startsWith('Orientation:')) pageOrientation = readScalar(trimmed.slice(12));
       else if (trimmed.startsWith('GridMm:')) gridMm = finiteScmNumber(trimmed.slice(7), 'GridMm');
+    } else if (currentSection === 'document') {
+      for (const [key, field] of [['Title', 'title'], ['Purpose', 'purpose'], ['Comment', 'comment']] as const) {
+        if (trimmed.startsWith(`${key}:`)) description[field] = readScalar(trimmed.slice(key.length + 1));
+      }
     } else if (currentSection === 'objects') {
       if (trimmed.startsWith('- ID:')) {
         if (currentObj && currentObj.ID) {
@@ -576,6 +599,7 @@ export function parseYamlScm(yamlText: string): {
     wires,
     crossingMode: majorVersion === 8 ? 'connect' : 'explicit',
     printLayout: parsePrintLayout(pageFormat, pageOrientation, gridMm),
+    description,
     ac: hasAc ? { fMin, fMax, fMinStr, fMaxStr, points: acPoints, scaleType: acScale,
       signals: acExpressions.map((s, i) => ({ id: `ac_${i}`, plotIndex: s.Plot === 2 ? 2 : 1, exprX: s.X, exprY: s.Y, color: s.Color || '#2563eb', enabled: s.Enabled ?? true })) } : undefined,
     transient: {

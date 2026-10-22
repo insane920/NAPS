@@ -13,6 +13,7 @@ cases.push('browser-recovery.cjs');
 cases.push('browser-label-layout.cjs');
 cases.push('browser-group-selection.cjs');
 cases.push('browser-new-crossings.cjs');
+cases.push('browser-description.cjs');
 mkdirSync(path.join(root, '.work'), { recursive: true });
 
 const server = spawn(process.execPath, [vite, '--host', '127.0.0.1', '--port', String(port), '--strictPort'], {

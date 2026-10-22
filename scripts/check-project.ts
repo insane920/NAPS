@@ -23,6 +23,12 @@ const recoveryStorage = {
   removeItem: (key: string) => { recoveryData.delete(key); },
 };
 const recoveryContent = exportToYamlScm(SAMPLE_CIRCUITS[0].elements, SAMPLE_CIRCUITS[0].wires, SAMPLE_CIRCUITS[0].transient);
+const described = { title: 'Усилитель: каскад 1', purpose: 'Проверка\nАЧХ', comment: 'Узел "Выход" • β=100' };
+const describedScm = exportToYamlScm([], [], SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect', described);
+assert.deepEqual(parseYamlScm(describedScm).description, described, 'Document description survives SCM 8');
+assert.deepEqual(parseYamlScm(recoveryContent).description, { title: '', purpose: '', comment: '' }, 'Old SCM opens without document metadata');
+assert.throws(() => exportToYamlScm([], [], SAMPLE_CIRCUITS[0].transient, undefined,
+  { format: 'A4', orientation: 'landscape', gridMm: 1 }, 'legacy', 'explicit', described), /не поддерживает описание/);
 writeRecovery(recoveryStorage, { version: 1, name: 'First', content: recoveryContent, savedAt: 1 });
 writeRecovery(recoveryStorage, { version: 1, name: 'Second', content: recoveryContent, savedAt: 2 });
 assert.equal(readRecovery(recoveryStorage)?.name, 'Second');

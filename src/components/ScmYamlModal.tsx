@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useModalFocus } from '../hooks/useModalFocus';
 import { X, Copy, Check, Download, Upload, AlertCircle, FileCode } from 'lucide-react';
-import { exportToYamlScm, parseYamlScm } from '../utils/yamlScm';
+import { exportToYamlScm, parseYamlScm, type CircuitDescription } from '../utils/yamlScm';
 import { CircuitElement, CircuitWire, TransientSettings, ACSettings, type WireCrossingMode } from '../types';
 import type { PrintLayout } from '../utils/printLayout';
 
@@ -14,6 +14,7 @@ interface ScmYamlModalProps {
   ac?: ACSettings;
   printLayout: PrintLayout;
   crossingMode: WireCrossingMode;
+  description: CircuitDescription;
   onApplyYaml: (data: {
     elements: CircuitElement[];
     wires: CircuitWire[];
@@ -21,6 +22,7 @@ interface ScmYamlModalProps {
     ac?: ACSettings;
     printLayout: PrintLayout;
     crossingMode: WireCrossingMode;
+    description: CircuitDescription;
   }) => void;
 }
 
@@ -33,6 +35,7 @@ export function ScmYamlModal({
   ac,
   printLayout,
   crossingMode,
+  description,
   onApplyYaml,
 }: ScmYamlModalProps) {
   const [yamlText, setYamlText] = useState('');
@@ -42,12 +45,12 @@ export function ScmYamlModal({
 
   useEffect(() => {
     if (isOpen) {
-      const generated = exportToYamlScm(elements, wires, transient, ac, printLayout, 'current', crossingMode);
+      const generated = exportToYamlScm(elements, wires, transient, ac, printLayout, 'current', crossingMode, description);
       setYamlText(generated);
       setParseError(null);
       setCopied(false);
     }
-  }, [isOpen, elements, wires, transient, ac, printLayout, crossingMode]);
+  }, [isOpen, elements, wires, transient, ac, printLayout, crossingMode, description]);
 
   if (!isOpen) return null;
 

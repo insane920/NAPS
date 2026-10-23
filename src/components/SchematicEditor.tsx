@@ -3308,7 +3308,9 @@ export function SchematicEditor({
                     if (e.ctrlKey || e.metaKey) return;
                     if (wiringFrom || pendingComponentType || el.type === 'JUNCTION') return;
                     e.preventDefault(); e.stopPropagation();
-                    if (e.buttons & 1) {
+                    // WheelEvent.buttons is reported as zero by some browsers even while
+                    // the left button is held; the editor drag state is authoritative.
+                    if ((e.buttons & 1) || draggingElemId === el.id) {
                       const step = e.shiftKey ? 45 : 90;
                       changeElementGeometry(el, { ...el, rotation: ((el.rotation || 0) + (e.deltaY > 0 ? step : 360 - step)) % 360 });
                     } else {
@@ -3490,6 +3492,8 @@ export function SchematicEditor({
                   cx={point.x} cy={point.y} r={6 / zoom} fill="#dbeafe" stroke="#2563eb" strokeWidth={1.5 / zoom}
                   className="cursor-move" aria-label={`Переместить точку изгиба ${index + 1}`}
                   onMouseDown={event => { if (event.button !== 0) return; event.stopPropagation();
+                    const junction = junctionAtPointer(event.clientX, event.clientY);
+                    if (junction && !event.altKey) { elementMouseDownRef.current(event, junction); return; }
                     geometryDragChanged.current = false; normalizedThisDrag.current = false; dragReleaseHandled.current = false;
                     unroutedBeforeDrag.current = new Set(wireGeometries.filter(item => item.unrouted).map(item => item.wire.id));
                     wireSegmentDrag.current = null; waypointDrag.current = { wireId: selectedWireId, index, started: false }; }} />)}

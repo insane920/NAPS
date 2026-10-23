@@ -157,8 +157,32 @@ const path = require('node:path');
     const overlapPoint = await location();
     await page.mouse.click(overlapPoint.x, overlapPoint.y);
     assert.equal(await selected(), 1, 'junction wins over a component body regardless of SVG object order');
+    const bendOverlap = await page.evaluate(async () => {
+      const { exportToYamlScm } = await import('/src/utils/yamlScm.ts');
+      const { SAMPLE_CIRCUITS } = await import('/src/data/sampleCircuits.ts');
+      return exportToYamlScm([
+        { id: 'bend-left', type: 'R', name: 'R1', x: 100, y: 200, rotation: 0, value: 1000, valueStr: '1к', unit: 'Ом' },
+        { id: 'bend-right', type: 'R', name: 'R2', x: 300, y: 200, rotation: 0, value: 1000, valueStr: '1к', unit: 'Ом' },
+        { id: 'bend-node', type: 'JUNCTION', name: 'N1', x: 200, y: 200, rotation: 0, value: 0, valueStr: '', unit: '' },
+      ], [{ id: 'bend-wire', fromCompId: 'bend-left', fromPinId: '2', toCompId: 'bend-right', toPinId: '1',
+        routeMode: 'direct', manual: true, waypoints: [{ x: 200, y: 200 }] }],
+      SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'explicit');
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: 'junction-bend-overlap.scm', mimeType: 'text/plain', buffer: Buffer.from(bendOverlap) });
+    await page.getByText('junction-bend-overlap', { exact: true }).waitFor();
+    const importedWireId = await page.locator('[data-wire-id]').first().getAttribute('data-wire-id');
+    const wirePath = page.locator(`[data-wire-id="${importedWireId}"] path[stroke="transparent"]`);
+    const wireMatrix = await wirePath.evaluate(path => ({ x: path.getScreenCTM().e, y: path.getScreenCTM().f,
+      sx: path.getScreenCTM().a, sy: path.getScreenCTM().d }));
+    await page.mouse.click(wireMatrix.x + 160 * wireMatrix.sx, wireMatrix.y + 200 * wireMatrix.sy);
+    await page.locator(`[data-wire-waypoint="${importedWireId}:0"]`).waitFor();
+    const bendNode = page.locator('[data-component-id]:has([data-node-hit])');
+    const bendPoint = await bendNode.evaluate(group => ({ x: group.getScreenCTM().e, y: group.getScreenCTM().f }));
+    await page.mouse.click(bendPoint.x, bendPoint.y);
+    assert.equal(await bendNode.locator('circle[fill="#3b82f6"]').count(), 1,
+      'junction wins over a selected manual waypoint at the same coordinate');
     assert.deepEqual(errors, []);
-    assert.equal(await hit.count(), 1);
+    assert.equal(await bendNode.locator('[data-node-hit]').count(), 1);
     console.log('PASS: compact two-terminal chooser, junction hit priority, 25–200% drag, Escape, Undo and SCM topology.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

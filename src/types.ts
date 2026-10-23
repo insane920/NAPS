@@ -317,7 +317,8 @@ export interface CircuitElement {
     /** Constitutive law: I(U) for R, Q(U) for C, Ψ(I) for L. Omitted means legacy cubic law. */
     passiveLawDefinition?:
       | { kind: 'table' | 'inverseTable'; points: Array<{ argument: number; value: number }> }
-      | { kind: 'saturation'; limitingInductance: number; saturationCurrent: number };
+        | { kind: 'saturation'; limitingInductance: number; saturationCurrent: number }
+        | { kind: 'expression'; expression: string; argumentScale: number; outputScale: number };
   /** Stable electrical IDs plus editable physical pin numbers and labels. */
   chipPins?: Array<{ id: string; number: string; label: string; side: 'left' | 'right' }>;
   /** Parameters of the documented piecewise-linear semiconductor/control models. */

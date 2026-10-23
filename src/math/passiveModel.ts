@@ -1,4 +1,5 @@
 import type { CircuitElement } from '../types';
+import { evaluatePassiveExpression, validatePassiveExpression } from './passiveExpression';
 
 /** Constitutive relations I(U), Q(U), Ψ(I) and their local derivatives. */
 export function passiveLaw(element: CircuitElement, argument: number): { value: number; derivative: number } {
@@ -17,6 +18,13 @@ export function passiveLaw(element: CircuitElement, argument: number): { value: 
       value: limitingInductance * argument + (base - limitingInductance) * saturationCurrent * t,
       derivative: limitingInductance + (base - limitingInductance) * (1 - t * t),
     };
+  } else if (definition?.kind === 'expression') {
+    try {
+      result = evaluatePassiveExpression(definition.expression, argument, base,
+        definition.argumentScale, definition.outputScale);
+    } catch (error) {
+      throw new Error(`${element.name}: ${error instanceof Error ? error.message : 'ошибка пользовательской формулы.'}`);
+    }
   } else {
     // Default for legacy SCM files: original cubic constitutive law.
     const k = element.passiveModel === 'nonlinear' ? element.modelParams?.cubicCoefficient ?? 0 : 0;
@@ -108,6 +116,18 @@ export function validatePassiveModel(element: CircuitElement): void {
       !Number.isFinite(definition.saturationCurrent) || definition.saturationCurrent <= 0) {
       throw new Error(`${element.name}: насыщение требует 0 < Lнас < L0 и Iнас > 0.`);
     }
+  } else if (definition.kind === 'expression') {
+    if (typeof definition.expression !== 'string' ||
+      !Number.isFinite(definition.argumentScale) || definition.argumentScale <= 0 ||
+      !Number.isFinite(definition.outputScale) || definition.outputScale <= 0) {
+      throw new Error(`${element.name}: формула требует положительные конечные масштабы x0 и y0.`);
+    }
+    validatePassiveExpression(definition.expression);
+    const origin = passiveLaw(element, 0);
+    if (Math.abs(origin.value) > 1e-9 * Math.max(1, definition.outputScale)) {
+      throw new Error(`${element.name}: зависимость должна проходить через точку (0; 0).`);
+    }
+    for (let index = -10; index <= 10; index++) passiveLaw(element, index * definition.argumentScale / 2);
   } else {
     throw new Error(`${element.name}: неизвестная зависимость пассивного элемента.`);
   }

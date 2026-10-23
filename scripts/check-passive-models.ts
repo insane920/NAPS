@@ -140,6 +140,40 @@ const saturationAc = biasedInductor.map(item => item.id === 'L' ? { ...item, ...
 near(solveCircuitAC(saturationAc, biasedInductorWires, ac('mag(U(L))', 1 / (2 * Math.PI))).signals['mag(U(L))'][0],
   passiveLaw(saturationAc[1], 1).derivative);
 
+const formula = (argumentScale: number, outputScale: number): Partial<CircuitElement> => ({
+  passiveModel: 'nonlinear', passiveLawDefinition: {
+    kind: 'expression', expression: 'n*x + y0*tanh(x/x0)', argumentScale, outputScale,
+  },
+});
+const expressionR = resistor.map(item => item.id === 'R' ? { ...item, ...formula(1, 0.2) } : item);
+const expectedCurrent = 0.2 + 0.2 * Math.tanh(2);
+near(solveCircuitTransient(expressionR, resistorWires, transient('I(R)', 0.1, 0.1)).signals['I(R)'][0], expectedCurrent);
+near(solveCircuitAC(expressionR, resistorWires, ac('mag(I(R))', 10)).signals['mag(I(R))'][0],
+  0.1 + 0.2 * (1 - Math.tanh(2) ** 2));
+const expressionC = capacitor.map(item => item.id === 'C' ? { ...item, ...formula(1, 0.001) } : item);
+const expressionCResult = solveCircuitTransient(expressionC, capacitorWires, cSettings);
+near(expressionCResult.signals['I(C)'][1], 2);
+const expressionCVoltage = solveCircuitTransient(expressionC, capacitorWires, transient('U(C)', 0.001, 0.001)).signals['U(C)'][1];
+near(passiveLaw(expressionC[1], expressionCVoltage).value, 0.002, 1e-6);
+const expressionL = inductor.map(item => item.id === 'L' ? { ...item, ...formula(1, 0.2) } : item);
+const expressionLCurrent = solveCircuitTransient(expressionL, inductorWires, lSettings).signals['I(L)'][1];
+near(passiveLaw(expressionL[1], expressionLCurrent).value, 1, 1e-6);
+const expressionLAc = biasedInductor.map(item => item.id === 'L' ? { ...item, ...formula(1, 0.2) } : item);
+near(solveCircuitAC(expressionLAc, biasedInductorWires, ac('mag(U(L))', 1 / (2 * Math.PI))).signals['mag(U(L))'][0],
+  passiveLaw(expressionLAc[1], 1).derivative);
+for (const model of [expressionR, expressionC, expressionL]) {
+  const saved = exportToYamlScm(model, model[1].type === 'R' ? resistorWires : model[1].type === 'C' ? capacitorWires : inductorWires,
+    transient('I(' + model[1].name + ')', 0.1, 0.1), undefined, undefined, 'current', 'connect');
+  assert.deepEqual(parseYamlScm(saved).elements[1].passiveLawDefinition, model[1].passiveLawDefinition);
+}
+const invalidFormula = (expression: string) => element('RF', 'R', 10, { passiveModel: 'nonlinear',
+  passiveLawDefinition: { kind: 'expression', expression, argumentScale: 1, outputScale: 0.1 } });
+for (const expression of ['n*x + x', 'n*x + y0*tanh(x)', 'n*x + y0*log(-x/x0)',
+  'n*x + y0*evil(x/x0)', 'n*x + y0/(x/x0)', 'n*x-y0*exp(x/x0)']) {
+  assert.throws(() => validatePassiveModel(invalidFormula(expression)));
+}
+assert.throws(() => validatePassiveModel(invalidFormula('n*x - y0*(x/x0)^3')), /дифференциальн|зависимость/);
+
 for (const [elements, wires, signal, settings] of [
   [tabulatedResistor, resistorWires, 'I(R)', transient('I(R)', 0.25, 0.25)],
   [inverseAc, resistorWires, 'I(R)', transient('I(R)', 0.25, 0.25)],
@@ -159,4 +193,4 @@ assert.throws(() => validatePassiveModel(element('C', 'C', 1, inverseResistor)),
 assert.throws(() => validatePassiveModel(element('L', 'L', 1, { passiveModel: 'nonlinear', passiveLawDefinition: {
   kind: 'saturation', limitingInductance: 2, saturationCurrent: 1,
 } })), /насыщение/);
-console.log('PASS: cubic, I(U)/U(I) tables and saturating Q(U), Ψ(I), DC, transient, AC and SCM round-trips.');
+console.log('PASS: cubic, tables, dimension-checked expressions and saturation for I(U), Q(U), Ψ(I), DC, transient, AC and SCM round-trips.');

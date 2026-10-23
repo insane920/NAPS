@@ -95,11 +95,17 @@ function ElementPropertiesContent({
   const [diodeModel, setDiodeModel] = useState(element.diodeModel || 'pwl');
   const [transistorModel, setTransistorModel] = useState(element.transistorModel || 'nonlinear');
   const [passiveModel, setPassiveModel] = useState(element.passiveModel || 'linear');
-  const [passiveLawKind, setPassiveLawKind] = useState<'cubic' | 'table' | 'inverseTable' | 'saturation'>(element.passiveLawDefinition?.kind ?? 'cubic');
+  const [passiveLawKind, setPassiveLawKind] = useState<'cubic' | 'table' | 'inverseTable' | 'saturation' | 'expression'>(element.passiveLawDefinition?.kind ?? 'cubic');
   const [passiveTable, setPassiveTable] = useState(() => element.passiveLawDefinition?.kind === 'table' || element.passiveLawDefinition?.kind === 'inverseTable'
     ? element.passiveLawDefinition.points.map(point => `${point.argument}; ${point.value}`).join('\n') : '');
   const [limitingInductance, setLimitingInductance] = useState(() => element.passiveLawDefinition?.kind === 'saturation' ? String(element.passiveLawDefinition.limitingInductance) : String(element.value / 5));
   const [saturationCurrent, setSaturationCurrent] = useState(() => element.passiveLawDefinition?.kind === 'saturation' ? String(element.passiveLawDefinition.saturationCurrent) : '1');
+  const [passiveExpression, setPassiveExpression] = useState(() => element.passiveLawDefinition?.kind === 'expression'
+    ? element.passiveLawDefinition.expression : 'n*x + y0*tanh(x/x0)');
+  const [argumentScale, setArgumentScale] = useState(() => element.passiveLawDefinition?.kind === 'expression'
+    ? String(element.passiveLawDefinition.argumentScale) : '1');
+  const [outputScale, setOutputScale] = useState(() => element.passiveLawDefinition?.kind === 'expression'
+    ? String(element.passiveLawDefinition.outputScale) : String((element.type === 'R' ? 1 / element.value : element.value) / 5));
   const [editableChipPins, setEditableChipPins] = useState(() => chipPins(element).map(pin => ({ ...pin })));
   const [validationError, setValidationError] = useState('');
   const [modelInputs, setModelInputs] = useState<Record<string, string>>(modelDefaults);
@@ -124,6 +130,12 @@ function ElementPropertiesContent({
       ? element.passiveLawDefinition.points.map(point => `${point.argument}; ${point.value}`).join('\n') : '');
     setLimitingInductance(element.passiveLawDefinition?.kind === 'saturation' ? String(element.passiveLawDefinition.limitingInductance) : String(element.value / 5));
     setSaturationCurrent(element.passiveLawDefinition?.kind === 'saturation' ? String(element.passiveLawDefinition.saturationCurrent) : '1');
+    setPassiveExpression(element.passiveLawDefinition?.kind === 'expression'
+      ? element.passiveLawDefinition.expression : 'n*x + y0*tanh(x/x0)');
+    setArgumentScale(element.passiveLawDefinition?.kind === 'expression'
+      ? String(element.passiveLawDefinition.argumentScale) : '1');
+    setOutputScale(element.passiveLawDefinition?.kind === 'expression'
+      ? String(element.passiveLawDefinition.outputScale) : String((element.type === 'R' ? 1 / element.value : element.value) / 5));
     setEditableChipPins(chipPins(element).map(pin => ({ ...pin })));
     setValidationError('');
     setModelInputs(modelDefaults());
@@ -258,6 +270,9 @@ function ElementPropertiesContent({
         passiveLawDefinition = { kind: passiveLawKind, points };
       } else if (passiveLawKind === 'saturation') {
         passiveLawDefinition = { kind: 'saturation', limitingInductance: parseEngValue(limitingInductance), saturationCurrent: parseEngValue(saturationCurrent) };
+      } else if (passiveLawKind === 'expression') {
+        passiveLawDefinition = { kind: 'expression', expression: passiveExpression.trim(),
+          argumentScale: parseEngValue(argumentScale), outputScale: parseEngValue(outputScale) };
       }
     }
     const updated: CircuitElement = {
@@ -392,13 +407,22 @@ function ElementPropertiesContent({
           </div>}
           {passiveModel === 'nonlinear' && ['R', 'C', 'L'].includes(element.type) && <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
             <label htmlFor="passive-law" className="text-right font-medium text-slate-700">Зависимость:</label>
-            <select id="passive-law" value={passiveLawKind} onChange={event => setPassiveLawKind(event.target.value as 'cubic' | 'table' | 'inverseTable' | 'saturation')} className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 text-xs">
-              <option value="cubic">Кубическая</option><option value="table">Таблица точек</option>
+            <select id="passive-law" value={passiveLawKind} onChange={event => setPassiveLawKind(event.target.value as 'cubic' | 'table' | 'inverseTable' | 'saturation' | 'expression')} className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 text-xs">
+              <option value="cubic">Кубическая</option><option value="table">Таблица точек</option><option value="expression">Формула</option>
               {element.type === 'R' && <option value="inverseTable">Таблица U(I)</option>}
               {element.type === 'L' && <option value="saturation">Насыщение сердечника</option>}
             </select>
           </div>}
           {passiveModel === 'nonlinear' && passiveLawKind === 'cubic' && ['R', 'C', 'L'].includes(element.type) && <p className="rounded bg-blue-50 p-2 text-xs text-blue-900">{element.type === 'R' ? 'I = U/R + kU³' : element.type === 'C' ? 'Q = CU + kU³; I = dQ/dt' : 'Ψ = LI + kI³; U = dΨ/dt'}. Коэффициент k задаётся ниже.</p>}
+          {passiveModel === 'nonlinear' && passiveLawKind === 'expression' && ['R', 'C', 'L'].includes(element.type) && <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] gap-3 items-center">
+            <label htmlFor="passive-expression" className="text-right font-medium text-slate-700">Формула:</label>
+            <div><input id="passive-expression" value={passiveExpression} onChange={event => setPassiveExpression(event.target.value)} className="w-full rounded border border-slate-400 p-1 font-mono text-xs" />
+              <p className="text-xs text-slate-600">{element.type === 'R' ? 'I(U)' : element.type === 'C' ? 'Q(U)' : 'Ψ(I)'} в СИ. x — вход, n — {element.type === 'R' ? '1/R' : element.type === 'C' ? 'C' : 'L'}, x0 и y0 — масштабы. Доступны + - * /, степень ^ от 0 до 12, sin, cos, tanh, exp, log. Пример: n*x + y0*tanh(x/x0).</p></div><span />
+            <label htmlFor="passive-argument-scale" className="text-right font-medium text-slate-700">Масштаб x0:</label>
+            <input id="passive-argument-scale" value={argumentScale} onChange={event => setArgumentScale(event.target.value)} className="rounded border border-slate-400 p-1 font-mono text-xs" /><span>{element.type === 'L' ? 'А' : 'В'}</span>
+            <label htmlFor="passive-output-scale" className="text-right font-medium text-slate-700">Масштаб y0:</label>
+            <input id="passive-output-scale" value={outputScale} onChange={event => setOutputScale(event.target.value)} className="rounded border border-slate-400 p-1 font-mono text-xs" /><span>{element.type === 'R' ? 'А' : element.type === 'C' ? 'Кл' : 'Вб'}</span>
+          </div>}
           {passiveModel === 'nonlinear' && (passiveLawKind === 'table' || passiveLawKind === 'inverseTable') && ['R', 'C', 'L'].includes(element.type) && <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] gap-3">
             <label htmlFor="passive-table" className="text-right font-medium text-slate-700">Точки зависимости:</label>
             <div><textarea id="passive-table" value={passiveTable} onChange={event => setPassiveTable(event.target.value)} rows={5} placeholder={'-1; -0.1\n0; 0\n1; 0.1'} className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 font-mono text-xs" />

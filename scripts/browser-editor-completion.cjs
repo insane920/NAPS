@@ -111,8 +111,27 @@ const { version } = require('../package.json');
     await dialog.getByRole('button', { name: 'OK' }).click();
     const [inverseDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
     assert.match(await fs.readFile(await inverseDownload.path(), 'utf8'), /PassiveLawDefinition:.*inverseTable/, 'U(I) law is saved in SCM');
+    await copy.dblclick();
+    await dialog.locator('#passive-law').selectOption('expression');
+    await dialog.locator('#passive-expression').fill('n*x + x');
+    await dialog.getByRole('button', { name: 'OK' }).click();
+    assert.match(await dialog.innerText(), /размерност/, 'dimensionally invalid formula is rejected before saving');
+    await dialog.locator('#passive-expression').fill('n*x + y0*tanh(x/x0)');
+    await dialog.locator('#passive-argument-scale').fill('2');
+    await dialog.locator('#passive-output-scale').fill('0.001');
+    await dialog.getByRole('button', { name: 'OK' }).click();
+    const [expressionDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
+    const expressionScm = await fs.readFile(await expressionDownload.path(), 'utf8');
+    assert.match(expressionScm, /PassiveLawDefinition:.*expression/, 'dimension-checked formula is saved in SCM');
+    await page.locator('input[type="file"]').setInputFiles({ name: 'formula-model.scm', mimeType: 'text/plain', buffer: Buffer.from(expressionScm) });
+    await page.keyboard.press('Escape');
+    await copy.dblclick();
+    assert.equal(await dialog.locator('#passive-law').inputValue(), 'expression');
+    assert.equal(await dialog.locator('#passive-expression').inputValue(), 'n*x + y0*tanh(x/x0)');
+    assert.equal(await dialog.locator('#passive-argument-scale').inputValue(), '2');
+    await dialog.getByRole('button', { name: 'Отмена' }).click();
     assert.deepEqual(errors, []);
-    console.log('PASS: focused library, editing, rotation and nonlinear model placement/save/undo/redo.');
+    console.log('PASS: focused library, editing, rotation and nonlinear cubic/table/formula model placement/save/undo/redo.');
   } finally {
     await browser.close();
   }

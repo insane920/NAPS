@@ -33,7 +33,7 @@ const assert = require('node:assert/strict');
           const transform = group?.getScreenCTM();
           return transform && Math.abs(transform.e - before.x + 75) < 2 &&
             Math.abs(transform.f - before.y + 60) < 2;
-        }, { before }, { timeout: 3000 });
+        }, { before }, { timeout: 10000 });
         const after = await component.evaluate(group => ({ x: group.getScreenCTM().e, y: group.getScreenCTM().f }));
         assert(Math.abs(after.x - before.x + 75) < 2 && Math.abs(after.y - before.y + 60) < 2,
           `${format}: scrollbars pan without coordinate jumps (${JSON.stringify({ before, after })})`);

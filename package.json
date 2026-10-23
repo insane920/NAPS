@@ -72,16 +72,18 @@
     "electronDist": "node_modules/electron/dist"
   },
   "dependencies": {
+    "jspdf": "^4.2.1",
     "lucide-react": "^0.546.0",
     "react": "^19.0.1",
-    "react-dom": "^19.0.1"
+    "react-dom": "^19.0.1",
+    "svg2pdf.js": "^2.8.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.14",
-    "@vitejs/plugin-react": "^5.0.4",
     "@types/node": "^22.14.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.0.4",
     "electron": "^44.4.3",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.25.0",

@@ -58,16 +58,24 @@ const fs = require('node:fs/promises');
     assert.match(scm, /Page:\n  Format: A3\n  Orientation: portrait/);
     await page.getByRole('button', { name: 'Экспорт ▾' }).click();
     await page.getByRole('menuitem', { name: 'PDF' }).click();
+    await page.waitForFunction(() => document.querySelector('iframe[title="Предварительный просмотр листа"]')?.getAttribute('srcdoc')?.includes('data-eskd-frame="true"'));
     const preview = await page.getByTitle('Предварительный просмотр листа').getAttribute('srcdoc');
     assert.match(preview, /data-eskd-frame="true"/);
     assert.match(preview, /data-eskd-title-block="true"/);
     assert.match(preview, /data-width-mm="185"/);
     assert.match(preview, /data-height-mm="55"/);
     assert.match(preview, /#111111/);
+    const [a3Download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать PDF' }).click()]);
+    const a3Pdf = await fs.readFile(await a3Download.path());
+    assert.match(a3Pdf.toString('latin1'), /\/MediaBox \[0 0 841\.889[0-9]* 1190\.551[0-9]*\]/,
+      'A3 portrait vector PDF has physical 297 × 420 mm page size');
+    assert.doesNotMatch(a3Pdf.toString('latin1'), /\/Subtype\s*\/Image/,
+      'A3 portrait PDF keeps the schematic vector-based');
     await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
     await page.getByRole('combobox', { name: 'Формат документа' }).selectOption('A4');
     await page.getByRole('button', { name: 'Экспорт ▾' }).click();
     await page.getByRole('menuitem', { name: 'PDF' }).click();
+    await page.waitForFunction(() => document.querySelector('iframe[title="Предварительный просмотр листа"]')?.getAttribute('srcdoc')?.includes('width="210mm"'));
     const a4Preview = await page.getByTitle('Предварительный просмотр листа').getAttribute('srcdoc');
     assert.match(a4Preview, /data-eskd-title-block="true"/);
     assert.match(a4Preview, /data-eskd-frame="true"/);
@@ -80,6 +88,7 @@ const fs = require('node:fs/promises');
     await page.getByRole('combobox', { name: 'Ориентация документа' }).selectOption('landscape');
     await page.getByRole('button', { name: 'Экспорт ▾' }).click();
     await page.getByRole('menuitem', { name: 'PDF' }).click();
+    await page.waitForFunction(() => document.querySelector('iframe[title="Предварительный просмотр листа"]')?.getAttribute('srcdoc')?.includes('data-rotation="90"'));
     const landscapePreview = await page.getByTitle('Предварительный просмотр листа').getAttribute('srcdoc');
     assert.match(landscapePreview, /data-width-mm="55"/);
     assert.match(landscapePreview, /data-height-mm="185"/);
@@ -92,6 +101,8 @@ const fs = require('node:fs/promises');
     if (process.env.NAPS_CAPTURE_PDF_PATH) await fs.writeFile(process.env.NAPS_CAPTURE_PDF_PATH, pdf);
     assert.match(pdf.toString('latin1'), /\/MediaBox \[0 0 841\.889[0-9]* 595\.275[0-9]*\]/,
       'A4 landscape PDF retains physical MediaBox dimensions');
+    assert.doesNotMatch(pdf.toString('latin1'), /\/Subtype\s*\/Image/,
+      'A4 landscape PDF has no raster page image');
     await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
     await page.reload({ waitUntil: 'networkidle' });
     await page.getByRole('button', { name: 'Общие настройки' }).click();

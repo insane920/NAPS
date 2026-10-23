@@ -41,7 +41,6 @@ import { componentObstacle, routeAroundObstacles, routeIsClear } from '../utils/
 import type { CircuitDescription } from '../utils/yamlScm';
 import { createTitleBlock } from '../utils/eskdTitleBlock';
 import { SpatialIndex } from '../utils/spatialIndex';
-import { rasterPagePdf } from '../utils/rasterPdf';
 import { chipPins, DEFAULT_CHIP_PINS } from '../utils/chipPins';
 
 interface SchematicEditorProps {
@@ -2695,6 +2694,17 @@ export function SchematicEditor({
       setTimeout(() => URL.revokeObjectURL(svgUrl), 1000);
       return;
     }
+    if (format === 'pdf') {
+      void import('../utils/vectorPdf').then(({ vectorPagePdf }) => vectorPagePdf(xml, widthMm, heightMm))
+        .then(blob => {
+          const outputUrl = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = outputUrl; link.download = `${fileName}.pdf`; link.click();
+          setTimeout(() => URL.revokeObjectURL(outputUrl), 1000);
+        })
+        .catch(error => window.alert(error instanceof Error ? error.message : 'Ошибка векторного экспорта PDF.'));
+      return;
+    }
     const url = URL.createObjectURL(new Blob([xml], { type: 'image/svg+xml;charset=utf-8' }));
     const image = new Image();
     image.onload = () => {
@@ -2707,14 +2717,13 @@ export function SchematicEditor({
       canvas.toBlob(async blob => {
         try {
           if (!blob) throw new Error('Не удалось сформировать лист.');
-          const output = format === 'pdf' ? await rasterPagePdf(blob, canvas.width, canvas.height, widthMm, heightMm) : blob;
           const link = document.createElement('a');
-          const outputUrl = URL.createObjectURL(output);
-          link.href = outputUrl; link.download = format === 'pdf' ? `${fileName}.pdf` : `${fileName}-300dpi.png`; link.click();
+          const outputUrl = URL.createObjectURL(blob);
+          link.href = outputUrl; link.download = `${fileName}-300dpi.png`; link.click();
           setTimeout(() => URL.revokeObjectURL(outputUrl), 1000);
         } catch (error) { window.alert(error instanceof Error ? error.message : 'Ошибка экспорта листа.'); }
         finally { URL.revokeObjectURL(url); }
-      }, format === 'pdf' ? 'image/jpeg' : 'image/png', 0.96);
+      }, 'image/png');
     };
     image.onerror = () => {
       URL.revokeObjectURL(url);

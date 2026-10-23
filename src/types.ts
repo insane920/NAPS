@@ -318,7 +318,7 @@ export interface CircuitElement {
     passiveLawDefinition?:
       | { kind: 'table' | 'inverseTable'; points: Array<{ argument: number; value: number }> }
         | { kind: 'saturation'; limitingInductance: number; saturationCurrent: number }
-        | { kind: 'expression'; expression: string; argumentScale: number; outputScale: number };
+        | { kind: 'expression' | 'inverseExpression'; expression: string; argumentScale: number; outputScale: number };
   /** Stable electrical IDs plus editable physical pin numbers and labels. */
   chipPins?: Array<{ id: string; number: string; label: string; side: 'left' | 'right' }>;
   /** Parameters of the documented piecewise-linear semiconductor/control models. */

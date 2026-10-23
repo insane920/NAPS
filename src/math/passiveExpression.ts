@@ -104,7 +104,7 @@ function parse(expression: string): Node {
   if (index !== tokens.length) throw new Error(`Лишний фрагмент формулы: ${peek()}.`);
   const dimension = dimensionOf(root);
   if (!sameDimension(dimension, resultDimension)) {
-    throw new Error('Размерность формулы неверна: результат должен иметь единицы I, Q или Ψ. Используйте x0 и y0 для масштабов.');
+    throw new Error('Размерность формулы неверна: результат должен иметь единицы выходной величины. Используйте x0 и y0 для масштабов.');
   }
   if (cache.size >= 100) cache.clear();
   cache.set(expression, root);

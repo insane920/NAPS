@@ -25,6 +25,13 @@ export function passiveLaw(element: CircuitElement, argument: number): { value: 
     } catch (error) {
       throw new Error(`${element.name}: ${error instanceof Error ? error.message : 'ошибка пользовательской формулы.'}`);
     }
+  } else if (definition?.kind === 'inverseExpression') {
+    try {
+      result = inverseExpressionLaw(definition.expression, argument, element.value,
+        definition.argumentScale, definition.outputScale);
+    } catch (error) {
+      throw new Error(`${element.name}: ${error instanceof Error ? error.message : 'ошибка пользовательской формулы U(I).'}`);
+    }
   } else {
     // Default for legacy SCM files: original cubic constitutive law.
     const k = element.passiveModel === 'nonlinear' ? element.modelParams?.cubicCoefficient ?? 0 : 0;
@@ -34,6 +41,34 @@ export function passiveLaw(element: CircuitElement, argument: number): { value: 
     throw new Error(`${element.name}: модель вышла за численный диапазон или потеряла положительную дифференциальную характеристику.`);
   }
   return result;
+}
+
+/** Monotone U(I) -> I(U), with the exact reciprocal differential resistance. */
+function inverseExpressionLaw(expression: string, voltage: number, resistance: number,
+  currentScale: number, voltageScale: number): { value: number; derivative: number } {
+  const evaluate = (current: number) => evaluatePassiveExpression(expression, current,
+    resistance, currentScale, voltageScale);
+  const origin = evaluate(0);
+  if (voltage === origin.value) return { value: 0, derivative: 1 / origin.derivative };
+  let low = voltage < origin.value ? -currentScale : 0;
+  let high = voltage > origin.value ? currentScale : 0;
+  for (let attempt = 0; attempt < 64; attempt++) {
+    const edge = evaluate(voltage > origin.value ? high : low);
+    if (!Number.isFinite(edge.value) || edge.derivative <= 0) throw new Error('Формула U(I) потеряла монотонность или вышла за численный диапазон.');
+    if (voltage > origin.value ? edge.value >= voltage : edge.value <= voltage) break;
+    if (attempt === 63) throw new Error('Не удалось обратить формулу U(I): напряжение вне достижимого диапазона.');
+    if (voltage > origin.value) high *= 2;
+    else low *= 2;
+  }
+  for (let iteration = 0; iteration < 80; iteration++) {
+    const middle = (low + high) / 2;
+    if (evaluate(middle).value < voltage) low = middle;
+    else high = middle;
+  }
+  const current = (low + high) / 2;
+  const slope = evaluate(current).derivative;
+  if (!Number.isFinite(slope) || slope <= 0) throw new Error('Формула U(I) имеет недопустимое дифференциальное сопротивление.');
+  return { value: current, derivative: 1 / slope };
 }
 
 /** Invert the user-provided U(I) curve without replacing its derivative by a fitted I(U). */
@@ -116,7 +151,10 @@ export function validatePassiveModel(element: CircuitElement): void {
       !Number.isFinite(definition.saturationCurrent) || definition.saturationCurrent <= 0) {
       throw new Error(`${element.name}: насыщение требует 0 < Lнас < L0 и Iнас > 0.`);
     }
-  } else if (definition.kind === 'expression') {
+  } else if (definition.kind === 'expression' || definition.kind === 'inverseExpression') {
+    if (definition.kind === 'inverseExpression' && element.type !== 'R') {
+      throw new Error(`${element.name}: формула U(I) допустима только для резистора.`);
+    }
     if (typeof definition.expression !== 'string' ||
       !Number.isFinite(definition.argumentScale) || definition.argumentScale <= 0 ||
       !Number.isFinite(definition.outputScale) || definition.outputScale <= 0) {
@@ -127,7 +165,17 @@ export function validatePassiveModel(element: CircuitElement): void {
     if (Math.abs(origin.value) > 1e-9 * Math.max(1, definition.outputScale)) {
       throw new Error(`${element.name}: зависимость должна проходить через точку (0; 0).`);
     }
-    for (let index = -10; index <= 10; index++) passiveLaw(element, index * definition.argumentScale / 2);
+    for (let index = -10; index <= 10; index++) {
+      const sample = index * definition.argumentScale / 2;
+      if (definition.kind === 'inverseExpression') {
+        const point = evaluatePassiveExpression(definition.expression, sample, element.value,
+          definition.argumentScale, definition.outputScale);
+        if (!Number.isFinite(point.value) || !Number.isFinite(point.derivative) || point.derivative <= 0) {
+          throw new Error(`${element.name}: формула U(I) должна быть конечной и возрастающей.`);
+        }
+        passiveLaw(element, point.value);
+      } else passiveLaw(element, sample);
+    }
   } else {
     throw new Error(`${element.name}: неизвестная зависимость пассивного элемента.`);
   }

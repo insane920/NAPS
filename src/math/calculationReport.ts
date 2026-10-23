@@ -23,6 +23,8 @@ const nonlinearLawName = (element: CircuitElement): string => element.passiveLaw
     ? 'Ψ(I)=Lнас·I+(L0−Lнас)·Iнас·tanh(I/Iнас)'
     : element.passiveLawDefinition?.kind === 'expression'
       ? `${element.type === 'R' ? 'I(U)' : element.type === 'C' ? 'Q(U)' : 'Ψ(I)'}=${element.passiveLawDefinition.expression}`
+      : element.passiveLawDefinition?.kind === 'inverseExpression'
+        ? `U(I)=${element.passiveLawDefinition.expression}`
     : element.type === 'R' ? 'I=U/R+kU³' : element.type === 'C' ? 'Q(U)=CU+kU³' : 'Ψ(I)=LI+kI³';
 
 /** Builds a readable derivation from the exact result used by the graph. No pass/fail judgement. */

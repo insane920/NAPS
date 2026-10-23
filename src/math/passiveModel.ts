@@ -8,6 +8,8 @@ export function passiveLaw(element: CircuitElement, argument: number): { value: 
   let result: { value: number; derivative: number };
   if (definition?.kind === 'table') {
     result = interpolatedLaw(definition.points, argument);
+  } else if (definition?.kind === 'inverseTable') {
+    result = inverseInterpolatedLaw(definition.points, argument);
   } else if (definition?.kind === 'saturation') {
     const { limitingInductance, saturationCurrent } = definition;
     const t = Math.tanh(argument / saturationCurrent);
@@ -24,6 +26,24 @@ export function passiveLaw(element: CircuitElement, argument: number): { value: 
     throw new Error(`${element.name}: модель вышла за численный диапазон или потеряла положительную дифференциальную характеристику.`);
   }
   return result;
+}
+
+/** Invert the user-provided U(I) curve without replacing its derivative by a fitted I(U). */
+function inverseInterpolatedLaw(points: Array<{ argument: number; value: number }>, voltage: number): { value: number; derivative: number } {
+  const first = points[0], last = points[points.length - 1];
+  if (voltage <= first.value || voltage >= last.value) {
+    const edge = voltage <= first.value ? first : last;
+    const slope = interpolatedLaw(points, edge.argument).derivative;
+    return { value: edge.argument + (voltage - edge.value) / slope, derivative: 1 / slope };
+  }
+  let lo = first.argument, hi = last.argument;
+  for (let iteration = 0; iteration < 54; iteration++) {
+    const middle = (lo + hi) / 2;
+    if (interpolatedLaw(points, middle).value < voltage) lo = middle;
+    else hi = middle;
+  }
+  const current = (lo + hi) / 2;
+  return { value: current, derivative: 1 / interpolatedLaw(points, current).derivative };
 }
 
 /** Monotone Hermite interpolation; the derivative comes from the same polynomial. */
@@ -70,10 +90,13 @@ export function validatePassiveModel(element: CircuitElement): void {
     if (!Number.isFinite(coefficient) || coefficient === undefined || coefficient <= 0) {
       throw new Error(`${element.name}: коэффициент кубического члена должен быть положительным конечным числом.`);
     }
-  } else if (definition.kind === 'table') {
+  } else if (definition.kind === 'table' || definition.kind === 'inverseTable') {
+    if (definition.kind === 'inverseTable' && element.type !== 'R') {
+      throw new Error(`${element.name}: U(I) допустима только для резистора.`);
+    }
     const { points } = definition;
     if (!Array.isArray(points) || points.length < 3 || points.length > 128 ||
-      !points.every(point => Number.isFinite(point.argument) && Number.isFinite(point.value)) ||
+      !points.every(point => point && Number.isFinite(point.argument) && Number.isFinite(point.value)) ||
       !points.some(point => point.argument === 0 && point.value === 0) ||
       !points.slice(1).every((point, i) => point.argument > points[i].argument && point.value > points[i].value)) {
       throw new Error(`${element.name}: таблица зависимости должна содержать 3–128 строго возрастающих пар и точку 0; 0.`);

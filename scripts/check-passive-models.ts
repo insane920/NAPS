@@ -102,6 +102,19 @@ const tableAcSource = tabulatedResistor.map(item => item.id === 'V' ? {
 } : item);
 near(solveCircuitAC(tableAcSource, resistorWires, ac('mag(I(R))', 10)).signals['mag(I(R))'][0],
   passiveLaw(tabulatedResistor[1], 1).derivative);
+const inverseResistor: Partial<CircuitElement> = { passiveModel: 'nonlinear', passiveLawDefinition: {
+  kind: 'inverseTable', points: [[-2, -0.9], [-1, -0.3], [0, 0], [1, 0.3], [2, 0.9]]
+    .map(([argument, value]) => ({ argument, value })),
+} };
+const inverseElement = element('RI', 'R', 10, inverseResistor);
+near(passiveLaw(inverseElement, 0.3).value, 1);
+near(passiveLaw(inverseElement, 0.3).derivative, 1 / 0.4);
+const inverseDriven = resistor.map(item => item.id === 'R' ? { ...item, ...inverseResistor }
+  : item.id === 'V' ? { ...item, type: 'I_DC' as const, value: -1, valueStr: '-1', modelParams: undefined } : item);
+near(solveCircuitTransient(inverseDriven, resistorWires, transient('U(R)', 0.1, 0.1)).signals['U(R)'][0], 0.3);
+const inverseAc = resistor.map(item => item.id === 'R' ? { ...item, ...inverseResistor }
+  : item.id === 'V' ? { ...item, modelParams: { sourceOffset: 0.3 } } : item);
+near(solveCircuitAC(inverseAc, resistorWires, ac('mag(I(R))', 10)).signals['mag(I(R))'][0], 2.5);
 
 const capacitorCurve = table([[-2, -0.005], [-1, -0.002], [0, 0], [1, 0.002], [2, 0.005]]);
 const tabulatedCapacitor = capacitor.map(item => item.id === 'C' ? { ...item, ...capacitorCurve } : item);
@@ -129,6 +142,7 @@ near(solveCircuitAC(saturationAc, biasedInductorWires, ac('mag(U(L))', 1 / (2 * 
 
 for (const [elements, wires, signal, settings] of [
   [tabulatedResistor, resistorWires, 'I(R)', transient('I(R)', 0.25, 0.25)],
+  [inverseAc, resistorWires, 'I(R)', transient('I(R)', 0.25, 0.25)],
   [tabulatedCapacitor, capacitorWires, 'I(C)', cSettings],
   [tabulatedInductor, inductorWires, 'I(L)', lSettings],
   [saturatedCircuit, inductorWires, 'I(L)', lSettings],
@@ -141,7 +155,8 @@ for (const [elements, wires, signal, settings] of [
     solveCircuitTransient(elements, wires, settings).signals[signal][1]);
 }
 assert.throws(() => validatePassiveModel(element('R', 'R', 10, table([[-1, -1], [0, 0], [1, -2]]))), /таблица/);
+assert.throws(() => validatePassiveModel(element('C', 'C', 1, inverseResistor)), /только для резистора/);
 assert.throws(() => validatePassiveModel(element('L', 'L', 1, { passiveModel: 'nonlinear', passiveLawDefinition: {
   kind: 'saturation', limitingInductance: 2, saturationCurrent: 1,
 } })), /насыщение/);
-console.log('PASS: cubic, tabulated and saturating I(U), Q(U), Ψ(I), DC, transient, AC and SCM round-trips.');
+console.log('PASS: cubic, I(U)/U(I) tables and saturating Q(U), Ψ(I), DC, transient, AC and SCM round-trips.');

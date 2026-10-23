@@ -95,8 +95,8 @@ function ElementPropertiesContent({
   const [diodeModel, setDiodeModel] = useState(element.diodeModel || 'pwl');
   const [transistorModel, setTransistorModel] = useState(element.transistorModel || 'nonlinear');
   const [passiveModel, setPassiveModel] = useState(element.passiveModel || 'linear');
-  const [passiveLawKind, setPassiveLawKind] = useState<'cubic' | 'table' | 'saturation'>(element.passiveLawDefinition?.kind ?? 'cubic');
-  const [passiveTable, setPassiveTable] = useState(() => element.passiveLawDefinition?.kind === 'table'
+  const [passiveLawKind, setPassiveLawKind] = useState<'cubic' | 'table' | 'inverseTable' | 'saturation'>(element.passiveLawDefinition?.kind ?? 'cubic');
+  const [passiveTable, setPassiveTable] = useState(() => element.passiveLawDefinition?.kind === 'table' || element.passiveLawDefinition?.kind === 'inverseTable'
     ? element.passiveLawDefinition.points.map(point => `${point.argument}; ${point.value}`).join('\n') : '');
   const [limitingInductance, setLimitingInductance] = useState(() => element.passiveLawDefinition?.kind === 'saturation' ? String(element.passiveLawDefinition.limitingInductance) : String(element.value / 5));
   const [saturationCurrent, setSaturationCurrent] = useState(() => element.passiveLawDefinition?.kind === 'saturation' ? String(element.passiveLawDefinition.saturationCurrent) : '1');
@@ -120,7 +120,7 @@ function ElementPropertiesContent({
     setTransistorModel(element.transistorModel || 'nonlinear');
     setPassiveModel(element.passiveModel || 'linear');
     setPassiveLawKind(element.passiveLawDefinition?.kind ?? 'cubic');
-    setPassiveTable(element.passiveLawDefinition?.kind === 'table'
+    setPassiveTable(element.passiveLawDefinition?.kind === 'table' || element.passiveLawDefinition?.kind === 'inverseTable'
       ? element.passiveLawDefinition.points.map(point => `${point.argument}; ${point.value}`).join('\n') : '');
     setLimitingInductance(element.passiveLawDefinition?.kind === 'saturation' ? String(element.passiveLawDefinition.limitingInductance) : String(element.value / 5));
     setSaturationCurrent(element.passiveLawDefinition?.kind === 'saturation' ? String(element.passiveLawDefinition.saturationCurrent) : '1');
@@ -248,14 +248,14 @@ function ElementPropertiesContent({
 
     let passiveLawDefinition: CircuitElement['passiveLawDefinition'];
     if (passiveModel === 'nonlinear' && ['R', 'C', 'L'].includes(element.type)) {
-      if (passiveLawKind === 'table') {
+      if (passiveLawKind === 'table' || passiveLawKind === 'inverseTable') {
         const rows = passiveTable.trim().split(/\r?\n/);
         const points = rows.map(row => {
           const cells = row.split(';').map(cell => cell.trim());
           return cells.length === 2 ? { argument: parseEngValue(cells[0]), value: parseEngValue(cells[1]) }
             : { argument: NaN, value: NaN };
         });
-        passiveLawDefinition = { kind: 'table', points };
+        passiveLawDefinition = { kind: passiveLawKind, points };
       } else if (passiveLawKind === 'saturation') {
         passiveLawDefinition = { kind: 'saturation', limitingInductance: parseEngValue(limitingInductance), saturationCurrent: parseEngValue(saturationCurrent) };
       }
@@ -392,16 +392,17 @@ function ElementPropertiesContent({
           </div>}
           {passiveModel === 'nonlinear' && ['R', 'C', 'L'].includes(element.type) && <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
             <label htmlFor="passive-law" className="text-right font-medium text-slate-700">Зависимость:</label>
-            <select id="passive-law" value={passiveLawKind} onChange={event => setPassiveLawKind(event.target.value as 'cubic' | 'table' | 'saturation')} className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 text-xs">
+            <select id="passive-law" value={passiveLawKind} onChange={event => setPassiveLawKind(event.target.value as 'cubic' | 'table' | 'inverseTable' | 'saturation')} className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 text-xs">
               <option value="cubic">Кубическая</option><option value="table">Таблица точек</option>
+              {element.type === 'R' && <option value="inverseTable">Таблица U(I)</option>}
               {element.type === 'L' && <option value="saturation">Насыщение сердечника</option>}
             </select>
           </div>}
           {passiveModel === 'nonlinear' && passiveLawKind === 'cubic' && ['R', 'C', 'L'].includes(element.type) && <p className="rounded bg-blue-50 p-2 text-xs text-blue-900">{element.type === 'R' ? 'I = U/R + kU³' : element.type === 'C' ? 'Q = CU + kU³; I = dQ/dt' : 'Ψ = LI + kI³; U = dΨ/dt'}. Коэффициент k задаётся ниже.</p>}
-          {passiveModel === 'nonlinear' && passiveLawKind === 'table' && ['R', 'C', 'L'].includes(element.type) && <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] gap-3">
+          {passiveModel === 'nonlinear' && (passiveLawKind === 'table' || passiveLawKind === 'inverseTable') && ['R', 'C', 'L'].includes(element.type) && <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] gap-3">
             <label htmlFor="passive-table" className="text-right font-medium text-slate-700">Точки зависимости:</label>
             <div><textarea id="passive-table" value={passiveTable} onChange={event => setPassiveTable(event.target.value)} rows={5} placeholder={'-1; -0.1\n0; 0\n1; 0.1'} className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 font-mono text-xs" />
-              <p className="text-xs text-slate-600">По одной паре X; Y на строку. {element.type === 'R' ? 'U (В); I (А)' : element.type === 'C' ? 'U (В); Q (Кл)' : 'I (А); Ψ (Вб)'}. Точки строго возрастают и включают 0; 0.</p></div>
+              <p className="text-xs text-slate-600">По одной паре X; Y на строку. {passiveLawKind === 'inverseTable' ? 'I (А); U (В)' : element.type === 'R' ? 'U (В); I (А)' : element.type === 'C' ? 'U (В); Q (Кл)' : 'I (А); Ψ (Вб)'}. Точки строго возрастают и включают 0; 0.</p></div>
           </div>}
           {passiveModel === 'nonlinear' && passiveLawKind === 'saturation' && element.type === 'L' && <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] gap-3 items-center">
             <label htmlFor="limiting-inductance" className="text-right font-medium text-slate-700">L при насыщении:</label><input id="limiting-inductance" value={limitingInductance} onChange={event => setLimitingInductance(event.target.value)} className="border border-slate-400 px-2 py-1 rounded font-mono text-xs" /><span>Гн</span>

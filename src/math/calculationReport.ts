@@ -17,6 +17,8 @@ export interface CalculationReport {
 const n = numberText;
 const nonlinearLawName = (element: CircuitElement): string => element.passiveLawDefinition?.kind === 'table'
   ? 'монотонная интерполяция заданных точек'
+  : element.passiveLawDefinition?.kind === 'inverseTable'
+    ? 'монотонная интерполяция U(I), численное обращение для I(U)'
   : element.passiveLawDefinition?.kind === 'saturation'
     ? 'Ψ(I)=Lнас·I+(L0−Lнас)·Iнас·tanh(I/Iнас)'
     : element.type === 'R' ? 'I=U/R+kU³' : element.type === 'C' ? 'Q(U)=CU+kU³' : 'Ψ(I)=LI+kI³';

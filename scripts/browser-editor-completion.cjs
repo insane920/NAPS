@@ -106,7 +106,11 @@ const { version } = require('../package.json');
     await copy.dblclick();
     assert.equal(await dialog.locator('#passive-law').inputValue(), 'table', 'custom model survives SCM reload');
     assert.match(await dialog.locator('#passive-table').inputValue(), /-2; -0\.002/, 'table points survive SCM reload');
-    await dialog.getByRole('button', { name: 'Отмена' }).click();
+    await dialog.locator('#passive-law').selectOption('inverseTable');
+    await dialog.locator('#passive-table').fill('-0.002; -2\n0; 0\n0.002; 2');
+    await dialog.getByRole('button', { name: 'OK' }).click();
+    const [inverseDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
+    assert.match(await fs.readFile(await inverseDownload.path(), 'utf8'), /PassiveLawDefinition:.*inverseTable/, 'U(I) law is saved in SCM');
     assert.deepEqual(errors, []);
     console.log('PASS: focused library, editing, rotation and nonlinear model placement/save/undo/redo.');
   } finally {

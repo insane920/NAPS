@@ -8,7 +8,7 @@ import { COMPONENT_CATALOG, terminalGroupForType } from '../src/components/Compo
 import { renderComponentSymbol } from '../src/components/ComponentSymbol';
 import { getComponentLabelLayout, getComponentValueLabel } from '../src/utils/componentLabels';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { buildStoredWireRoute, computeOrthogonalWirePoints, getComponentPins, isAllowedWireSegment, moveWireSegment, projectPointToWire, reanchorManualWires, snapManualWirePoint, splitWireRoute, wireGapDashArray } from '../src/components/SchematicEditor';
+import { buildStoredWireRoute, canRouteReconnectedEnd, computeOrthogonalWirePoints, getComponentPins, isAllowedWireSegment, moveWireSegment, projectPointToWire, reanchorManualWires, snapManualWirePoint, splitWireRoute, wireGapDashArray } from '../src/components/SchematicEditor';
 import { buildCircuitGraph } from '../src/math/circuitSolver';
 import { nextComponentName } from '../src/utils/componentNames';
 import { paperSize, parsePrintLayout, computePrintPlacement, SCHEMATIC_UNITS_PER_MM } from '../src/utils/printLayout';
@@ -17,6 +17,18 @@ import { rasterPagePdf } from '../src/utils/rasterPdf';
 import { DEFAULT_CHIP_PINS } from '../src/utils/chipPins';
 
 const recoveryData = new Map<string, string>();
+const reconnectElements = [[100, 100], [500, 100], [300, 100]].map(([x, y], index) => ({
+  id: `route-r${index}`, name: `R${index + 1}`, type: 'R' as const, x, y,
+  rotation: 0, value: 1000, valueStr: '1к', unit: 'Ом',
+}));
+const reconnectWire = { id: 'route-wire', fromCompId: 'route-r0', fromPinId: '2',
+  toCompId: 'route-r1', toPinId: '1', routeMode: 'direct' as const,
+  waypoints: [{ x: 300, y: 100 }], manual: true };
+assert.equal(canRouteReconnectedEnd(reconnectElements, [reconnectWire], [], reconnectWire.id, 'connect', 20), false,
+  'reconnection must reject a saved bend through a component body');
+assert.equal(canRouteReconnectedEnd(reconnectElements,
+  [{ ...reconnectWire, routeMode: 'orthogonal', waypoints: undefined, manual: false }], [], reconnectWire.id, 'connect', 20), true,
+  'automatic reconnection can detour around a component');
 let storageFailed = false;
 const recoveryStorage = {
   getItem: (key: string) => recoveryData.get(key) ?? null,

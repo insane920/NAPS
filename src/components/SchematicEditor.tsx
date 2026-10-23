@@ -719,6 +719,33 @@ function automaticWireRoute(start: Point, end: Point, startRel: Point, endRel: P
   return routeAroundObstacles(start, end, startRel, endRel, grid, candidates[0], obstacles, foreign);
 }
 
+/** Refuse a reconnection whose visible route cannot reach the new electrical terminal. */
+export function canRouteReconnectedEnd(elements: CircuitElement[], wires: CircuitWire[],
+  existingRoutes: RoutedWire[], wireId: string, crossingMode: WireCrossingMode, grid: number): boolean {
+  const wire = wires.find(item => item.id === wireId);
+  if (!wire || wire.disabled) return true;
+  const from = elements.find(item => item.id === wire.fromCompId);
+  const to = elements.find(item => item.id === wire.toCompId);
+  const fromPin = from && getComponentPins(from).find(pin => pin.id === wire.fromPinId);
+  const toPin = to && getComponentPins(to).find(pin => pin.id === wire.toPinId);
+  if (!from || !to || !fromPin || !toPin) return false;
+  const start = { x: from.x + fromPin.x, y: from.y + fromPin.y };
+  const end = { x: to.x + toPin.x, y: to.y + toPin.y };
+  const obstacles = elements.map(element => componentObstacle(element)).filter((box): box is NonNullable<typeof box> => box !== null);
+  if (wire.manual || wire.routeMode === 'direct' || wire.waypoints?.length) {
+    const route = wire.routeMode === 'direct'
+      ? simplifyPoints([start, ...(wire.waypoints ?? []), end])
+      : buildStoredWireRoute(start, end, wire.waypoints ?? [], fromPin, toPin, from.type, to.type, grid);
+    return routeIsClear(route, obstacles, []);
+  }
+  const graph = buildCircuitGraph(elements, wires);
+  const ownNode = graph.pinToNode.get(`${wire.fromCompId}_${wire.fromPinId}`);
+  const foreign = crossingMode === 'connect' ? existingRoutes.filter(route =>
+    route.wire.id !== wireId && !route.wire.disabled &&
+    graph.pinToNode.get(`${route.wire.fromCompId}_${route.wire.fromPinId}`) !== ownNode).map(route => route.points) : [];
+  return automaticWireRoute(start, end, fromPin, toPin, from.type, to.type, grid, elements, foreign) !== null;
+}
+
 export function pointsToSvgPath(pts: Point[]): string {
   if (pts.length === 0) return '';
   let d = `M ${pts[0].x} ${pts[0].y}`;
@@ -2271,6 +2298,14 @@ export function SchematicEditor({
         const hit = endpointTargetAt(pos.rawX, pos.rawY, endpointDrag.wireId);
         const next = reconnectWireEndpoint(elements, wires, wireGeometries, endpointDrag.wireId, endpointDrag.end, hit.target);
         if (next.changed) {
+          if (!canRouteReconnectedEnd(next.elements, next.wires, wireGeometries,
+            endpointDrag.wireId, crossingMode, gridUnits)) {
+            window.alert('Переподключение отменено: провод пересёк бы элемент или для него нет безопасного маршрута. Измените трассу вручную.');
+            setEndpointDrag(null);
+            setHoveredPin(null);
+            setHoveredWirePoint(null);
+            return;
+          }
           onBeginContinuousEdit?.();
           geometryActionPending.current = crossingMode === 'connect';
           if (next.elements !== elements) onElementsChange(next.elements);

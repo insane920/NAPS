@@ -80,7 +80,43 @@ const center = locator => locator.evaluate(node => {
     const [detachDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
     const detached = await fs.readFile(await detachDownload.path(), 'utf8');
     assert.match(detached, /Disabled: true/, 'free end is saved as a disabled grey connection');
+    const blockedFixture = await page.evaluate(async scm => {
+      const { parseYamlScm, exportToYamlScm } = await import('/src/utils/yamlScm.ts');
+      const parsed = parseYamlScm(scm);
+      parsed.elements.push({ id: 'blocking-r4', name: 'R4', type: 'R', x: 420, y: 280,
+        rotation: 0, value: 1000, valueStr: '1к', unit: 'Ом' });
+      return exportToYamlScm(parsed.elements, parsed.wires, parsed.transient,
+        parsed.ac, parsed.printLayout, 'current', 'connect');
+    }, fixture);
+    await page.locator('input[type="file"]').setInputFiles({ name: 'blocked-reconnect.scm',
+      mimeType: 'text/plain', buffer: Buffer.from(blockedFixture) });
+    const blockedPin = (component, terminal) => page.locator('[data-component-id]').nth(component)
+      .locator('circle[fill="transparent"].cursor-pointer').nth(terminal);
+    const blockedFirst = await center(blockedPin(0, 1));
+    const blockedOld = await center(blockedPin(1, 0));
+    const blockedNext = await center(blockedPin(2, 0));
+    await page.mouse.click((blockedFirst.x + blockedOld.x) / 2, blockedFirst.y);
+    const blockedHandle = page.locator('[data-wire-end$=":to"]');
+    await blockedHandle.waitFor();
+    const blockedStart = await center(blockedHandle);
+    const alert = page.waitForEvent('dialog').then(async warning => {
+      const message = warning.message();
+      await warning.accept();
+      return message;
+    });
+    await page.mouse.move(blockedStart.x, blockedStart.y); await page.mouse.down();
+    await page.mouse.move(blockedNext.x, blockedNext.y, { steps: 6 }); await page.mouse.up();
+    assert.match(await alert, /Переподключение отменено/);
+    const [blockedDownload] = await Promise.all([page.waitForEvent('download'),
+      page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
+    const blockedScm = await fs.readFile(await blockedDownload.path(), 'utf8');
+    const preserved = await page.evaluate(async scm => {
+      const { parseYamlScm } = await import('/src/utils/yamlScm.ts');
+      const parsed = parseYamlScm(scm);
+      return parsed.elements.find(element => element.id === parsed.wires[0].toCompId)?.name;
+    }, blockedScm);
+    assert.equal(preserved, 'R2', 'blocked reconnection leaves the old electrical endpoint intact');
     assert.equal(errors.length, 0, errors.join('\n'));
-    console.log('PASS: endpoint preview, pin reconnection, free disconnection, Escape, SCM 8 topology, preserved bend and atomic Undo/Redo.');
+    console.log('PASS: endpoint preview, pin reconnection, blocked-route cancellation, free disconnection, Escape, SCM 8 topology, preserved bend and atomic Undo/Redo.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

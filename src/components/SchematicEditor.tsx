@@ -55,6 +55,7 @@ interface SchematicEditorProps {
   onWiresChange: (wires: CircuitWire[]) => void;
   onBeginContinuousEdit?: () => void;
   onEndContinuousEdit?: () => void;
+  onCancelContinuousEdit?: () => void;
   onSelectElement: (element: CircuitElement) => void;
   onOpenProperties: (element: CircuitElement) => void;
   onRunSimulation: () => void;
@@ -980,6 +981,7 @@ export function SchematicEditor({
   onWiresChange,
   onBeginContinuousEdit,
   onEndContinuousEdit,
+  onCancelContinuousEdit,
   onSelectElement,
   onOpenProperties,
   onRunSimulation,
@@ -1101,6 +1103,7 @@ export function SchematicEditor({
 
   // Перетаскивание элемента
   const [draggingElemId, setDraggingElemId] = useState<string | null>(null);
+  const junctionDragIntent = useRef<{ id: string; clientX: number; clientY: number } | null>(null);
   const groupDragIds = useRef<Set<string> | null>(null);
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const wireSegmentDrag = useRef<{ wireId: string; segmentIndex: number; points: Point[]; started: boolean; prepared?: boolean } | null>(null);
@@ -1207,6 +1210,7 @@ export function SchematicEditor({
       if (draggingElemId) onEndContinuousEdit?.();
       if (wireSegmentDrag.current?.started) onEndContinuousEdit?.();
       wireSegmentDrag.current = null;
+      junctionDragIntent.current = null;
       setEndpointDrag(null);
       wirePointerDown.current = false;
       if (event.type === 'blur') {
@@ -1332,6 +1336,18 @@ export function SchematicEditor({
     },
     [pan, zoom, gridUnits]
   );
+  const junctionAtPointer = (clientX: number, clientY: number) => {
+    const pointer = screenToWorld(clientX, clientY);
+    const radius = 9 / zoom;
+    let nearest: CircuitElement | null = null;
+    let distance = radius;
+    for (const element of elements) {
+      if (element.type !== 'JUNCTION') continue;
+      const current = Math.hypot(pointer.rawX - element.x, pointer.rawY - element.y);
+      if (current <= distance) { nearest = element; distance = current; }
+    }
+    return nearest;
+  };
 
   // Горячие клавиши редактора и быстрый выбор элемента из библиотеки.
   useEffect(() => {
@@ -1421,6 +1437,18 @@ export function SchematicEditor({
       if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
 
       if (e.key === 'Escape') {
+        if (draggingElemId && elements.some(element => element.id === draggingElemId && element.type === 'JUNCTION') && geometryDragChanged.current) {
+          e.preventDefault();
+          junctionDragIntent.current = null;
+          normalizedThisDrag.current = true;
+          geometryDragChanged.current = false;
+          setDraggingElemId(null);
+          groupDragIds.current = null;
+          onCancelContinuousEdit?.();
+          return;
+        }
+        junctionDragIntent.current = null;
+        setDraggingElemId(null);
         setEndpointDrag(null);
         setOverlapChoice(null);
         setWiringFrom(null);
@@ -1471,7 +1499,7 @@ export function SchematicEditor({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedId, selectedIds, selectedSet, selectedWireId, copiedElement, copiedGroup, elements, wires, onElementsChange, onWiresChange, changeElementGeometry, onOpenProperties, onSelectElement, onRunSimulation, shortcutsEnabled, isPaletteOpen, shortcutSettingsOpen, appearanceOpen, editorShortcuts]);
+    }, [selectedId, selectedIds, selectedSet, selectedWireId, copiedElement, copiedGroup, elements, wires, onElementsChange, onWiresChange, changeElementGeometry, onOpenProperties, onSelectElement, onRunSimulation, shortcutsEnabled, isPaletteOpen, shortcutSettingsOpen, appearanceOpen, editorShortcuts, onCancelContinuousEdit]);
 
   // Добавление нового компонента на схему
   const handlePlaceNewComponent = (type: ComponentType, worldX: number, worldY: number, replaceId = replacingId) => {
@@ -2104,12 +2132,20 @@ export function SchematicEditor({
     // не пересчитывая hover, чтобы исключить любые конфликты и дерганья проводов
     if (draggingElemId) {
       if (e.buttons === 0) { setDraggingElemId(null); return; }
+      const intent = junctionDragIntent.current;
+      if (intent?.id === draggingElemId &&
+          Math.hypot(e.clientX - intent.clientX, e.clientY - intent.clientY) < 5) return;
+      junctionDragIntent.current = null;
       setHoveredPin(null);
       setHoveredWirePoint(null);
       const targetX = snapToGrid(pos.rawX - dragOffset.x);
       const targetY = snapToGrid(pos.rawY - dragOffset.y);
       const dragged = elements.find(element => element.id === draggingElemId);
       if (dragged && (dragged.x !== targetX || dragged.y !== targetY)) {
+        if (dragged.type === 'JUNCTION') {
+          for (const wire of wires) if (wire.fromCompId === dragged.id || wire.toCompId === dragged.id)
+            automaticRouteCache.current.delete(wire.id);
+        }
         if (!geometryDragChanged.current) onBeginContinuousEdit?.();
         geometryDragChanged.current = true;
         const base = crossingMode === 'connect' && dragged.type !== 'JUNCTION'
@@ -2220,6 +2256,7 @@ export function SchematicEditor({
       setPaletteDragGroup(null);
     }
     if (draggingElemId || wireSegmentDrag.current?.started) normalizeReleasedDrag.current();
+    junctionDragIntent.current = null;
     if (draggingElemId) onEndContinuousEdit?.();
     if (wireSegmentDrag.current?.started) onEndContinuousEdit?.();
     wireSegmentDrag.current = null;
@@ -2369,6 +2406,10 @@ export function SchematicEditor({
     const pos = screenToWorld(e.clientX, e.clientY);
 
     if (pendingComponentType) return;
+    if (!(wiringFromRef.current ?? wiringFrom) && el.type !== 'JUNCTION') {
+      const junction = junctionAtPointer(e.clientX, e.clientY);
+      if (junction) { handleElementMouseDown(e, junction); return; }
+    }
     if (e.shiftKey || e.ctrlKey || e.metaKey) {
       const next = selectedIds.includes(el.id) ? selectedIds.filter(id => id !== el.id) : [...selectedIds, el.id];
       setSelectedIds(next);
@@ -2391,6 +2432,8 @@ export function SchematicEditor({
       geometryDragChanged.current = false;
       normalizedThisDrag.current = false;
       setDraggingElemId(el.id);
+      junctionDragIntent.current = el.type === 'JUNCTION'
+        ? { id: el.id, clientX: e.clientX, clientY: e.clientY } : null;
       groupDragIds.current = new Set(ids);
       setDragOffset({ x: pos.rawX - el.x, y: pos.rawY - el.y });
       return;
@@ -2607,12 +2650,15 @@ export function SchematicEditor({
               const definition = COMPONENT_CATALOG.find(item => item.type === type);
               return <div key={group.id} className={`flex shrink-0 items-center gap-0.5 rounded border p-0.5 ${paletteDragGroup === group.id ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-white'}`} title={`${group.label}: удерживайте ЛКМ и перенесите на схему; колесо меняет элемент`}>
                 <span className="px-1 text-[10px] font-bold text-slate-500">{group.id === 'two' ? '2-пол.' : group.id === 'three' ? '3-пол.' : group.id === 'four' ? '4-пол.' : 'много'}</span>
-                <button type="button" disabled={!type} onMouseDown={event => { if (event.button !== 0 || !type) return; event.preventDefault(); setPaletteDragGroup(group.id); setPendingComponentType(type); wiringFromRef.current = null; setWiringFrom(null); setWiringCursor(null); setWiringWaypoints([]); }} className="flex h-8 min-w-20 items-center gap-1 rounded bg-slate-50 px-1.5 text-[10px] font-semibold text-slate-700 hover:bg-blue-100 disabled:opacity-40">
-                  {type && <ComponentSymbol type={type} className="quick-component-symbol" />}<span className="max-w-16 truncate">{definition?.name ?? 'Нет элементов'}</span>
+                <button type="button" disabled={!type} aria-label={definition?.name ?? 'Нет элементов'} title={definition?.name ?? 'Нет элементов'} onMouseDown={event => { if (event.button !== 0 || !type) return; event.preventDefault(); setPaletteDragGroup(group.id); setPendingComponentType(type); wiringFromRef.current = null; setWiringFrom(null); setWiringCursor(null); setWiringWaypoints([]); }} className="flex h-8 w-9 items-center justify-center rounded bg-slate-50 px-1 text-[10px] font-semibold text-slate-700 hover:bg-blue-100 disabled:opacity-40">
+                  {type && <ComponentSymbol type={type} className="quick-component-symbol" />}
                 </button>
-                <select aria-label={`${group.label}: выбрать элемент`} value={type || ''} disabled={!options.length} onChange={e => { const selected = e.target.value as ComponentType; setQuickTypes(current => ({ ...current, [group.id]: selected })); setPendingComponentType(selected); setPaletteDragGroup(null); }} className="w-6 bg-white text-xs text-slate-700" title={`Открыть список: ${group.label}`}>
-                  {options.length ? options.map(item => <option key={item.type} value={item.type}>{item.name}</option>) : <option value="">Нет элементов</option>}
-                </select>
+                <span className="relative flex h-8 w-5 items-center justify-center text-[10px] text-slate-700" title={`Открыть список: ${group.label}`}>
+                  <span aria-hidden="true" className="pointer-events-none">▼</span>
+                  <select aria-label={`${group.label}: выбрать элемент`} value={type || ''} disabled={!options.length} onChange={e => { const selected = e.target.value as ComponentType; setQuickTypes(current => ({ ...current, [group.id]: selected })); setPendingComponentType(selected); setPaletteDragGroup(null); }} className="absolute inset-0 h-full w-full cursor-pointer opacity-0" title={`Открыть список: ${group.label}`}>
+                    {options.length ? options.map(item => <option key={item.type} value={item.type}>{item.name}</option>) : <option value="">Нет элементов</option>}
+                  </select>
+                </span>
               </div>;
             })}
             <button type="button" onClick={() => { wiringFromRef.current = null; setWiringFrom(null); setWiringCursor(null); setWiringWaypoints([]); setPendingComponentType('GND'); }} className="shrink-0 whitespace-nowrap rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100" title="Поставить опорный потенциал 0 В">⏚ 0 В</button>
@@ -2998,6 +3044,12 @@ export function SchematicEditor({
                     e.stopPropagation();
                     if (e.button === 2) { wiringFromRef.current = null; wirePointerDown.current = false; setWiringFrom(null); setWiringCursor(null); setWiringWaypoints([]); return; }
                     if (e.button !== 0 || pendingComponentType) return;
+                    // A junction is an electrical object above the wire route in hit priority,
+                    // even when a wide wire hit path receives the DOM event first.
+                    if (!wiringFrom) {
+                      const junction = junctionAtPointer(e.clientX, e.clientY);
+                      if (junction) { elementMouseDownRef.current(e, junction); return; }
+                    }
                     if (wiringFrom) {
                       const pos = screenToWorld(e.clientX, e.clientY);
                       const hit = projectPointToWire(wg.points, { x: pos.rawX, y: pos.rawY }, gridUnits);
@@ -3203,8 +3255,8 @@ export function SchematicEditor({
                           <circle r={10} fill="transparent" />
                           <circle r={3.5} fill={isSelected ? '#dc2626' : appearance.wire} pointerEvents="none" />
                           <circle data-export-hide="true" r={6} fill="none" stroke="#2563eb" strokeWidth={1.5} pointerEvents="none" className={isSelected ? '' : 'opacity-0 group-hover:opacity-100'} />
-                          <circle r={6 / zoom} fill="transparent" className="cursor-pointer"
-                            onMouseDown={(e) => handlePinClick(e, el.id, '1', el.x, el.y)}
+                          <circle data-node-hit={el.id} r={Math.max(8, 9 / zoom)} fill="transparent" className={wiringFrom ? 'cursor-crosshair' : 'cursor-move'}
+                            onMouseDown={(e) => { if (e.altKey || (wiringFromRef.current ?? wiringFrom)) handlePinClick(e, el.id, '1', el.x, el.y); }}
                             onMouseUp={(e) => handlePinMouseUp(e, el.id, '1', el.x, el.y)} />
                         </g>
                       : renderComponentSymbol(el, isSelected && !el.isolation, el.type !== 'PORT', appearance.element)}
@@ -3337,6 +3389,8 @@ export function SchematicEditor({
                   cx={point.x} cy={point.y} r={7 / zoom} fill="#ffffff" stroke="#2563eb" strokeWidth={2 / zoom}
                   className="cursor-grab" aria-label={`Переподключить ${end === 'from' ? 'начало' : 'конец'} провода`}
                   onMouseDown={event => { if (event.button !== 0) return; event.stopPropagation();
+                    const junction = junctionAtPointer(event.clientX, event.clientY);
+                    if (junction && !event.altKey) { elementMouseDownRef.current(event, junction); return; }
                     wireSegmentDrag.current = null; setEndpointDrag({ wireId: selectedWireId, end, points: geometry.points, cursor: point }); }} />;
               });
             })()}

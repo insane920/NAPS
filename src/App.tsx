@@ -139,6 +139,13 @@ export default function App() {
     undoStack.current.push(cloneSnapshot(currentSnapshot.current));
     restoreSnapshot(next, 'Действие повторено');
   }, [restoreSnapshot]);
+  const cancelContinuousHistory = useCallback(() => {
+    if (!continuousHistoryGroup.current) return;
+    continuousHistoryGroup.current = false;
+    const previous = undoStack.current.pop();
+    if (previous) restoreSnapshot(previous, 'Перемещение отменено');
+    else closeHistoryGroup();
+  }, [restoreSnapshot, closeHistoryGroup]);
   useEffect(() => () => { worker.current?.terminate(); if (historyGroupTimer.current) clearTimeout(historyGroupTimer.current); }, []);
   useEffect(() => { document.title = `${dirty ? '• ' : ''}${name} — NAPS ${appVersion}`; }, [dirty, name]);
   useEffect(() => {
@@ -343,7 +350,7 @@ export default function App() {
       {recoveryError && <div role="alert" className="bg-amber-50 px-3 py-2 text-sm text-amber-900">{recoveryError}</div>}
       <main className="workspace">
         <SchematicEditor elements={elements} wires={wires} printLayout={printLayout} description={description} onPrintLayoutChange={value => { beginHistoryChange(); currentSnapshot.current = { ...currentSnapshot.current, printLayout: value, dirty: true }; setPrintLayout(value); markChanged(); }} onElementsChange={changeElements} onWiresChange={changeWires}
-          onBeginContinuousEdit={beginContinuousHistory} onEndContinuousEdit={endContinuousHistory}
+          onBeginContinuousEdit={beginContinuousHistory} onEndContinuousEdit={endContinuousHistory} onCancelContinuousEdit={cancelContinuousHistory}
           onSelectElement={() => {}} onOpenProperties={setSelected} onRunSimulation={runSimulation}
           onOpenTransientSettings={() => setSettingsOpen(true)} onLoadSample={loadSample} onClearProject={clearProject} crossingMode={crossingMode}
           onBuildPlot={runSimulation} isGraphOpen={graphOpen} isSimulating={busy} shortcutsEnabled={!modalOpen} viewRevision={viewRevision} fitRevision={fitRevision} onHoverStatus={setHoverStatus} />

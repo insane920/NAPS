@@ -1111,6 +1111,9 @@ export function SchematicEditor({
   const geometryDragChanged = useRef(false);
   const normalizedThisDrag = useRef(false);
   const normalizeReleasedDrag = useRef<() => void>(() => {});
+  const unroutedBeforeDrag = useRef<Set<string>>(new Set());
+  const dragReleaseHandled = useRef(false);
+  const finishGeometryDrag = useRef<() => void>(() => {});
   const geometryActionPending = useRef(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1206,9 +1209,7 @@ export function SchematicEditor({
   }, [contextMenu]);
   useEffect(() => {
     const releaseDrag = (event: MouseEvent | FocusEvent) => {
-      if (draggingElemId || wireSegmentDrag.current?.started) normalizeReleasedDrag.current();
-      if (draggingElemId) onEndContinuousEdit?.();
-      if (wireSegmentDrag.current?.started) onEndContinuousEdit?.();
+      if (draggingElemId || wireSegmentDrag.current?.started) finishGeometryDrag.current();
       wireSegmentDrag.current = null;
       junctionDragIntent.current = null;
       setEndpointDrag(null);
@@ -1771,6 +1772,7 @@ export function SchematicEditor({
       pathD: string;
       unrouted: boolean;
     }> = [];
+    const obstacles = elements.map(element => componentObstacle(element)).filter((box): box is NonNullable<typeof box> => box !== null);
 
     for (const wire of wires) {
       const p1 = pinPositions.get(`${wire.fromCompId}_${wire.fromPinId}`);
@@ -1785,11 +1787,11 @@ export function SchematicEditor({
       let unrouted = false;
       if (fixedRoutes.has(wire.id)) {
         pts = fixedRoutes.get(wire.id)!;
+        unrouted = !wire.disabled && !routeIsClear(pts, obstacles, []);
       } else {
         const old = automaticRouteCache.current.get(wire.id);
         const previous = old && buildStoredWireRoute(p1, p2, old.slice(1, -1),
           { x: p1.relX, y: p1.relY }, { x: p2.relX, y: p2.relY }, p1.elType, p2.elType, gridUnits);
-        const obstacles = elements.map(element => componentObstacle(element)).filter((box): box is NonNullable<typeof box> => box !== null);
         const safeRoute = previous && routeIsClear(previous, obstacles, foreignRoutes) ? previous
           : automaticWireRoute(p1, p2, { x: p1.relX, y: p1.relY }, { x: p2.relX, y: p2.relY },
             p1.elType, p2.elType, gridUnits, elements, foreignRoutes);
@@ -1829,6 +1831,21 @@ export function SchematicEditor({
       window.alert(cause instanceof Error ? cause.message : 'Не удалось обновить пересечения проводов.');
     }
   };
+  finishGeometryDrag.current = () => {
+    if (dragReleaseHandled.current) return;
+    dragReleaseHandled.current = true;
+    const newlyUnrouted = wireGeometries.some(geometry =>
+      geometry.unrouted && !unroutedBeforeDrag.current.has(geometry.wire.id));
+    if (newlyUnrouted && (geometryDragChanged.current || wireSegmentDrag.current?.started)) {
+      normalizedThisDrag.current = true;
+      geometryDragChanged.current = false;
+      onCancelContinuousEdit?.();
+      window.alert('Перемещение отменено: для подключённого провода нет безопасного маршрута. Освободите место или измените трассу вручную.');
+    } else {
+      normalizeReleasedDrag.current();
+      onEndContinuousEdit?.();
+    }
+  };
   const sceneLabels = useMemo(() => arrangeComponentLabels(elements, wireGeometries, elements.flatMap(element => {
     const pins = getComponentPins(element);
     const xs = [-20, 20, ...pins.map(pin => pin.x)], ys = [-20, 20, ...pins.map(pin => pin.y)];
@@ -1849,30 +1866,42 @@ export function SchematicEditor({
     })
   )), [wireGeometries]);
 
-  const endpointTargetAt = (x: number, y: number, sourceWireId: string):
-    { target: ReconnectTarget; point: Point } => {
+  // Shared connection hit test for wire preview and endpoint reconnection.
+  // Pins (including explicit junctions) always take precedence over a wide wire stroke.
+  const connectionHitAt = (x: number, y: number, excludedWireId?: string):
+    | { kind: 'pin'; pin: NonNullable<ReturnType<typeof pinPositions.get>> }
+    | { kind: 'wire'; wireId: string; segmentIndex: number; point: Point }
+    | null => {
     let nearestPin: ReturnType<typeof pinPositions.get>;
     let pinDistance = 12 / zoom;
     for (const pin of pinSpatialIndex.query(x, y, pinDistance)) {
       const distance = Math.hypot(x - pin.x, y - pin.y);
       if (distance <= pinDistance) { nearestPin = pin; pinDistance = distance; }
     }
-    if (nearestPin) return { target: { kind: 'pin', compId: nearestPin.compId, pinId: nearestPin.pinId },
-      point: { x: nearestPin.x, y: nearestPin.y } };
-    let wireHit: { target: ReconnectTarget; point: Point } | null = null;
+    if (nearestPin) return { kind: 'pin', pin: nearestPin };
+    let wireHit: { kind: 'wire'; wireId: string; segmentIndex: number; point: Point } | null = null;
     let wireDistance = 8 / zoom;
     for (const segment of wireSpatialIndex.query(x, y, wireDistance)) {
-      if (segment.wireId === sourceWireId) continue;
+      if (segment.wireId === excludedWireId) continue;
       const geometry = wireGeometries.find(item => item.wire.id === segment.wireId);
       if (!geometry || geometry.wire.disabled) continue;
       const hit = projectPointToWire(geometry.points, { x, y }, gridUnits);
       if (hit && hit.distance <= wireDistance) {
         wireDistance = hit.distance;
-        wireHit = { target: { kind: 'wire', wireId: segment.wireId, segmentIndex: hit.segmentIndex, point: hit.point }, point: hit.point };
+        wireHit = { kind: 'wire', wireId: segment.wireId, segmentIndex: hit.segmentIndex, point: hit.point };
       }
     }
-    return wireHit ?? { target: { kind: 'free', point: { x: snapToGrid(x), y: snapToGrid(y) } },
-      point: { x: snapToGrid(x), y: snapToGrid(y) } };
+    return wireHit;
+  };
+  const endpointTargetAt = (x: number, y: number, sourceWireId: string):
+    { target: ReconnectTarget; point: Point } => {
+    const hit = connectionHitAt(x, y, sourceWireId);
+    if (hit?.kind === 'pin') return { target: { kind: 'pin', compId: hit.pin.compId, pinId: hit.pin.pinId },
+      point: { x: hit.pin.x, y: hit.pin.y } };
+    if (hit?.kind === 'wire') return { target: { kind: 'wire', wireId: hit.wireId,
+      segmentIndex: hit.segmentIndex, point: hit.point }, point: hit.point };
+    const point = { x: snapToGrid(x), y: snapToGrid(y) };
+    return { target: { kind: 'free', point }, point };
   };
 
   // Разделение провода и создание подвижного узла (JUNCTION)
@@ -2176,30 +2205,14 @@ export function SchematicEditor({
       return;
     }
 
-    // 1. Поиск ближайшего вывода (Магнитный захват с увеличенным радиусом 28px для надежной фиксации)
-    let foundPin: { compId: string; pinId: string; x: number; y: number; name: string } | null = null;
-    let minPinDist = 12 / zoom;
-    for (const pin of pinSpatialIndex.query(pos.rawX, pos.rawY, minPinDist)) {
-      const dist = Math.hypot(pos.rawX - pin.x, pos.rawY - pin.y);
-      if (dist <= minPinDist) {
-        minPinDist = dist;
-        foundPin = { compId: pin.compId, pinId: pin.pinId, x: pin.x, y: pin.y, name: `${pin.componentName}.${pin.name}` };
-      }
-    }
+    const connectionHit = connectionHitAt(pos.rawX, pos.rawY);
+    const foundPin = connectionHit?.kind === 'pin' ? { compId: connectionHit.pin.compId,
+      pinId: connectionHit.pin.pinId, x: connectionHit.pin.x, y: connectionHit.pin.y,
+      name: `${connectionHit.pin.componentName}.${connectionHit.pin.name}` } : null;
     setHoveredPin(current => current?.compId === foundPin?.compId && current?.pinId === foundPin?.pinId ? current : foundPin);
 
-    // 2. Если пин не найден — проверяем наведение на сегменты существующих проводов
-    let foundWirePoint: { wireId: string; x: number; y: number } | null = null;
-    if (wiringFrom && !foundPin) {
-      let minWireDist = 8 / zoom;
-      for (const segment of wireSpatialIndex.query(pos.rawX, pos.rawY, minWireDist)) {
-        const hit = projectPointToWire([segment.a, segment.b], { x: pos.rawX, y: pos.rawY }, gridUnits);
-        if (hit && hit.distance <= minWireDist) {
-          minWireDist = hit.distance;
-          foundWirePoint = { wireId: segment.wireId, ...hit.point };
-        }
-      }
-    }
+    const foundWirePoint = wiringFrom && connectionHit?.kind === 'wire'
+      ? { wireId: connectionHit.wireId, ...connectionHit.point } : null;
     setHoveredWirePoint(current => current?.wireId === foundWirePoint?.wireId &&
       current?.x === foundWirePoint?.x && current?.y === foundWirePoint?.y ? current : foundWirePoint);
 
@@ -2255,10 +2268,8 @@ export function SchematicEditor({
       handlePlaceNewComponent(pendingComponentType, pos.x, pos.y);
       setPaletteDragGroup(null);
     }
-    if (draggingElemId || wireSegmentDrag.current?.started) normalizeReleasedDrag.current();
+    if (draggingElemId || wireSegmentDrag.current?.started) finishGeometryDrag.current();
     junctionDragIntent.current = null;
-    if (draggingElemId) onEndContinuousEdit?.();
-    if (wireSegmentDrag.current?.started) onEndContinuousEdit?.();
     wireSegmentDrag.current = null;
     if (wirePointerDown.current) {
       wirePointerDown.current = false;
@@ -2431,6 +2442,8 @@ export function SchematicEditor({
       setWiringCursor(null);
       geometryDragChanged.current = false;
       normalizedThisDrag.current = false;
+      dragReleaseHandled.current = false;
+      unroutedBeforeDrag.current = new Set(wireGeometries.filter(geometry => geometry.unrouted).map(geometry => geometry.wire.id));
       setDraggingElemId(el.id);
       junctionDragIntent.current = el.type === 'JUNCTION'
         ? { id: el.id, clientX: e.clientX, clientY: e.clientY } : null;
@@ -3062,6 +3075,8 @@ export function SchematicEditor({
                       if (hit) {
                         geometryDragChanged.current = false;
                         normalizedThisDrag.current = false;
+                        dragReleaseHandled.current = false;
+                        unroutedBeforeDrag.current = new Set(wireGeometries.filter(geometry => geometry.unrouted).map(geometry => geometry.wire.id));
                         wireSegmentDrag.current = { wireId: wire.id, segmentIndex: hit.segmentIndex, points: wg.points, started: false };
                       }
                     }

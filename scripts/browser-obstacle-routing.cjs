@@ -82,7 +82,30 @@ const fs = require('node:fs/promises');
     await page.mouse.click(target.x, target.y);
     assert.match(dialogs.join(' '), /Не удалось проложить провод/);
     assert.equal(await page.locator('[data-wire-id]').count(), 0, 'blocked wire was not saved');
+    const moveScm = await page.evaluate(async () => {
+      const { exportToYamlScm } = await import('/src/utils/yamlScm.ts');
+      const { SAMPLE_CIRCUITS } = await import('/src/data/sampleCircuits.ts');
+      const resistor = (id, x, y) => ({ id, name: id, type: 'R', x, y, rotation: 0, value: 1000, valueStr: '1к', unit: 'Ом' });
+      return exportToYamlScm([resistor('A', 100, 200), resistor('B', 500, 200), resistor('BLOCK', 160, 300)],
+        [{ id: 'ab', fromCompId: 'A', fromPinId: '2', toCompId: 'B', toPinId: '1' }],
+        SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect');
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: 'move-blocked.scm', mimeType: 'text/plain', buffer: Buffer.from(moveScm) });
+    await page.keyboard.press('Escape');
+    const movingBlock = page.locator('[data-component-id]').filter({ hasText: 'BLOCK' });
+    const beforeMove = await movingBlock.getAttribute('transform');
+    const blockCenter = await movingBlock.evaluate(group => {
+      const point = group.ownerSVGElement.createSVGPoint(); point.x = 0; point.y = 0;
+      const screen = point.matrixTransform(group.getScreenCTM());
+      return { x: screen.x, y: screen.y, scale: group.getScreenCTM().d };
+    });
+    await page.mouse.move(blockCenter.x, blockCenter.y); await page.mouse.down();
+    await page.mouse.move(blockCenter.x, blockCenter.y - 100 * blockCenter.scale, { steps: 8 }); await page.mouse.up();
+    assert.match(dialogs.join(' '), /Перемещение отменено.*нет безопасного маршрута/);
+    assert.equal(await movingBlock.getAttribute('transform'), beforeMove, 'impossible move restores component position');
+    await page.keyboard.press('Control+z');
+    assert.equal(await movingBlock.getAttribute('transform'), beforeMove, 'cancelled move does not enter undo history');
     assert.deepEqual(errors, []);
-    console.log('PASS: obstacle detours, no-route diagnostics, SCM 7/8 topology and round trip.');
+    console.log('PASS: obstacle detours, safe cancellation, SCM 7/8 topology and round trip.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -15,6 +15,11 @@ export interface CalculationReport {
   statisticsFormula: string;
 }
 const n = numberText;
+const nonlinearLawName = (element: CircuitElement): string => element.passiveLawDefinition?.kind === 'table'
+  ? 'монотонная интерполяция заданных точек'
+  : element.passiveLawDefinition?.kind === 'saturation'
+    ? 'Ψ(I)=Lнас·I+(L0−Lнас)·Iнас·tanh(I/Iнас)'
+    : element.type === 'R' ? 'I=U/R+kU³' : element.type === 'C' ? 'Q(U)=CU+kU³' : 'Ψ(I)=LI+kI³';
 
 /** Builds a readable derivation from the exact result used by the graph. No pass/fail judgement. */
 export function buildCalculationReport(elements: CircuitElement[], wires: CircuitWire[], settings: TransientSettings, results: CircuitSimulationResults, sampleIndex: number): CalculationReport {
@@ -114,14 +119,14 @@ export function buildCalculationReport(elements: CircuitElement[], wires: Circui
         balance.set(base, (balance.get(base) ?? 0) + model.currents[2]);
       }
       add(`U(${e.name})`, `U = V(${p}) − V(${m})`, `${n(potential(p))} − (${n(potential(m))})`, u, 'В');
-      if (e.type === 'R') add(`I(${e.name})`, e.passiveModel === 'nonlinear' ? 'I = U/R + kU³' : 'I = U/R',
-        e.passiveModel === 'nonlinear' ? `${n(u)}/${n(e.value)} + ${n(e.modelParams?.cubicCoefficient)}·(${n(u)})³` : `${n(u)}/${n(e.value)}`, i, 'А');
+      if (e.type === 'R') add(`I(${e.name})`, e.passiveModel === 'nonlinear' ? nonlinearLawName(e) : 'I = U/R',
+        e.passiveModel === 'nonlinear' ? `I(${n(u)} В)=${n(passiveLaw(e, u).value)} А` : `${n(u)}/${n(e.value)}`, i, 'А');
       else if (e.type === 'C') {
         if (!k) add(`${e.name}: начальное условие`, 'U_C[0] = IC', n(e.initialCondition ?? 0), u, 'В');
         const oldU = results.elementVoltages?.[e.name]?.[k - 1] ?? 0;
-        add(`I(${e.name})`, k ? e.passiveModel === 'nonlinear' ? 'I_C[k] = (Q(U_C[k])−Q(U_C[k−1]))/h; Q(U)=CU+kU³' : 'I_C[k] = C·(U_C[k]−U_C[k−1])/h' : 'I_C[0] определяется уравнениями Кирхгофа', k ? e.passiveModel === 'nonlinear' ? `(${n(passiveLaw(e, u).value)}−${n(passiveLaw(e, oldU).value)})/${n(h)}` : `${n(e.value)}·(${n(u)}−${n(oldU)})/${n(h)}` : `I_C[0]=${n(i)}`, i, 'А');
+        add(`I(${e.name})`, k ? e.passiveModel === 'nonlinear' ? `I_C[k] = (Q(U_C[k])−Q(U_C[k−1]))/h; ${nonlinearLawName(e)}` : 'I_C[k] = C·(U_C[k]−U_C[k−1])/h' : 'I_C[0] определяется уравнениями Кирхгофа', k ? e.passiveModel === 'nonlinear' ? `(${n(passiveLaw(e, u).value)}−${n(passiveLaw(e, oldU).value)})/${n(h)}` : `${n(e.value)}·(${n(u)}−${n(oldU)})/${n(h)}` : `I_C[0]=${n(i)}`, i, 'А');
       } else if (e.type === 'L') {
-        if (k) add(`${e.name}: уравнение ветви`, e.passiveModel === 'nonlinear' ? 'U_L[k] = (Ψ(I_L[k])−Ψ(I_L[k−1]))/h; Ψ(I)=LI+kI³' : 'U_L[k] = L·(I_L[k]−I_L[k−1])/h',
+        if (k) add(`${e.name}: уравнение ветви`, e.passiveModel === 'nonlinear' ? `U_L[k] = (Ψ(I_L[k])−Ψ(I_L[k−1]))/h; ${nonlinearLawName(e)}` : 'U_L[k] = L·(I_L[k]−I_L[k−1])/h',
           e.passiveModel === 'nonlinear' ? `(${n(passiveLaw(e, i).value)}−${n(passiveLaw(e, results.branchCurrents[e.name][k - 1]).value)})/${n(h)}` : `${n(e.value)}·(${n(i)}−${n(results.branchCurrents[e.name][k - 1])})/${n(h)}`, u, 'В');
         add(`I(${e.name})`, k ? 'I_L[k] — ток, решённый системой Кирхгофа' : 'I_L[0] = IC', k ? `I_L[k]=${n(i)}` : `IC=${n(e.initialCondition ?? 0)}`, i, 'А');
       }

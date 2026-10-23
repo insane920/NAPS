@@ -2,6 +2,7 @@ import { CircuitElement, CircuitWire, TransientSettings, ACSettings, type WireCr
 import { getCircuitPinIds, parseEngValue } from '../math/circuitSolver';
 import { DEFAULT_PRINT_LAYOUT, parsePrintLayout, SCHEMATIC_UNITS_PER_MM, type PrintLayout } from './printLayout';
 import { validateChipPins } from './chipPins';
+import { validatePassiveModel } from '../math/passiveModel';
 
 /**
  * ТЗ Секция 5: Формат файла проекта YAML (.scm)
@@ -139,6 +140,10 @@ export function exportToYamlScm(
     if (el.type === 'DIODE' && el.diodeModel) params['DiodeModel'] = el.diodeModel;
     if (el.transistorModel) params['TransistorModel'] = el.transistorModel;
     if (['R', 'C', 'L'].includes(el.type) && el.passiveModel) params['PassiveModel'] = el.passiveModel;
+    if (['R', 'C', 'L'].includes(el.type) && el.passiveLawDefinition) {
+      validatePassiveModel(el);
+      params['PassiveLawDefinition'] = JSON.stringify(el.passiveLawDefinition);
+    }
     if (el.type === 'CHIP' && el.chipPins) { validateChipPins(el.chipPins); params['ChipPins'] = JSON.stringify(el.chipPins); }
     if (el.secondaryValue !== undefined) params['SecondaryValue'] = String(el.secondaryValue);
     if (el.secondaryStr !== undefined) params['SecondaryText'] = el.secondaryStr;
@@ -692,10 +697,14 @@ function commitCurrentObject(
   if (params['PassiveModel'] && (!['R', 'L', 'C'].includes(type) || !['linear', 'nonlinear'].includes(params['PassiveModel']))) {
     throw new Error(`Элемент ${raw.ID}: неизвестная модель пассивного элемента.`);
   }
-  if (params['PassiveModel'] === 'nonlinear' &&
-      (!Number.isFinite(modelParams.cubicCoefficient) || (modelParams.cubicCoefficient ?? 0) <= 0)) {
-    throw new Error(`Элемент ${raw.ID}: некорректный коэффициент нелинейной модели.`);
+  let passiveLawDefinition: CircuitElement['passiveLawDefinition'];
+  if (params['PassiveLawDefinition'] !== undefined) {
+    try { passiveLawDefinition = JSON.parse(params['PassiveLawDefinition']) as CircuitElement['passiveLawDefinition']; }
+    catch { throw new Error(`Элемент ${raw.ID}: повреждена нелинейная зависимость.`); }
   }
+  validatePassiveModel({ name: raw.Name || `E${raw.ID}`, type, value,
+    passiveModel: params['PassiveModel'] as CircuitElement['passiveModel'], passiveLawDefinition,
+    modelParams } as CircuitElement);
   const visibleValue = params['ValueText'] ?? valStr;
   if (['R', 'L', 'C', 'V_DC', 'V_AC', 'I_DC', 'I_AC', 'I_PULSE'].includes(type) && visibleValue) {
     const labelValue = parseEngValue(visibleValue);
@@ -724,6 +733,7 @@ function commitCurrentObject(
     diodeModel: type === 'DIODE' && params['DiodeModel'] === 'ideal' ? 'ideal' : undefined,
     transistorModel: params['TransistorModel'] === 'small-signal' ? 'small-signal' : ['NPN', 'PNP', 'NMOS', 'PMOS'].includes(type) ? 'nonlinear' : undefined,
     passiveModel: ['R', 'C', 'L'].includes(type) && params['PassiveModel'] ? params['PassiveModel'] as 'linear' | 'nonlinear' : undefined,
+    passiveLawDefinition,
     chipPins: storedChipPins,
     modelParams: Object.keys(modelParams).length ? modelParams : undefined,
     portName: params['Label'] || (type === 'PORT' ? raw.Name : undefined),

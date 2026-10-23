@@ -314,6 +314,10 @@ export interface CircuitElement {
   transistorModel?: 'nonlinear' | 'small-signal';
   /** Legacy R/C/L elements default to the original linear model. */
   passiveModel?: 'linear' | 'nonlinear';
+    /** Constitutive law: I(U) for R, Q(U) for C, Ψ(I) for L. Omitted means legacy cubic law. */
+    passiveLawDefinition?:
+      | { kind: 'table'; points: Array<{ argument: number; value: number }> }
+      | { kind: 'saturation'; limitingInductance: number; saturationCurrent: number };
   /** Stable electrical IDs plus editable physical pin numbers and labels. */
   chipPins?: Array<{ id: string; number: string; label: string; side: 'left' | 'right' }>;
   /** Parameters of the documented piecewise-linear semiconductor/control models. */

@@ -95,6 +95,11 @@ function ElementPropertiesContent({
   const [diodeModel, setDiodeModel] = useState(element.diodeModel || 'pwl');
   const [transistorModel, setTransistorModel] = useState(element.transistorModel || 'nonlinear');
   const [passiveModel, setPassiveModel] = useState(element.passiveModel || 'linear');
+  const [passiveLawKind, setPassiveLawKind] = useState<'cubic' | 'table' | 'saturation'>(element.passiveLawDefinition?.kind ?? 'cubic');
+  const [passiveTable, setPassiveTable] = useState(() => element.passiveLawDefinition?.kind === 'table'
+    ? element.passiveLawDefinition.points.map(point => `${point.argument}; ${point.value}`).join('\n') : '');
+  const [limitingInductance, setLimitingInductance] = useState(() => element.passiveLawDefinition?.kind === 'saturation' ? String(element.passiveLawDefinition.limitingInductance) : String(element.value / 5));
+  const [saturationCurrent, setSaturationCurrent] = useState(() => element.passiveLawDefinition?.kind === 'saturation' ? String(element.passiveLawDefinition.saturationCurrent) : '1');
   const [editableChipPins, setEditableChipPins] = useState(() => chipPins(element).map(pin => ({ ...pin })));
   const [validationError, setValidationError] = useState('');
   const [modelInputs, setModelInputs] = useState<Record<string, string>>(modelDefaults);
@@ -114,6 +119,11 @@ function ElementPropertiesContent({
     setDiodeModel(element.diodeModel || 'pwl');
     setTransistorModel(element.transistorModel || 'nonlinear');
     setPassiveModel(element.passiveModel || 'linear');
+    setPassiveLawKind(element.passiveLawDefinition?.kind ?? 'cubic');
+    setPassiveTable(element.passiveLawDefinition?.kind === 'table'
+      ? element.passiveLawDefinition.points.map(point => `${point.argument}; ${point.value}`).join('\n') : '');
+    setLimitingInductance(element.passiveLawDefinition?.kind === 'saturation' ? String(element.passiveLawDefinition.limitingInductance) : String(element.value / 5));
+    setSaturationCurrent(element.passiveLawDefinition?.kind === 'saturation' ? String(element.passiveLawDefinition.saturationCurrent) : '1');
     setEditableChipPins(chipPins(element).map(pin => ({ ...pin })));
     setValidationError('');
     setModelInputs(modelDefaults());
@@ -214,7 +224,7 @@ function ElementPropertiesContent({
     }
     const modelParams: NonNullable<CircuitElement['modelParams']> = {};
     for (const field of modelFields) {
-      if (field.key === 'cubicCoefficient' && passiveModel !== 'nonlinear') continue;
+      if (field.key === 'cubicCoefficient' && (passiveModel !== 'nonlinear' || passiveLawKind !== 'cubic')) continue;
       const value = parseEngValue(modelInputs[field.key]);
       const allowsZero = ['forwardVoltage', 'holdingCurrent', 'propagationDelay', 'hysteresis', 'pulseDelay', 'pulseRise', 'pulseFall', 'channelLengthModulation'].includes(field.key);
       const allowsNegative = ['gateThreshold', 'logicHigh', 'logicLow', 'logicThreshold', 'sourceOffset', 'sourcePhaseDeg', 'pulseLow', 'pulseHigh'].includes(field.key);
@@ -236,6 +246,20 @@ function ElementPropertiesContent({
     }
     setValidationError('');
 
+    let passiveLawDefinition: CircuitElement['passiveLawDefinition'];
+    if (passiveModel === 'nonlinear' && ['R', 'C', 'L'].includes(element.type)) {
+      if (passiveLawKind === 'table') {
+        const rows = passiveTable.trim().split(/\r?\n/);
+        const points = rows.map(row => {
+          const cells = row.split(';').map(cell => cell.trim());
+          return cells.length === 2 ? { argument: parseEngValue(cells[0]), value: parseEngValue(cells[1]) }
+            : { argument: NaN, value: NaN };
+        });
+        passiveLawDefinition = { kind: 'table', points };
+      } else if (passiveLawKind === 'saturation') {
+        passiveLawDefinition = { kind: 'saturation', limitingInductance: parseEngValue(limitingInductance), saturationCurrent: parseEngValue(saturationCurrent) };
+      }
+    }
     const updated: CircuitElement = {
       ...element,
       name: nextName || element.name,
@@ -248,6 +272,7 @@ function ElementPropertiesContent({
       diodeModel: element.type === 'DIODE' ? diodeModel : undefined,
       transistorModel: transistorTypes.has(element.type) ? transistorModel : undefined,
       passiveModel: ['R', 'C', 'L'].includes(element.type) ? passiveModel : undefined,
+      passiveLawDefinition,
       chipPins: element.type === 'CHIP' ? editableChipPins.map(pin => ({ ...pin, number: pin.number.trim(), label: pin.label.trim() })) : undefined,
       modelParams: modelFields.length ? modelParams : element.modelParams,
       portName: element.type === 'PORT' ? (portName.trim() || name.trim()) : undefined,
@@ -362,11 +387,27 @@ function ElementPropertiesContent({
           {['R', 'C', 'L'].includes(element.type) && <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
             <label htmlFor="passive-model" className="text-right font-medium text-slate-700">Модель:</label>
             <select id="passive-model" value={passiveModel} onChange={event => setPassiveModel(event.target.value as 'linear' | 'nonlinear')} className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 text-xs">
-              <option value="linear">Линейная</option><option value="nonlinear">Нелинейная кубическая</option>
+              <option value="linear">Линейная</option><option value="nonlinear">Нелинейная</option>
             </select>
           </div>}
-          {passiveModel === 'nonlinear' && ['R', 'C', 'L'].includes(element.type) && <p className="rounded bg-blue-50 p-2 text-xs text-blue-900">{element.type === 'R' ? 'I = U/R + kU³' : element.type === 'C' ? 'Q = CU + kU³; I = dQ/dt' : 'Ψ = LI + kI³; U = dΨ/dt'}. Коэффициент k задаётся ниже.</p>}
-          {modelFields.filter(field => (field.key !== 'cubicCoefficient' || passiveModel === 'nonlinear') && (!(element.type === 'DIODE' && diodeModel === 'ideal') || !['forwardVoltage', 'onResistance', 'offResistance'].includes(field.key))).map(field => (
+          {passiveModel === 'nonlinear' && ['R', 'C', 'L'].includes(element.type) && <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
+            <label htmlFor="passive-law" className="text-right font-medium text-slate-700">Зависимость:</label>
+            <select id="passive-law" value={passiveLawKind} onChange={event => setPassiveLawKind(event.target.value as 'cubic' | 'table' | 'saturation')} className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 text-xs">
+              <option value="cubic">Кубическая</option><option value="table">Таблица точек</option>
+              {element.type === 'L' && <option value="saturation">Насыщение сердечника</option>}
+            </select>
+          </div>}
+          {passiveModel === 'nonlinear' && passiveLawKind === 'cubic' && ['R', 'C', 'L'].includes(element.type) && <p className="rounded bg-blue-50 p-2 text-xs text-blue-900">{element.type === 'R' ? 'I = U/R + kU³' : element.type === 'C' ? 'Q = CU + kU³; I = dQ/dt' : 'Ψ = LI + kI³; U = dΨ/dt'}. Коэффициент k задаётся ниже.</p>}
+          {passiveModel === 'nonlinear' && passiveLawKind === 'table' && ['R', 'C', 'L'].includes(element.type) && <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] gap-3">
+            <label htmlFor="passive-table" className="text-right font-medium text-slate-700">Точки зависимости:</label>
+            <div><textarea id="passive-table" value={passiveTable} onChange={event => setPassiveTable(event.target.value)} rows={5} placeholder={'-1; -0.1\n0; 0\n1; 0.1'} className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 font-mono text-xs" />
+              <p className="text-xs text-slate-600">По одной паре X; Y на строку. {element.type === 'R' ? 'U (В); I (А)' : element.type === 'C' ? 'U (В); Q (Кл)' : 'I (А); Ψ (Вб)'}. Точки строго возрастают и включают 0; 0.</p></div>
+          </div>}
+          {passiveModel === 'nonlinear' && passiveLawKind === 'saturation' && element.type === 'L' && <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] gap-3 items-center">
+            <label htmlFor="limiting-inductance" className="text-right font-medium text-slate-700">L при насыщении:</label><input id="limiting-inductance" value={limitingInductance} onChange={event => setLimitingInductance(event.target.value)} className="border border-slate-400 px-2 py-1 rounded font-mono text-xs" /><span>Гн</span>
+            <label htmlFor="saturation-current" className="text-right font-medium text-slate-700">Ток насыщения:</label><input id="saturation-current" value={saturationCurrent} onChange={event => setSaturationCurrent(event.target.value)} className="border border-slate-400 px-2 py-1 rounded font-mono text-xs" /><span>А</span>
+          </div>}
+          {modelFields.filter(field => (field.key !== 'cubicCoefficient' || (passiveModel === 'nonlinear' && passiveLawKind === 'cubic')) && (!(element.type === 'DIODE' && diodeModel === 'ideal') || !['forwardVoltage', 'onResistance', 'offResistance'].includes(field.key))).map(field => (
             <div key={field.key} className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
               <label htmlFor={`model-${field.key}`} className="text-right font-medium text-slate-700">{field.label}:</label>
               <input

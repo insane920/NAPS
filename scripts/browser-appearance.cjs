@@ -72,6 +72,20 @@ const fs = require('node:fs/promises');
     assert.doesNotMatch(a3Pdf.toString('latin1'), /\/Subtype\s*\/Image/,
       'A3 portrait PDF keeps the schematic vector-based');
     await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
+    for (const [format, width, height] of [['A0', 841, 1189], ['A1', 594, 841], ['A2', 420, 594]]) {
+      await page.getByRole('combobox', { name: 'Формат документа' }).selectOption(format);
+      await page.getByRole('button', { name: 'Экспорт ▾' }).click();
+      await page.getByRole('menuitem', { name: 'PDF' }).click();
+      await page.waitForFunction(expected => document.querySelector('iframe[title="Предварительный просмотр листа"]')
+        ?.getAttribute('srcdoc')?.includes(`width="${expected}mm"`), width);
+      const [largeDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать PDF' }).click()]);
+      const largePdf = (await fs.readFile(await largeDownload.path())).toString('latin1');
+      const media = largePdf.match(/\/MediaBox \[0 0 ([\d.]+) ([\d.]+)\]/);
+      assert.ok(media && Math.abs(Number(media[1]) - width * 72 / 25.4) < 0.001 &&
+        Math.abs(Number(media[2]) - height * 72 / 25.4) < 0.001, `${format} PDF has physical sheet dimensions`);
+      assert.doesNotMatch(largePdf, /\/Subtype\s*\/Image/, `${format} PDF remains vector-based`);
+      await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
+    }
     await page.getByRole('combobox', { name: 'Формат документа' }).selectOption('A4');
     await page.getByRole('button', { name: 'Экспорт ▾' }).click();
     await page.getByRole('menuitem', { name: 'PDF' }).click();

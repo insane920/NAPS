@@ -74,6 +74,8 @@ const fs = require('node:fs/promises');
     assert.match(a4Preview, /#111111/);
     assert.match(a4Preview, /width="210mm"/);
     assert.match(a4Preview, /height="297mm"/);
+    assert.match(a4Preview, /font-family:'NAPS Drafting'/);
+    assert.match(a4Preview, /data:font\/ttf;base64,/, 'standalone export embeds the licensed drafting font');
     await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
     await page.getByRole('combobox', { name: 'Ориентация документа' }).selectOption('landscape');
     await page.getByRole('button', { name: 'Экспорт ▾' }).click();

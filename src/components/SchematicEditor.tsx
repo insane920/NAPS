@@ -1107,6 +1107,7 @@ export function SchematicEditor({
   const groupDragIds = useRef<Set<string> | null>(null);
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const wireSegmentDrag = useRef<{ wireId: string; segmentIndex: number; points: Point[]; started: boolean; prepared?: boolean } | null>(null);
+  const waypointDrag = useRef<{ wireId: string; index: number; started: boolean } | null>(null);
   const [endpointDrag, setEndpointDrag] = useState<{ wireId: string; end: 'from' | 'to'; points: Point[]; cursor: Point } | null>(null);
   const geometryDragChanged = useRef(false);
   const normalizedThisDrag = useRef(false);
@@ -1209,8 +1210,9 @@ export function SchematicEditor({
   }, [contextMenu]);
   useEffect(() => {
     const releaseDrag = (event: MouseEvent | FocusEvent) => {
-      if (draggingElemId || wireSegmentDrag.current?.started) finishGeometryDrag.current();
+      if (draggingElemId || wireSegmentDrag.current?.started || waypointDrag.current?.started) finishGeometryDrag.current();
       wireSegmentDrag.current = null;
+      waypointDrag.current = null;
       junctionDragIntent.current = null;
       setEndpointDrag(null);
       wirePointerDown.current = false;
@@ -1438,6 +1440,14 @@ export function SchematicEditor({
       if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
 
       if (e.key === 'Escape') {
+        if (waypointDrag.current?.started) {
+          e.preventDefault();
+          normalizedThisDrag.current = true;
+          geometryDragChanged.current = false;
+          waypointDrag.current = null;
+          onCancelContinuousEdit?.();
+          return;
+        }
         if (draggingElemId && elements.some(element => element.id === draggingElemId && element.type === 'JUNCTION') && geometryDragChanged.current) {
           e.preventDefault();
           junctionDragIntent.current = null;
@@ -1449,6 +1459,7 @@ export function SchematicEditor({
           return;
         }
         junctionDragIntent.current = null;
+        waypointDrag.current = null;
         setDraggingElemId(null);
         setEndpointDrag(null);
         setOverlapChoice(null);
@@ -1836,7 +1847,7 @@ export function SchematicEditor({
     dragReleaseHandled.current = true;
     const newlyUnrouted = wireGeometries.some(geometry =>
       geometry.unrouted && !unroutedBeforeDrag.current.has(geometry.wire.id));
-    if (newlyUnrouted && (geometryDragChanged.current || wireSegmentDrag.current?.started)) {
+    if (newlyUnrouted && (geometryDragChanged.current || wireSegmentDrag.current?.started || waypointDrag.current?.started)) {
       normalizedThisDrag.current = true;
       geometryDragChanged.current = false;
       onCancelContinuousEdit?.();
@@ -2107,6 +2118,26 @@ export function SchematicEditor({
       return;
     }
 
+    if (waypointDrag.current) {
+      if (!(e.buttons & 1)) return;
+      const drag = waypointDrag.current;
+      const wire = wires.find(item => item.id === drag.wireId);
+      const oldPoint = wire?.waypoints?.[drag.index];
+      if (!wire || !oldPoint) return;
+      const nextPoint = wire.routeMode === 'direct' ? { x: pos.rawX, y: pos.rawY }
+        : { x: snapToGrid(pos.rawX), y: snapToGrid(pos.rawY) };
+      if (samePoint(oldPoint, nextPoint)) return;
+      const terminalA = pinPositions.get(`${wire.fromCompId}_${wire.fromPinId}`);
+      const terminalB = pinPositions.get(`${wire.toCompId}_${wire.toPinId}`);
+      if (wire.waypoints?.some((point, index) => index !== drag.index && samePoint(point, nextPoint)) ||
+        terminalA && samePoint(terminalA, nextPoint) || terminalB && samePoint(terminalB, nextPoint)) return;
+      if (!drag.started) { onBeginContinuousEdit?.(); drag.started = true; }
+      geometryDragChanged.current = true;
+      onWiresChange(wires.map(item => item.id === drag.wireId ? { ...item,
+        waypoints: item.waypoints?.map((point, index) => index === drag.index ? nextPoint : point), manual: true } : item));
+      return;
+    }
+
     if (wireSegmentDrag.current) {
       if (!(e.buttons & 1)) return;
       const drag = wireSegmentDrag.current;
@@ -2268,9 +2299,10 @@ export function SchematicEditor({
       handlePlaceNewComponent(pendingComponentType, pos.x, pos.y);
       setPaletteDragGroup(null);
     }
-    if (draggingElemId || wireSegmentDrag.current?.started) finishGeometryDrag.current();
+    if (draggingElemId || wireSegmentDrag.current?.started || waypointDrag.current?.started) finishGeometryDrag.current();
     junctionDragIntent.current = null;
     wireSegmentDrag.current = null;
+    waypointDrag.current = null;
     if (wirePointerDown.current) {
       wirePointerDown.current = false;
       if (event && (wiringFromRef.current ?? wiringFrom)) {
@@ -2543,7 +2575,11 @@ export function SchematicEditor({
 
   useEffect(() => {
     if (!exportTarget) return;
+    let cancelled = false;
+    void (async () => {
     try {
+      const { default: gostFontDataUrl } = await import('../assets/fonts/OpenGOSTtypeA-Regular.ttf?inline');
+      if (cancelled) return;
       const source = svgRef.current;
       if (!source) return;
       const clone = source.cloneNode(true) as SVGSVGElement;
@@ -2567,6 +2603,9 @@ export function SchematicEditor({
         printFrame && !(printLayout.format === 'A4' && printLayout.orientation === 'landscape') ? 65 : 0,
         printFrame && printLayout.format === 'A4' && printLayout.orientation === 'landscape' ? 65 : 0);
       clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      const embeddedFont = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+      embeddedFont.textContent = `@font-face{font-family:'NAPS Drafting';src:url('${gostFontDataUrl}') format('truetype');font-weight:400;font-style:normal}`;
+      clone.insertBefore(embeddedFont, clone.firstChild);
       clone.setAttribute('width', `${placement.widthMm}mm`);
       clone.setAttribute('height', `${placement.heightMm}mm`);
       clone.setAttribute('viewBox', `0 0 ${placement.width} ${placement.height}`);
@@ -2597,12 +2636,15 @@ export function SchematicEditor({
       });
       const xml = new XMLSerializer().serializeToString(clone);
       const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><style>@page{size:${placement.widthMm}mm ${placement.heightMm}mm;margin:0}body{margin:0;background:#e2e8f0;display:flex;justify-content:center}svg{display:block;max-width:100%;height:auto;background:white;box-shadow:0 4px 24px #0002}@media print{body{display:block;background:white}svg{width:${placement.widthMm}mm!important;height:${placement.heightMm}mm!important;max-width:none;box-shadow:none}}</style></head><body>${xml}</body></html>`;
-      setExportPlan({ xml, html, placement });
-      setExportError(null);
+      if (!cancelled) { setExportPlan({ xml, html, placement }); setExportError(null); }
     } catch (error) {
-      setExportPlan(null);
-      setExportError(error instanceof Error ? error.message : 'Не удалось подготовить лист.');
+      if (!cancelled) {
+        setExportPlan(null);
+        setExportError(error instanceof Error ? error.message : 'Не удалось подготовить лист.');
+      }
     }
+    })();
+    return () => { cancelled = true; };
   }, [exportTarget, printLayout, printMarginMm, printMode, requestedPrintScale, centerPrint, printMonochrome, printFrame, description, elements, wires, zoom, pan, showElementNames, showElementValues, showNodeNumbers]);
 
   const downloadSchematic = (format: 'png' | 'svg' | 'pdf' | 'print') => {
@@ -3037,7 +3079,7 @@ export function SchematicEditor({
           {showGrid && <rect data-export-hide="true" width="100%" height="100%" fill="url(#naps_grid)" pointerEvents="none" />}
 
           {/* Группа элементов схемы с масштабированием и панорамированием */}
-          <g id="schematic-world" transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`} style={{ fontFamily: 'GOST type A, GOST 2.304, Arial Narrow, sans-serif' }}>
+          <g id="schematic-world" transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`} style={{ fontFamily: 'NAPS Drafting, Arial Narrow, sans-serif' }}>
             {marquee && <rect data-export-hide="true" data-selection-marquee="true"
               x={Math.min(marquee.start.x, marquee.end.x)} y={Math.min(marquee.start.y, marquee.end.y)}
               width={Math.abs(marquee.end.x - marquee.start.x)} height={Math.abs(marquee.end.y - marquee.start.y)}
@@ -3279,7 +3321,7 @@ export function SchematicEditor({
                   {el.type === 'PORT' && <text x={0} y={3} textAnchor="middle" fontSize={9} fontWeight="bold" fill={isSelected ? '#dc2626' : '#1e293b'} className="pointer-events-none select-none">{el.portName || el.name}</text>}
 
                   {/* Подписи следуют ориентации элемента, но остаются горизонтальными и читаемыми. */}
-                  {el.type !== 'TEXT' && el.type !== 'JUNCTION' && (showElementNames || showElementValues || el.isolation === 'short') && <g data-element-labels={el.id} className="pointer-events-none select-none" style={{ fontFamily: 'GOST type A, GOST 2.304, Arial Narrow, sans-serif', paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 3.5, strokeLinejoin: 'round' }}>
+                  {el.type !== 'TEXT' && el.type !== 'JUNCTION' && (showElementNames || showElementValues || el.isolation === 'short') && <g data-element-labels={el.id} className="pointer-events-none select-none" style={{ fontFamily: 'NAPS Drafting, Arial Narrow, sans-serif', paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 3.5, strokeLinejoin: 'round' }}>
                     {showElementNames && <text data-label-kind="name" x={labelLayout.name.x} y={labelLayout.name.y} textAnchor={labelLayout.name.anchor} fontSize={11} fontWeight="bold" textDecoration={el.type === 'VCCS' || el.type === 'CCCS' ? 'underline' : undefined} fill={el.isolation === 'open' ? '#94a3b8' : appearance.designation}>{el.name}</text>}
                     {showElementValues && valueLabel && <text data-label-kind="value" x={labelLayout.value.x} y={labelLayout.value.y} textAnchor={labelLayout.value.anchor} fontSize={11} fill={el.isolation === 'open' ? '#94a3b8' : '#3730a3'}>{valueLabel}</text>}
                     {el.isolation === 'short' && <text data-label-kind="isolation" x={labelLayout.isolation.x} y={labelLayout.isolation.y} textAnchor={labelLayout.isolation.anchor} fontSize={9} fill="#b91c1c" fontWeight="bold">КЗ</text>}
@@ -3398,7 +3440,16 @@ export function SchematicEditor({
             })()}
             {selectedWireId && !wiringFrom && !pendingComponentType && (() => {
               const geometry = wireGeometries.find(item => item.wire.id === selectedWireId);
-              return geometry && (['from', 'to'] as const).map(end => {
+              return geometry && <>
+                {geometry.wire.waypoints?.map((point, index) => <circle key={`waypoint-${index}`}
+                  data-export-hide="true" data-wire-waypoint={`${selectedWireId}:${index}`}
+                  cx={point.x} cy={point.y} r={6 / zoom} fill="#dbeafe" stroke="#2563eb" strokeWidth={1.5 / zoom}
+                  className="cursor-move" aria-label={`Переместить точку изгиба ${index + 1}`}
+                  onMouseDown={event => { if (event.button !== 0) return; event.stopPropagation();
+                    geometryDragChanged.current = false; normalizedThisDrag.current = false; dragReleaseHandled.current = false;
+                    unroutedBeforeDrag.current = new Set(wireGeometries.filter(item => item.unrouted).map(item => item.wire.id));
+                    wireSegmentDrag.current = null; waypointDrag.current = { wireId: selectedWireId, index, started: false }; }} />)}
+                {(['from', 'to'] as const).map(end => {
                 const point = end === 'from' ? geometry.points[0] : geometry.points.at(-1)!;
                 return <circle key={end} data-export-hide="true" data-wire-end={`${selectedWireId}:${end}`}
                   cx={point.x} cy={point.y} r={7 / zoom} fill="#ffffff" stroke="#2563eb" strokeWidth={2 / zoom}
@@ -3407,7 +3458,8 @@ export function SchematicEditor({
                     const junction = junctionAtPointer(event.clientX, event.clientY);
                     if (junction && !event.altKey) { elementMouseDownRef.current(event, junction); return; }
                     wireSegmentDrag.current = null; setEndpointDrag({ wireId: selectedWireId, end, points: geometry.points, cursor: point }); }} />;
-              });
+                })}
+              </>;
             })()}
           </g>
 

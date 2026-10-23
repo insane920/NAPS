@@ -152,6 +152,11 @@ const fs = require('node:fs/promises');
   await page.getByRole('menuitem', { name: 'PDF' }).click();
   assert.ok(await page.getByRole('button', { name: 'Скачать PDF' }).isDisabled(), '1:1 export never crops an oversized schematic');
   await page.getByRole('combobox', { name: 'Режим масштабирования печати' }).selectOption('fit');
+  await page.getByRole('button', { name: 'Скачать PDF' }).waitFor({ state: 'visible' });
+  await page.waitForFunction(() => {
+    const button = [...document.querySelectorAll('button')].find(item => item.textContent?.trim() === 'Скачать PDF');
+    return button && !button.disabled;
+  });
   assert.ok(await page.getByRole('button', { name: 'Скачать PDF' }).isEnabled(), 'fit mode includes oversized schematic');
   const fitPreview = await page.frameLocator('iframe[title="Предварительный просмотр листа"]').locator('svg #schematic-world').getAttribute('transform');
   assert.ok(Number(fitPreview.match(/scale\(([^)]+)\)/)[1]) < 1, 'fit mode uses a real reduction for the oversized drawing');

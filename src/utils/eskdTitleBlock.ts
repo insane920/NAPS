@@ -37,7 +37,7 @@ export function createTitleBlock(document: Document, layout: PrintLayout, descri
     node.setAttribute('data-eskd-field', field);
     node.setAttribute('x', String(x * units)); node.setAttribute('y', String(y * units));
     node.setAttribute('font-size', String(size * units)); node.setAttribute('fill', '#111111');
-    node.setAttribute('font-family', 'GOST type A, GOST 2.304, Arial Narrow, sans-serif');
+    node.setAttribute('font-family', 'NAPS Drafting, Arial Narrow, sans-serif');
     if (value.length * size * 0.55 > width) {
       node.setAttribute('textLength', String(width * units)); node.setAttribute('lengthAdjust', 'spacingAndGlyphs');
     }

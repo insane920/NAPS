@@ -30,7 +30,7 @@ const fs = require('node:fs/promises');
     await page.mouse.click(canvas.x + 800, canvas.y + 180);
     await page.keyboard.press('Escape');
     await family.selectOption('V_DC');
-    const quick = await family.locator('..').locator('button').boundingBox();
+    const quick = await family.locator('..').locator('..').locator('button').boundingBox();
     await page.mouse.move(quick.x + quick.width / 2, quick.y + quick.height / 2);
     await page.mouse.down();
     await page.mouse.move(canvas.x + 940, canvas.y + 180, { steps: 5 });

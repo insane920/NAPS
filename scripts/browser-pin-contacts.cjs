@@ -192,10 +192,12 @@ async function worldPoint(page, x, y) {
     await page.mouse.move(junctionCenter.x, junctionCenter.y);
     await components.nth(junctionIndex).locator('circle[stroke="#2563eb"]').waitFor({ timeout: 2000 });
     const firstTerminal = await screenCenter(pin(0, 0));
+    await page.keyboard.down('Alt');
     await page.mouse.down();
     await page.mouse.move(firstTerminal.x, firstTerminal.y, { steps: 8 });
     await page.mouse.up();
-    assert.equal(await wires.count(), 1, 'junction starts a wire without a toolbar mode');
+    await page.keyboard.up('Alt');
+    assert.equal(await wires.count(), 1, 'Alt+drag starts a wire from a junction while a plain click selects it');
     assert.deepEqual(errors, [], 'browser must not report uncaught errors');
     console.log(`PASS: default-mode hover on ${checkedPins} terminals and a junction across ${catalogueFixture.types.length} types, drag wiring, fan-out, duplicate guard, deletion, reconnection, zoom and saved electrical nodes.`);
   } finally {

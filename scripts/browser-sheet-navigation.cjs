@@ -28,7 +28,12 @@ const assert = require('node:assert/strict');
         await vertical.evaluate(element => {
           element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); element.scrollTop += 60;
         });
-        await page.waitForTimeout(30);
+        await page.waitForFunction(({ before }) => {
+          const group = document.querySelector('[data-component-id]');
+          const transform = group?.getScreenCTM();
+          return transform && Math.abs(transform.e - before.x + 75) < 2 &&
+            Math.abs(transform.f - before.y + 60) < 2;
+        }, { before }, { timeout: 3000 });
         const after = await component.evaluate(group => ({ x: group.getScreenCTM().e, y: group.getScreenCTM().f }));
         assert(Math.abs(after.x - before.x + 75) < 2 && Math.abs(after.y - before.y + 60) < 2,
           `${format}: scrollbars pan without coordinate jumps (${JSON.stringify({ before, after })})`);

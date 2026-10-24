@@ -539,18 +539,19 @@ function ElementPropertiesContent({
             </div>
           )}
 
-          {/* Директива для TEXT */}
+          {/* Текстовая надпись хранится отдельно от электрической модели. */}
           {element.type === 'TEXT' && (
             <div className="flex flex-col gap-1">
-              <label className="font-medium text-slate-700">
-                Директива NAPS (.define, .param, .set):
+              <label htmlFor="schematic-text-block" className="font-medium text-slate-700">
+                Текст на схеме:
               </label>
               <textarea
+                id="schematic-text-block"
                 value={directiveStr}
                 onChange={(e) => setDirectiveStr(e.target.value)}
                 rows={4}
                 className="w-full border border-slate-400 p-2 rounded bg-white text-slate-900 font-mono text-xs focus:border-blue-600 focus:outline-none"
-                placeholder=".define Rbase = 1k;&#10;.parameter f0 = 1k;"
+                placeholder="Пояснение к схеме"
               />
             </div>
           )}

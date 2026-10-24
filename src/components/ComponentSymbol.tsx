@@ -2,6 +2,7 @@ import React from 'react';
 import type { CircuitElement, ComponentType } from '../types';
 import { SYMBOL_METRICS } from './symbolMetrics';
 import { chipPins } from '../utils/chipPins';
+import { textBlockBounds } from '../utils/textBlock';
 
 export function renderComponentSymbol(el: CircuitElement, selected = false, showEmbeddedLabel = true, elementColor = '#1d4ed8') {
   const stroke = selected ? '#dc2626' : elementColor;
@@ -373,15 +374,15 @@ export function renderComponentSymbol(el: CircuitElement, selected = false, show
         </g>
       );
 
-    case 'TEXT':
-      // Текстовая директива (стр. 27)
+    case 'TEXT': {
+      const block = textBlockBounds(el.textDirective || '');
       return (
         <g>
           <rect
-            x={-50}
-            y={-14}
-            width={160}
-            height={28}
+            x={block.left}
+            y={block.top}
+            width={block.width}
+            height={block.height}
             fill="#f8fafc"
             stroke={stroke}
             strokeWidth={1}
@@ -389,16 +390,17 @@ export function renderComponentSymbol(el: CircuitElement, selected = false, show
             rx={2}
           />
           <text
-            x={-42}
-            y={4}
+            x={block.left + 8}
+            y={block.top + 17}
             className="font-mono text-3xs select-none"
             fill={stroke}
             style={{ fontSize: '9px' }}
           >
-            {el.textDirective || '.define'}
+            {block.lines.map((line, index) => <tspan key={index} x={block.left + 8} dy={index ? 13 : 0}>{line || '\u00a0'}</tspan>)}
           </text>
         </g>
       );
+    }
 
     default:
       return (

@@ -43,6 +43,7 @@ import { createTitleBlock } from '../utils/eskdTitleBlock';
 import { SpatialIndex } from '../utils/spatialIndex';
 import { hitTestEditorScene, pickEditorHit, type EditorHitShape } from '../utils/editorHitTest';
 import { chipPins, DEFAULT_CHIP_PINS } from '../utils/chipPins';
+import { textBlockBounds } from '../utils/textBlock';
 
 interface SchematicEditorProps {
   elements: CircuitElement[];
@@ -1720,7 +1721,7 @@ export function SchematicEditor({
         ? { cubicCoefficient: type === 'R' ? 1e-12 : type === 'C' ? 1e-9 : 1e-3 }
         : undefined,
       portName,
-      textDirective: type === 'TEXT' ? '.define Rload = 100;' : undefined,
+      textDirective: type === 'TEXT' ? 'Текст схемы' : undefined,
     };
 
     const replacing = elements.find(el => el.id === replaceId);
@@ -1887,6 +1888,11 @@ export function SchematicEditor({
     }
   };
   const sceneLabels = useMemo(() => arrangeComponentLabels(elements, wireGeometries, elements.flatMap(element => {
+    if (element.type === 'TEXT') {
+      const block = textBlockBounds(element.textDirective || '');
+      return [{ x: element.x + block.left, y: element.y + block.top,
+        width: block.width, height: block.height }];
+    }
     const pins = getComponentPins(element);
     const xs = [-20, 20, ...pins.map(pin => pin.x)], ys = [-20, 20, ...pins.map(pin => pin.y)];
     const minX = Math.min(...xs) - 14, minY = Math.min(...ys) - 14;
@@ -1921,8 +1927,11 @@ export function SchematicEditor({
           top: body.centerY - body.halfHeight, bottom: body.centerY + body.halfHeight,
           centerX: body.centerX, centerY: body.centerY, angle: body.angle });
       } else if (element.type === 'TEXT') {
-        shapes.push({ kind: 'element', id: element.id, left: element.x - 50, right: element.x + 110,
-          top: element.y - 14, bottom: element.y + 14 });
+        const block = textBlockBounds(element.textDirective || '');
+        shapes.push({ kind: 'element', id: element.id,
+          left: element.x + block.left, right: element.x + block.left + block.width,
+          top: element.y + block.top, bottom: element.y + block.top + block.height,
+          centerX: element.x, centerY: element.y, angle: (element.rotation || 0) * Math.PI / 180 });
       }
       const layout = sceneLabels.get(element.id);
       if (layout && element.type !== 'TEXT') {
@@ -2866,6 +2875,7 @@ export function SchematicEditor({
               </div>;
             })}
             <button type="button" onClick={() => { wiringFromRef.current = null; setWiringFrom(null); setWiringCursor(null); setWiringWaypoints([]); setPendingComponentType('GND'); }} className="shrink-0 whitespace-nowrap rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100" title="Поставить опорный потенциал 0 В">⏚ 0 В</button>
+            <button type="button" onClick={() => { wiringFromRef.current = null; setWiringFrom(null); setWiringCursor(null); setWiringWaypoints([]); setPendingComponentType('TEXT'); }} className="shrink-0 whitespace-nowrap rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100" title="Разместить независимую текстовую надпись на схеме">Текст</button>
             {pendingComponentType && ['R', 'C', 'L'].includes(pendingComponentType) && <select
               aria-label="Вариант размещаемого элемента"
               value={placementPassiveModels[pendingComponentType as 'R' | 'C' | 'L']}
@@ -3443,7 +3453,7 @@ export function SchematicEditor({
                       strokeWidth={1.5}
                     />
                   )}
-                  {el.type !== 'JUNCTION' && <rect x={-22} y={-20} width={44} height={40} fill="transparent" data-export-hide="true" />}
+                  {el.type !== 'JUNCTION' && el.type !== 'TEXT' && <rect x={-22} y={-20} width={44} height={40} fill="transparent" data-export-hide="true" />}
 
                   {/* Отрисовка символа компонента */}
                   <g

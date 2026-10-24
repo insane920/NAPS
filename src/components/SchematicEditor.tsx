@@ -32,7 +32,7 @@ import { SAMPLE_CIRCUITS, SampleCircuit } from '../data/sampleCircuits';
 import { buildCircuitGraph } from '../math/circuitSolver';
 import { topologyTypes } from '../math/topologyTransient';
 import { nextComponentName } from '../utils/componentNames';
-import { getComponentLabelLayout, getComponentValueLabel, arrangeComponentLabels } from '../utils/componentLabels';
+import { getComponentLabelLayout, getComponentValueLabel, arrangeComponentLabels, labelBounds } from '../utils/componentLabels';
 import { useModalFocus } from '../hooks/useModalFocus';
 import { ComponentPalette, COMPONENT_CATALOG, PLACEMENT_CATALOG, TERMINAL_GROUPS, terminalGroupForType, TerminalGroup } from './ComponentPalette';
 import { SYMBOL_METRICS } from './symbolMetrics';
@@ -41,7 +41,7 @@ import { componentObstacle, routeAroundObstacles, routeIsClear } from '../utils/
 import type { CircuitDescription } from '../utils/yamlScm';
 import { createTitleBlock } from '../utils/eskdTitleBlock';
 import { SpatialIndex } from '../utils/spatialIndex';
-import { pickEditorHit } from '../utils/editorHitTest';
+import { hitTestEditorScene, pickEditorHit, type EditorHitShape } from '../utils/editorHitTest';
 import { chipPins, DEFAULT_CHIP_PINS } from '../utils/chipPins';
 
 interface SchematicEditorProps {
@@ -1354,9 +1354,15 @@ export function SchematicEditor({
   const screenToWorld = useCallback(
     (clientX: number, clientY: number) => {
       if (!containerRef.current) return { x: 0, y: 0 };
+      // The SVG viewport may start at a fractional CSS pixel after flex layout.
+      // Use the rendered world transform itself so picking matches visible geometry.
+      const world = svgRef.current?.querySelector<SVGGElement>('#schematic-world');
+      const matrix = world?.getScreenCTM();
+      const exact = matrix && typeof DOMPoint !== 'undefined'
+        ? new DOMPoint(clientX, clientY).matrixTransform(matrix.inverse()) : null;
       const rect = containerRef.current.getBoundingClientRect();
-      const rawX = (clientX - rect.left - pan.x) / zoom;
-      const rawY = (clientY - rect.top - pan.y) / zoom;
+      const rawX = exact?.x ?? (clientX - rect.left - pan.x) / zoom;
+      const rawY = exact?.y ?? (clientY - rect.top - pan.y) / zoom;
       return {
         x: snapToGrid(rawX),
         y: snapToGrid(rawY),
@@ -1899,6 +1905,92 @@ export function SchematicEditor({
       };
     })
   )), [wireGeometries]);
+
+  const editorHitShapes = useMemo<EditorHitShape[]>(() => {
+    const shapes: EditorHitShape[] = [];
+    for (const element of elements) {
+      if (element.type === 'JUNCTION') {
+        shapes.push({ kind: 'junction', id: element.id, x: element.x, y: element.y, radiusPx: 9 });
+        continue;
+      }
+      const body = componentObstacle(element, 2);
+      if (body && body.centerX !== undefined && body.centerY !== undefined &&
+          body.halfWidth !== undefined && body.halfHeight !== undefined) {
+        shapes.push({ kind: 'element', id: element.id,
+          left: body.centerX - body.halfWidth, right: body.centerX + body.halfWidth,
+          top: body.centerY - body.halfHeight, bottom: body.centerY + body.halfHeight,
+          centerX: body.centerX, centerY: body.centerY, angle: body.angle });
+      } else if (element.type === 'TEXT') {
+        shapes.push({ kind: 'element', id: element.id, left: element.x - 50, right: element.x + 110,
+          top: element.y - 14, bottom: element.y + 14 });
+      }
+      const layout = sceneLabels.get(element.id);
+      if (layout && element.type !== 'TEXT') {
+        const labels = [showElementNames ? [layout.name, element.name] as const : null,
+          showElementValues ? [layout.value, getComponentValueLabel(element)] as const : null];
+        for (const label of labels) {
+          if (!label || !label[1]) continue;
+          const bounds = labelBounds(label[0], label[1], element.x, element.y);
+          shapes.push({ kind: 'label', id: element.id,
+            left: bounds.x, top: bounds.y, right: bounds.x + bounds.width, bottom: bounds.y + bounds.height });
+        }
+      }
+    }
+    for (const pin of pinPositions.values())
+      shapes.push({ kind: 'pin', id: `${pin.compId}_${pin.pinId}`, x: pin.x, y: pin.y, radiusPx: 12 });
+    for (const geometry of wireGeometries) {
+      if (geometry.wire.disabled) continue;
+      shapes.push({ kind: 'wire', id: geometry.wire.id, points: geometry.points, radiusPx: 8 });
+      if (geometry.wire.id !== selectedWireId) continue;
+      geometry.wire.waypoints?.forEach((point, index) =>
+        shapes.push({ kind: 'waypoint', id: `${geometry.wire.id}:${index}`, x: point.x, y: point.y, radiusPx: 6 }));
+      const first = geometry.points[0], last = geometry.points.at(-1);
+      if (first) shapes.push({ kind: 'wire-end', id: `${geometry.wire.id}:from`, x: first.x, y: first.y, radiusPx: 7 });
+      if (last) shapes.push({ kind: 'wire-end', id: `${geometry.wire.id}:to`, x: last.x, y: last.y, radiusPx: 7 });
+    }
+    return shapes;
+  }, [elements, pinPositions, wireGeometries, selectedWireId, sceneLabels, showElementNames, showElementValues]);
+  const editorHitAt = (clientX: number, clientY: number, context: 'select' | 'connect') => {
+    const pointer = screenToWorld(clientX, clientY);
+    return hitTestEditorScene(editorHitShapes, { x: pointer.rawX, y: pointer.rawY }, zoom, context);
+  };
+  const beginSelectedWireHandle = (hit: ReturnType<typeof editorHitAt>): boolean => {
+    if (!hit || !selectedWireId || (hit.kind !== 'wire-end' && hit.kind !== 'waypoint')) return false;
+    const geometry = wireGeometries.find(item => item.wire.id === selectedWireId);
+    if (!geometry) return false;
+    const suffix = hit.id.slice(selectedWireId.length + 1);
+    wireSegmentDrag.current = null;
+    if (hit.kind === 'wire-end') {
+      if (suffix !== 'from' && suffix !== 'to') return false;
+      const point = suffix === 'from' ? geometry.points[0] : geometry.points.at(-1);
+      if (!point) return false;
+      setEndpointDrag({ wireId: selectedWireId, end: suffix, points: geometry.points, cursor: point });
+    } else {
+      const index = Number(suffix);
+      if (!Number.isInteger(index) || !geometry.wire.waypoints?.[index]) return false;
+      geometryDragChanged.current = false;
+      normalizedThisDrag.current = false;
+      dragReleaseHandled.current = false;
+      unroutedBeforeDrag.current = new Set(wireGeometries.filter(item => item.unrouted).map(item => item.wire.id));
+      waypointDrag.current = { wireId: selectedWireId, index, started: false };
+    }
+    return true;
+  };
+  const beginWireSegmentSelection = (wireId: string, x: number, y: number): boolean => {
+    const geometry = wireGeometries.find(item => item.wire.id === wireId);
+    if (!geometry || geometry.wire.disabled) return false;
+    const hit = projectPointToWire(geometry.points, { x, y }, gridUnits);
+    if (!hit) return false;
+    geometryDragChanged.current = false;
+    normalizedThisDrag.current = false;
+    dragReleaseHandled.current = false;
+    unroutedBeforeDrag.current = new Set(wireGeometries.filter(item => item.unrouted).map(item => item.wire.id));
+    wireSegmentDrag.current = { wireId, segmentIndex: hit.segmentIndex, points: geometry.points, started: false };
+    setSelectedWireId(wireId);
+    setSelectedId(null);
+    setSelectedIds([]);
+    return true;
+  };
 
   // Shared connection hit test for wire preview and endpoint reconnection.
   // Pins (including explicit junctions) always take precedence over a wide wire stroke.
@@ -2484,8 +2576,21 @@ export function SchematicEditor({
 
     if (pendingComponentType) return;
     if (!(wiringFromRef.current ?? wiringFrom) && el.type !== 'JUNCTION') {
-      const junction = junctionAtPointer(e.clientX, e.clientY);
-      if (junction) { handleElementMouseDown(e, junction); return; }
+      const hit = editorHitAt(e.clientX, e.clientY, 'select');
+      if (hit?.kind === 'junction') {
+        const junction = elements.find(item => item.id === hit.id);
+        if (junction) { handleElementMouseDown(e, junction); return; }
+      }
+      if (!e.shiftKey && !e.ctrlKey && !e.metaKey && beginSelectedWireHandle(hit)) return;
+      if (hit && (hit.kind === 'element' || hit.kind === 'label' || hit.kind === 'pin')) {
+        const targetId = hit.kind === 'pin' ? pinPositions.get(hit.id)?.compId : hit.id;
+        if (targetId && targetId !== el.id) {
+          const target = elements.find(item => item.id === targetId);
+          if (target) { handleElementMouseDown(e, target); return; }
+        }
+      }
+      if (hit?.kind === 'wire' && !e.shiftKey && !e.ctrlKey && !e.metaKey &&
+          beginWireSegmentSelection(hit.id, pos.rawX, pos.rawY)) return;
     }
     if (e.shiftKey || e.ctrlKey || e.metaKey) {
       const next = selectedIds.includes(el.id) ? selectedIds.filter(id => id !== el.id) : [...selectedIds, el.id];
@@ -3143,32 +3248,27 @@ export function SchematicEditor({
                     e.stopPropagation();
                     if (e.button === 2) { wiringFromRef.current = null; wirePointerDown.current = false; setWiringFrom(null); setWiringCursor(null); setWiringWaypoints([]); return; }
                     if (e.button !== 0 || pendingComponentType) return;
-                    // A junction is an electrical object above the wire route in hit priority,
-                    // even when a wide wire hit path receives the DOM event first.
-                    if (!wiringFrom) {
-                      const junction = junctionAtPointer(e.clientX, e.clientY);
-                      if (junction) { elementMouseDownRef.current(e, junction); return; }
-                    }
+                    const pos = screenToWorld(e.clientX, e.clientY);
                     if (wiringFrom) {
-                      const pos = screenToWorld(e.clientX, e.clientY);
-                      const hit = projectPointToWire(wg.points, { x: pos.rawX, y: pos.rawY }, gridUnits);
-                      if (hit) handleWirePointClick(wire.id, hit.point.x, hit.point.y);
+                      const target = connectionHitAt(pos.rawX, pos.rawY);
+                      if (target?.kind === 'pin') handlePinClick(e, target.pin.compId, target.pin.pinId, target.pin.x, target.pin.y);
+                      else if (target?.kind === 'wire') handleWirePointClick(target.wireId, target.point.x, target.point.y);
                       return;
                     }
-                    if (!wiringFrom) {
-                      const pos = screenToWorld(e.clientX, e.clientY);
-                      const hit = projectPointToWire(wg.points, { x: pos.rawX, y: pos.rawY }, gridUnits);
-                      if (hit) {
-                        geometryDragChanged.current = false;
-                        normalizedThisDrag.current = false;
-                        dragReleaseHandled.current = false;
-                        unroutedBeforeDrag.current = new Set(wireGeometries.filter(geometry => geometry.unrouted).map(geometry => geometry.wire.id));
-                        wireSegmentDrag.current = { wireId: wire.id, segmentIndex: hit.segmentIndex, points: wg.points, started: false };
-                      }
+                    const hit = editorHitAt(e.clientX, e.clientY, 'select');
+                    if (hit?.kind === 'junction') {
+                      const junction = elements.find(item => item.id === hit.id);
+                      if (junction) { elementMouseDownRef.current(e, junction); return; }
                     }
-                    setSelectedWireId(wire.id);
-                    setSelectedId(null);
-                    setSelectedIds([]);
+                    if (beginSelectedWireHandle(hit)) return;
+                    if (hit && (hit.kind === 'element' || hit.kind === 'label' || hit.kind === 'pin')) {
+                      const targetId = hit.kind === 'pin' ? pinPositions.get(hit.id)?.compId : hit.id;
+                      const target = elements.find(item => item.id === targetId);
+                      if (target) { elementMouseDownRef.current(e, target); return; }
+                    }
+                    if (!beginWireSegmentSelection(hit?.kind === 'wire' ? hit.id : wire.id, pos.rawX, pos.rawY)) {
+                      setSelectedWireId(wire.id); setSelectedId(null); setSelectedIds([]);
+                    }
                   }}
                   onContextMenu={event => { event.preventDefault(); event.stopPropagation(); setContextMenu(null); setSelectedWireId(wire.id); setSelectedId(null); setSelectedIds([]); setWireContextMenu({ id: wire.id, x: event.clientX, y: event.clientY }); }}
                   onMouseUp={(e) => {
@@ -3474,7 +3574,7 @@ export function SchematicEditor({
 
                 </g>
               );
-            }), [sceneLabels, elements, wires, selectedId, selectedIds, wiringFrom, pendingComponentType, zoom, showElementNames, showElementValues, showNodeNumbers, circuitGraph, connectedPinKeys, copiedElement, gridUnits, wireMode, pan, draggingElemId, dragOffset, wiringWaypoints, appearance, onHoverStatus, onWiresChange, onElementsChange, onOpenProperties, onBeginContinuousEdit, onEndContinuousEdit])}
+            }), [sceneLabels, elements, wires, selectedId, selectedIds, selectedWireId, wiringFrom, pendingComponentType, zoom, showElementNames, showElementValues, showNodeNumbers, circuitGraph, connectedPinKeys, copiedElement, gridUnits, wireMode, pan, draggingElemId, dragOffset, wiringWaypoints, appearance, onHoverStatus, onWiresChange, onElementsChange, onOpenProperties, onBeginContinuousEdit, onEndContinuousEdit])}
             {hoveredPin && (wiringFrom?.compId !== hoveredPin.compId || wiringFrom.pinId !== hoveredPin.pinId) && (() => {
               const pin = pinPositions.get(`${hoveredPin.compId}_${hoveredPin.pinId}`);
               return pin && <g data-export-hide="true" transform={`translate(${pin.x}, ${pin.y})`} pointerEvents="none">

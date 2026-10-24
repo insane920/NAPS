@@ -15,7 +15,7 @@ import { paperSize, parsePrintLayout, computePrintPlacement, SCHEMATIC_UNITS_PER
 import { titleBlockBounds, TITLE_BLOCK_HEIGHT_MM, TITLE_BLOCK_WIDTH_MM } from '../src/utils/eskdTitleBlock';
 import { rasterPagePdf } from '../src/utils/rasterPdf';
 import { DEFAULT_CHIP_PINS } from '../src/utils/chipPins';
-import { pickEditorHit } from '../src/utils/editorHitTest';
+import { hitTestEditorScene, pickEditorHit } from '../src/utils/editorHitTest';
 
 const overlappingHits = [
   { kind: 'wire' as const, id: 'wire-b', distancePx: 0 },
@@ -37,6 +37,25 @@ assert.equal(pickEditorHit(overlappingHits.filter(hit => hit.kind === 'wire'), '
   'coincident wire hits have a stable ID tie-break independent of DOM order');
 assert.equal(pickEditorHit([{ kind: 'element', id: 'body', distancePx: 0 }], 'connect'), null,
   'a symbol body is never an electrical endpoint');
+const denseShapes = [
+  { kind: 'wire' as const, id: 'wire', radiusPx: 8, points: [{ x: 0, y: 0 }, { x: 40, y: 0 }] },
+  { kind: 'element' as const, id: 'element', left: 16, top: -4, right: 24, bottom: 4 },
+  { kind: 'label' as const, id: 'label', left: 18, top: -3, right: 30, bottom: 2 },
+  { kind: 'waypoint' as const, id: 'bend', x: 20, y: 0, radiusPx: 6 },
+  { kind: 'wire-end' as const, id: 'end', x: 20, y: 0, radiusPx: 7 },
+  { kind: 'pin' as const, id: 'pin', x: 20, y: 0, radiusPx: 12 },
+  { kind: 'junction' as const, id: 'node', x: 20, y: 0, radiusPx: 9 },
+];
+assert.equal(hitTestEditorScene(denseShapes, { x: 20, y: 0 }, 2, 'select')?.id, 'node');
+assert.equal(hitTestEditorScene(denseShapes.filter(hit => hit.kind !== 'junction'), { x: 20, y: 0 }, 2, 'select')?.id, 'end');
+assert.equal(hitTestEditorScene(denseShapes, { x: 20, y: 0 }, 2, 'connect')?.id, 'node',
+  'coincident electrical contacts resolve deterministically at their explicit junction');
+assert.equal(hitTestEditorScene(denseShapes, { x: 35, y: 0 }, 2, 'select')?.id, 'wire');
+assert.equal(hitTestEditorScene([{ kind: 'wire', id: 'diagonal', radiusPx: 8,
+  points: [{ x: 0, y: 0 }, { x: 40, y: 40 }] }], { x: 20, y: 21 }, 2, 'select')?.segmentIndex, 0,
+  '45-degree wire uses the same geometric hit test as horizontal and vertical segments');
+assert.equal(hitTestEditorScene(denseShapes, { x: 20, y: 15 }, 2, 'select'), null,
+  'hit radii scale with zoom rather than changing the electrical coordinates');
 
 const recoveryData = new Map<string, string>();
 const reconnectElements = [[100, 100], [500, 100], [300, 100]].map(([x, y], index) => ({

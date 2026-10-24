@@ -20,6 +20,7 @@ cases.push('browser-source-variants.cjs');
 cases.push('browser-obstacle-routing.cjs');
 cases.push('browser-sheet-navigation.cjs');
 cases.push('browser-junction-selection.cjs');
+cases.push('browser-hit-testing.cjs');
 cases.push('browser-manual-waypoint.cjs');
 if (process.env.NAPS_BROWSER_CASE) {
   const selected = process.env.NAPS_BROWSER_CASE;

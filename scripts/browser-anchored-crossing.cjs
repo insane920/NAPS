@@ -24,7 +24,13 @@ const assert = require('node:assert/strict');
         { wire: wires[0], points: [{ x: 100, y: 200 }, { x: 500, y: 200 }] },
         { wire: wires[1], points: [{ x: 300, y: 100 }, { x: 300, y: 300 }] },
       ], wires[1].id);
-      return exportToYamlScm(crossed.elements, crossed.wires, SAMPLE_CIRCUITS[0].transient,
+      const automatic = crossed.elements.find(element => element.autoCrossing);
+      const duplicate = { ...automatic, id: 'duplicate-marker', name: 'Nduplicate' };
+      const fragments = crossed.wires.map((wire, index) => index !== 0 ? wire : ({ ...wire,
+        fromCompId: wire.fromCompId === automatic.id ? duplicate.id : wire.fromCompId,
+        toCompId: wire.toCompId === automatic.id ? duplicate.id : wire.toCompId,
+      }));
+      return exportToYamlScm([...crossed.elements, duplicate], fragments, SAMPLE_CIRCUITS[0].transient,
         undefined, undefined, 'current', 'connect');
     });
     await page.locator('input[type=file]').setInputFiles({ name: 'anchored-crossing.scm',

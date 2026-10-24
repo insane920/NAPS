@@ -3,7 +3,7 @@ import { getCircuitPinIds, parseEngValue } from '../math/circuitSolver';
 import { DEFAULT_PRINT_LAYOUT, parsePrintLayout, SCHEMATIC_UNITS_PER_MM, type PrintLayout } from './printLayout';
 import { validateChipPins } from './chipPins';
 import { validatePassiveModel } from '../math/passiveModel';
-import { mergeCoincidentJunctions, promoteAnchoredCrossings } from './junctionTopology';
+import { mergeCoincidentAutomaticCrossings, mergeCoincidentJunctions, promoteAnchoredCrossings } from './junctionTopology';
 
 /**
  * ТЗ Секция 5: Формат файла проекта YAML (.scm)
@@ -618,7 +618,8 @@ export function parseYamlScm(yamlText: string): {
     throw new Error('AC: проверьте диапазон частот и число точек (2–2000).');
   }
   const crossingMode = majorVersion === 8 ? 'connect' : 'explicit';
-  const anchored = promoteAnchoredCrossings(elements, wires, crossingMode);
+  const deduplicated = mergeCoincidentAutomaticCrossings(elements, wires, crossingMode);
+  const anchored = promoteAnchoredCrossings(deduplicated.elements, deduplicated.wires, crossingMode);
   const junctions = mergeCoincidentJunctions(anchored.elements, anchored.wires, crossingMode);
   return {
     elements: junctions.elements,

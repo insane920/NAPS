@@ -44,7 +44,7 @@ import { SpatialIndex } from '../utils/spatialIndex';
 import { hitTestEditorScene, pickEditorHit, type EditorHitShape } from '../utils/editorHitTest';
 import { chipPins, DEFAULT_CHIP_PINS } from '../utils/chipPins';
 import { textBlockBounds } from '../utils/textBlock';
-import { mergeCoincidentJunctions, promoteAnchoredCrossings } from '../utils/junctionTopology';
+import { mergeCoincidentAutomaticCrossings, mergeCoincidentJunctions, promoteAnchoredCrossings } from '../utils/junctionTopology';
 
 interface SchematicEditorProps {
   elements: CircuitElement[];
@@ -522,7 +522,8 @@ export function normalizeCrossingTopology(
   elements: CircuitElement[], wires: CircuitWire[], routed: RoutedWire[], mode: WireCrossingMode,
 ): { elements: CircuitElement[]; wires: CircuitWire[] } {
   if (mode === 'explicit') return { elements, wires };
-  const anchored = promoteAnchoredCrossings(elements, wires, mode);
+  const deduplicated = mergeCoincidentAutomaticCrossings(elements, wires, mode);
+  const anchored = promoteAnchoredCrossings(deduplicated.elements, deduplicated.wires, mode);
   const base = collapseAutomaticCrossings(anchored.elements, anchored.wires, routed);
   const merged = mergeCoincidentJunctions(base.elements, base.wires, mode);
   if (elements.some(element => element.autoCrossing) && base.elements === elements && merged.elements === elements) return { elements, wires };

@@ -22,7 +22,7 @@ import { exportToYamlScm, parseYamlScm } from '../src/utils/yamlScm';
 import { SAMPLE_CIRCUITS } from '../src/data/sampleCircuits';
 import { SpatialIndex, type SpatialEntry } from '../src/utils/spatialIndex';
 import { componentObstacle, routeAroundObstacles, routeIsClear } from '../src/utils/orthogonalRouter';
-import { mergeCoincidentJunctions, promoteAnchoredCrossings } from '../src/utils/junctionTopology';
+import { mergeCoincidentAutomaticCrossings, mergeCoincidentJunctions, promoteAnchoredCrossings } from '../src/utils/junctionTopology';
 import type { CircuitElement, CircuitWire } from '../src/types';
 
 const close = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y) < 1e-6;
@@ -249,6 +249,28 @@ const derivedAnchor = materializeWireCrossings(anchoredElements, anchoredWires, 
   { wire: anchoredWires[0], points: [{ x: -100, y: 0 }, { x: 100, y: 0 }] },
   { wire: anchoredWires[1], points: [{ x: 0, y: -100 }, { x: 0, y: 100 }] },
 ], anchoredWires[1].id);
+const originalAuto = derivedAnchor.elements.find(element => element.autoCrossing)!;
+const duplicateAuto: CircuitElement = { ...originalAuto, id: 'duplicate-auto', name: 'Nduplicate' };
+const duplicatedFragments = derivedAnchor.wires.map((wire, index) => index !== 0 ? wire : {
+  ...wire,
+  toCompId: wire.toCompId === originalAuto.id ? duplicateAuto.id : wire.toCompId,
+  fromCompId: wire.fromCompId === originalAuto.id ? duplicateAuto.id : wire.fromCompId,
+});
+const repairedAuto = mergeCoincidentAutomaticCrossings([...derivedAnchor.elements, duplicateAuto],
+  duplicatedFragments, 'connect');
+assert.equal(repairedAuto.elements.filter(element => element.autoCrossing).length, 1,
+  'two coincident automatic markers become one without freezing route provenance');
+assert.equal(repairedAuto.wires.filter(wire => wire.originWireId).length, derivedAnchor.wires.length);
+assert(repairedAuto.wires.every(wire => wire.fromCompId !== duplicateAuto.id && wire.toCompId !== duplicateAuto.id));
+assert.equal(buildCircuitGraph(repairedAuto.elements, repairedAuto.wires).pinToNode.get('west_1'),
+  buildCircuitGraph(repairedAuto.elements, repairedAuto.wires).pinToNode.get('north_1'));
+const repairedImport = parseYamlScm(exportToYamlScm([...derivedAnchor.elements, duplicateAuto],
+  duplicatedFragments, sample.transient, undefined, undefined, 'current', 'connect'));
+assert.equal(repairedImport.elements.filter(element => element.autoCrossing).length, 1,
+  'SCM 8 import repairs duplicate derived markers while keeping one electrical net');
+assert.equal(mergeCoincidentAutomaticCrossings([...derivedAnchor.elements, duplicateAuto],
+  duplicatedFragments, 'explicit').elements.length, derivedAnchor.elements.length + 1,
+  'SCM 7 keeps its original explicit crossing semantics');
 const remoteElements = derivedAnchor.elements.map(element => ({ ...element,
   id: `remote_${element.id}`, name: `remote_${element.name}`, x: element.x + 500 }));
 const remoteWires = derivedAnchor.wires.map(wire => ({ ...wire, id: `remote_${wire.id}`,

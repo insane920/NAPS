@@ -3,6 +3,7 @@ import { getCircuitPinIds, parseEngValue } from '../math/circuitSolver';
 import { DEFAULT_PRINT_LAYOUT, parsePrintLayout, SCHEMATIC_UNITS_PER_MM, type PrintLayout } from './printLayout';
 import { validateChipPins } from './chipPins';
 import { validatePassiveModel } from '../math/passiveModel';
+import { mergeCoincidentJunctions } from './junctionTopology';
 
 /**
  * ТЗ Секция 5: Формат файла проекта YAML (.scm)
@@ -616,9 +617,10 @@ export function parseYamlScm(yamlText: string): {
   if (hasAc && (!Number.isFinite(fMin) || !Number.isFinite(fMax) || fMin <= 0 || fMax <= fMin || !Number.isSafeInteger(acPoints) || acPoints < 2 || acPoints > 2000)) {
     throw new Error('AC: проверьте диапазон частот и число точек (2–2000).');
   }
+  const junctions = mergeCoincidentJunctions(elements, wires, majorVersion === 8 ? 'connect' : 'explicit');
   return {
-    elements,
-    wires,
+    elements: junctions.elements,
+    wires: junctions.wires,
     crossingMode: majorVersion === 8 ? 'connect' : 'explicit',
     printLayout: parsePrintLayout(pageFormat, pageOrientation, gridMm),
     description,

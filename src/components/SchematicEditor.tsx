@@ -44,6 +44,7 @@ import { SpatialIndex } from '../utils/spatialIndex';
 import { hitTestEditorScene, pickEditorHit, type EditorHitShape } from '../utils/editorHitTest';
 import { chipPins, DEFAULT_CHIP_PINS } from '../utils/chipPins';
 import { textBlockBounds } from '../utils/textBlock';
+import { mergeCoincidentJunctions } from '../utils/junctionTopology';
 
 interface SchematicEditorProps {
   elements: CircuitElement[];
@@ -504,8 +505,9 @@ export function normalizeCrossingTopology(
 ): { elements: CircuitElement[]; wires: CircuitWire[] } {
   if (mode === 'explicit') return { elements, wires };
   const base = collapseAutomaticCrossings(elements, wires, routed);
-  if (elements.some(element => element.autoCrossing) && base.elements === elements) return { elements, wires };
-  let nextElements = base.elements, nextWires = base.wires;
+  const merged = mergeCoincidentJunctions(base.elements, base.wires, mode);
+  if (elements.some(element => element.autoCrossing) && base.elements === elements && merged.elements === elements) return { elements, wires };
+  let nextElements = merged.elements, nextWires = merged.wires;
   const seedRoutes = new Map(base.routes.map(item => [item.wire.id, item.points]));
   const terminal = (compId: string, pinId: string): Point | null => {
     const element = nextElements.find(item => item.id === compId);
@@ -521,7 +523,7 @@ export function normalizeCrossingTopology(
     if (wire.routeMode === 'direct') return simplifyPoints([first, ...(wire.waypoints ?? []), last]);
     return computeOrthogonalWirePoints(first, last);
   };
-  const pending = base.wires.map(wire => wire.id);
+  const pending = nextWires.map(wire => wire.id);
   const checked = new Set<string>();
   while (pending.length) {
     const id = pending.shift()!;

@@ -22,9 +22,38 @@ import { exportToYamlScm, parseYamlScm } from '../src/utils/yamlScm';
 import { SAMPLE_CIRCUITS } from '../src/data/sampleCircuits';
 import { SpatialIndex, type SpatialEntry } from '../src/utils/spatialIndex';
 import { componentObstacle, routeAroundObstacles, routeIsClear } from '../src/utils/orthogonalRouter';
+import { mergeCoincidentJunctions } from '../src/utils/junctionTopology';
 import type { CircuitElement, CircuitWire } from '../src/types';
 
 const close = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y) < 1e-6;
+const coincidentNodes: CircuitElement[] = [
+  ['left', 0, 0], ['a', 100, 0], ['b', 100, 0], ['right', 200, 0],
+].map(([id, x, y]) => ({ id: String(id), name: String(id), type: 'JUNCTION',
+  x: Number(x), y: Number(y), rotation: 0, value: 0, valueStr: '', unit: '' }));
+const coincidentWires: CircuitWire[] = [
+  { id: 'one', fromCompId: 'left', fromPinId: '1', toCompId: 'a', toPinId: '1',
+    routeMode: 'direct', manual: true, waypoints: [{ x: 40, y: 40 }] },
+  { id: 'two', fromCompId: 'b', fromPinId: '1', toCompId: 'right', toPinId: '1',
+    routeMode: 'direct', manual: true, waypoints: [{ x: 160, y: 40 }] },
+];
+const legacyNodes = mergeCoincidentJunctions(coincidentNodes, coincidentWires, 'explicit');
+assert.equal(legacyNodes.elements, coincidentNodes, 'SCM 7 coincident junctions keep separate topology');
+assert.notEqual(buildCircuitGraph(legacyNodes.elements, legacyNodes.wires).pinToNode.get('left_1'),
+  buildCircuitGraph(legacyNodes.elements, legacyNodes.wires).pinToNode.get('right_1'));
+const connectedNodes = mergeCoincidentJunctions(coincidentNodes, coincidentWires, 'connect');
+assert.equal(connectedNodes.elements.length, 3, 'SCM 8 has one explicit marker per coincident point');
+assert.equal(connectedNodes.wires[1].fromCompId, 'a');
+assert.deepEqual(connectedNodes.wires[0].waypoints, coincidentWires[0].waypoints,
+  'deduplication preserves manual routes');
+assert.equal(buildCircuitGraph(connectedNodes.elements, connectedNodes.wires).pinToNode.get('left_1'),
+  buildCircuitGraph(connectedNodes.elements, connectedNodes.wires).pinToNode.get('right_1'));
+const savedNodes = parseYamlScm(exportToYamlScm(coincidentNodes, coincidentWires, SAMPLE_CIRCUITS[0].transient,
+  undefined, undefined, 'current', 'connect'));
+assert.equal(savedNodes.elements.length, 3, 'SCM 8 import merges repeated explicit nodes');
+assert.deepEqual(savedNodes.wires.map(wire => wire.waypoints?.length), [1, 1]);
+const savedLegacyNodes = parseYamlScm(exportToYamlScm(coincidentNodes, coincidentWires, SAMPLE_CIRCUITS[0].transient,
+  undefined, undefined, 'current', 'explicit'));
+assert.equal(savedLegacyNodes.elements.length, 4, 'SCM 7 import retains coincident nodes');
 const blockingElements: CircuitElement[] = [80, 140].map((x, index) => ({
   id: `block_${index}`, name: `R${index + 1}`, type: 'R', x, y: 0,
   rotation: index ? 45 : 0, value: 1000, valueStr: '1к', unit: 'Ом',

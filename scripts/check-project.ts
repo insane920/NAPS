@@ -4,7 +4,7 @@ import { SAMPLE_CIRCUITS } from '../src/data/sampleCircuits';
 import { exportToYamlScm, parseYamlScm } from '../src/utils/yamlScm';
 import { solveCircuitTransient, solveCircuitAC, getCircuitPinIds, formatEngValue } from '../src/math/circuitSolver';
 import { topologyTypes } from '../src/math/topologyTransient';
-import { COMPONENT_CATALOG, terminalGroupForType } from '../src/components/ComponentPalette';
+import { COMPONENT_CATALOG, PLACEMENT_CATALOG, terminalGroupForType } from '../src/components/ComponentPalette';
 import { renderComponentSymbol } from '../src/components/ComponentSymbol';
 import { getComponentLabelLayout, getComponentValueLabel } from '../src/utils/componentLabels';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -320,6 +320,8 @@ assert.equal(getComponentValueLabel({ ...anchorBefore, type: 'TR3', value: 1, va
 const angledPins = getComponentPins(angled[0]);
 assert.ok(angledPins.some(pin => Math.abs(pin.x) > 1 && Math.abs(pin.y) > 1), '45-degree pin geometry must rotate on both axes');
 const auditedTypes = [...COMPONENT_CATALOG.map(component => component.type), 'PORT' as const];
+assert.ok(!PLACEMENT_CATALOG.some(component => component.type === 'PORT'),
+  'archived ports stay out of the five-family placement catalog');
 for (const type of auditedTypes) {
   const markup = renderToStaticMarkup(renderComponentSymbol({ id: 'test', type, name: 'test', x: 0, y: 0, rotation: 0, value: 0, valueStr: '', unit: '' }));
   assert.ok(markup.length > 0, `${type}: symbol`);

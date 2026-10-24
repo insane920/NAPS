@@ -103,6 +103,8 @@ const fs = require('node:fs/promises');
     await page.getByRole('button', { name: 'Экспорт ▾' }).click();
     await page.getByRole('menuitem', { name: 'PDF' }).click();
     await page.waitForFunction(() => document.querySelector('iframe[title="Предварительный просмотр листа"]')?.getAttribute('srcdoc')?.includes('data-rotation="90"'));
+    assert.equal(await page.getByText('Для графического документа A4 ГОСТ Р 2.104-2023 требует книжную ориентацию. Альбомный экспорт доступен как пользовательский вариант.').count(), 1,
+      'A4 landscape must not be presented as a standards-compliant graphical drawing');
     const landscapePreview = await page.getByTitle('Предварительный просмотр листа').getAttribute('srcdoc');
     assert.match(landscapePreview, /data-width-mm="55"/);
     assert.match(landscapePreview, /data-height-mm="185"/);

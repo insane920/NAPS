@@ -22,7 +22,7 @@ import { exportToYamlScm, parseYamlScm } from '../src/utils/yamlScm';
 import { SAMPLE_CIRCUITS } from '../src/data/sampleCircuits';
 import { SpatialIndex, type SpatialEntry } from '../src/utils/spatialIndex';
 import { componentObstacle, routeAroundObstacles, routeIsClear } from '../src/utils/orthogonalRouter';
-import { mergeCoincidentJunctions } from '../src/utils/junctionTopology';
+import { mergeCoincidentJunctions, promoteAnchoredCrossings } from '../src/utils/junctionTopology';
 import type { CircuitElement, CircuitWire } from '../src/types';
 
 const close = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y) < 1e-6;
@@ -237,6 +237,62 @@ const reopenedRoutes = newRestored.wires.map(wire => {
 const collapsed = collapseAutomaticCrossings(newRestored.elements, newRestored.wires, reopenedRoutes);
 assert.equal(collapsed.elements.length, 4, 'automatic junction can be removed before rerouting');
 assert.equal(collapsed.wires.length, 2, 'split fragments reconstruct their original conductors');
+const anchoredElements: CircuitElement[] = [
+  ['west', -100, 0], ['east', 100, 0], ['north', 0, -100], ['south', 0, 100], ['spur', 0, -200],
+].map(([id, x, y]) => ({ id: String(id), name: String(id), type: 'JUNCTION',
+  x: Number(x), y: Number(y), rotation: 0, value: 0, valueStr: '', unit: '' }));
+const anchoredWires: CircuitWire[] = [
+  { id: 'horizontal-anchor', fromCompId: 'west', fromPinId: '1', toCompId: 'east', toPinId: '1', routeMode: 'direct' },
+  { id: 'vertical-anchor', fromCompId: 'north', fromPinId: '1', toCompId: 'south', toPinId: '1', routeMode: 'direct' },
+];
+const derivedAnchor = materializeWireCrossings(anchoredElements, anchoredWires, [
+  { wire: anchoredWires[0], points: [{ x: -100, y: 0 }, { x: 100, y: 0 }] },
+  { wire: anchoredWires[1], points: [{ x: 0, y: -100 }, { x: 0, y: 100 }] },
+], anchoredWires[1].id);
+const remoteElements = derivedAnchor.elements.map(element => ({ ...element,
+  id: `remote_${element.id}`, name: `remote_${element.name}`, x: element.x + 500 }));
+const remoteWires = derivedAnchor.wires.map(wire => ({ ...wire, id: `remote_${wire.id}`,
+  fromCompId: `remote_${wire.fromCompId}`, toCompId: `remote_${wire.toCompId}`,
+  originWireId: wire.originWireId ? `remote_${wire.originWireId}` : undefined,
+  waypoints: wire.waypoints?.map(point => ({ x: point.x + 500, y: point.y })) }));
+const isolatedCut = removeWiresPreservingTopology([...derivedAnchor.elements, ...remoteElements],
+  [...derivedAnchor.wires, ...remoteWires], new Set([derivedAnchor.wires[0].id]));
+assert.equal(isolatedCut.elements.filter(element => element.autoCrossing).length, 1,
+  'cutting one crossing must not turn an unrelated automatic crossing into a permanent junction');
+assert.equal(isolatedCut.wires.filter(wire => wire.originWireId).length, remoteWires.length,
+  'an unrelated conductor family keeps provenance needed for future rerouting');
+const autoAnchor = derivedAnchor.elements.find(element => element.autoCrossing)!;
+const branch: CircuitWire = { id: 'user-branch', fromCompId: 'spur', fromPinId: '1',
+  toCompId: autoAnchor.id, toPinId: '1', routeMode: 'direct' };
+const anchoredState = { elements: derivedAnchor.elements,
+  wires: [...derivedAnchor.wires, branch] };
+const anchoredRoutes = anchoredState.wires.map(wire => {
+  const point = (id: string) => {
+    const element = anchoredState.elements.find(item => item.id === id)!;
+    return { x: element.x, y: element.y };
+  };
+  return { wire, points: [point(wire.fromCompId), ...(wire.waypoints ?? []), point(wire.toCompId)] };
+});
+const stableAnchor = normalizeCrossingTopology(anchoredState.elements, anchoredState.wires, anchoredRoutes, 'connect');
+assert(stableAnchor.elements.some(element => element.id === autoAnchor.id && !element.autoCrossing),
+  'a user branch promotes its automatic target to a durable explicit node');
+assert(stableAnchor.wires.every(wire => stableAnchor.elements.some(element => element.id === wire.fromCompId) &&
+  stableAnchor.elements.some(element => element.id === wire.toCompId)), 'normalization never leaves dangling branch endpoints');
+assert(!stableAnchor.wires.some(wire => wire.originWireId), 'anchored conductor families become independently editable');
+const anchorGraph = buildCircuitGraph(stableAnchor.elements, stableAnchor.wires).pinToNode;
+assert.equal(anchorGraph.get('spur_1'), anchorGraph.get('west_1'), 'the explicit branch remains electrically connected');
+const anchoredReload = parseYamlScm(exportToYamlScm(anchoredState.elements, anchoredState.wires,
+  sample.transient, undefined, undefined, 'current', 'connect'));
+assert(anchoredReload.wires.every(wire => anchoredReload.elements.some(element => element.id === wire.fromCompId) &&
+  anchoredReload.elements.some(element => element.id === wire.toCompId)), 'SCM 8 import repairs anchored crossing provenance');
+const explicitAtCrossing: CircuitElement = { ...anchoredElements[4], id: 'user-junction', name: 'Nuser', x: 0, y: 0 };
+const explicitAnchor = promoteAnchoredCrossings([...anchoredState.elements, explicitAtCrossing],
+  anchoredState.wires, 'connect');
+assert(explicitAnchor.elements.some(element => element.id === explicitAtCrossing.id), 'a user-named node survives automatic-node promotion');
+assert(!explicitAnchor.elements.some(element => element.id === autoAnchor.id), 'coincident automatic marker is removed');
+assert(explicitAnchor.wires.some(wire => wire.id === branch.id && wire.toCompId === explicitAtCrossing.id));
+assert.equal(promoteAnchoredCrossings(anchoredState.elements, anchoredState.wires, 'explicit').elements,
+  anchoredState.elements, 'SCM 7 does not reinterpret automatic metadata');
 const overlap = materializeWireCrossings(crossingElements, crossingWires, [
   { wire: crossingWires[0], points: [{ x: -100, y: 0 }, { x: 100, y: 0 }] },
   { wire: crossingWires[1], points: [{ x: -50, y: 0 }, { x: 150, y: 0 }] },
@@ -292,6 +348,20 @@ const multipleCrossings = normalizeCrossingTopology(threeElements, [...crossingW
 ], 'connect');
 assert.equal(multipleCrossings.elements.filter(element => element.autoCrossing).length, 2,
   'one conductor crossing two separate nets creates two distinct junctions');
+const multiAnchor = multipleCrossings.elements.find(element => element.autoCrossing && element.x < 0)!;
+const multiSpur: CircuitElement = { ...anchoredElements[4], id: 'multi-spur', name: 'multi-spur',
+  x: multiAnchor.x, y: multiAnchor.y - 100 };
+const multiBranch: CircuitWire = { id: 'multi-user-branch', fromCompId: multiSpur.id, fromPinId: '1',
+  toCompId: multiAnchor.id, toPinId: '1', routeMode: 'direct' };
+const multiPromoted = promoteAnchoredCrossings([...multipleCrossings.elements, multiSpur],
+  [...multipleCrossings.wires, multiBranch], 'connect');
+assert.equal(multiPromoted.elements.filter(element => element.autoCrossing).length, 0,
+  'a user branch freezes every derived crossing in connected conductor families');
+assert(!multiPromoted.wires.some(wire => wire.originWireId),
+  'transitively anchored fragments cannot later collapse through a user branch');
+assert.equal(buildCircuitGraph(multiPromoted.elements, multiPromoted.wires).pinToNode.get('multi-spur_1'),
+  buildCircuitGraph(multiPromoted.elements, multiPromoted.wires).pinToNode.get('cross_5_1'),
+  'all three crossing conductor families remain electrically joined');
 const originalEnds = new Map<string, { x: number; y: number }>([
   ['cross_0', { x: -100, y: 0 }], ['cross_1', { x: 100, y: 0 }],
   ['cross_2', { x: -50, y: -100 }], ['cross_3', { x: -50, y: 100 }],

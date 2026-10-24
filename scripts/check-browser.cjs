@@ -23,6 +23,7 @@ cases.push('browser-junction-selection.cjs');
 cases.push('browser-hit-testing.cjs');
 cases.push('browser-text-blocks.cjs');
 cases.push('browser-coincident-junctions.cjs');
+cases.push('browser-anchored-crossing.cjs');
 cases.push('browser-manual-waypoint.cjs');
 if (process.env.NAPS_BROWSER_CASE) {
   const selected = process.env.NAPS_BROWSER_CASE;

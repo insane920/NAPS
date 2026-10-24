@@ -44,7 +44,7 @@ import { SpatialIndex } from '../utils/spatialIndex';
 import { hitTestEditorScene, pickEditorHit, type EditorHitShape } from '../utils/editorHitTest';
 import { chipPins, DEFAULT_CHIP_PINS } from '../utils/chipPins';
 import { textBlockBounds } from '../utils/textBlock';
-import { mergeCoincidentJunctions } from '../utils/junctionTopology';
+import { mergeCoincidentJunctions, promoteAnchoredCrossings } from '../utils/junctionTopology';
 
 interface SchematicEditorProps {
   elements: CircuitElement[];
@@ -273,10 +273,28 @@ type RoutedWire = { wire: CircuitWire; points: Point[] };
 /** An explicit cut or isolation turns automatically split routes into editable branches. */
 export function freezeCrossingProvenance(elements: CircuitElement[], wires: CircuitWire[], changedWireIds: ReadonlySet<string>):
   { elements: CircuitElement[]; wires: CircuitWire[] } {
-  if (!wires.some(wire => changedWireIds.has(wire.id) && wire.originWireId)) return { elements, wires };
+  const origins = new Set(wires.filter(wire => changedWireIds.has(wire.id) && wire.originWireId)
+    .map(wire => wire.originWireId!));
+  if (!origins.size) return { elements, wires };
+  const automatic = new Set(elements.filter(element => element.autoCrossing).map(element => element.id));
+  const frozenNodes = new Set<string>();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const wire of wires) {
+      if (!wire.originWireId) continue;
+      if ((frozenNodes.has(wire.fromCompId) || frozenNodes.has(wire.toCompId)) && !origins.has(wire.originWireId)) {
+        origins.add(wire.originWireId); changed = true;
+      }
+      if (origins.has(wire.originWireId)) for (const id of [wire.fromCompId, wire.toCompId]) {
+        if (automatic.has(id) && !frozenNodes.has(id)) { frozenNodes.add(id); changed = true; }
+      }
+    }
+  }
   return {
-    elements: elements.map(element => element.autoCrossing ? { ...element, autoCrossing: undefined } : element),
-    wires: wires.map(wire => wire.originWireId ? { ...wire, originWireId: undefined } : wire),
+    elements: elements.map(element => frozenNodes.has(element.id) ? { ...element, autoCrossing: undefined } : element),
+    wires: wires.map(wire => wire.originWireId && origins.has(wire.originWireId)
+      ? { ...wire, originWireId: undefined } : wire),
   };
 }
 
@@ -504,7 +522,8 @@ export function normalizeCrossingTopology(
   elements: CircuitElement[], wires: CircuitWire[], routed: RoutedWire[], mode: WireCrossingMode,
 ): { elements: CircuitElement[]; wires: CircuitWire[] } {
   if (mode === 'explicit') return { elements, wires };
-  const base = collapseAutomaticCrossings(elements, wires, routed);
+  const anchored = promoteAnchoredCrossings(elements, wires, mode);
+  const base = collapseAutomaticCrossings(anchored.elements, anchored.wires, routed);
   const merged = mergeCoincidentJunctions(base.elements, base.wires, mode);
   if (elements.some(element => element.autoCrossing) && base.elements === elements && merged.elements === elements) return { elements, wires };
   let nextElements = merged.elements, nextWires = merged.wires;
@@ -3741,11 +3760,11 @@ export function SchematicEditor({
           {printMode === 'actual' && <label>Масштаб <select aria-label="Масштаб печати" value={requestedPrintScale} onChange={event => setRequestedPrintScale(Number(event.target.value))} className="rounded border border-slate-300 p-1"><option value={2}>2:1</option><option value={1}>1:1</option><option value={0.5}>1:2</option><option value={0.4}>1:2,5</option><option value={0.25}>1:4</option></select></label>}
           <label>Поля, мм <input aria-label="Поля страницы в миллиметрах" type="number" min="0" max="100" step="1" value={printMarginMm} onChange={event => setPrintMarginMm(Number(event.target.value))} className="w-14 rounded border border-slate-300 p-1" /></label>
           <label className="flex items-center gap-1"><input type="checkbox" checked={centerPrint} onChange={event => setCenterPrint(event.target.checked)} />По центру</label>
-          <label className="flex items-center gap-1"><input type="checkbox" checked={printFrame} onChange={event => setPrintFrame(event.target.checked)} />Рамка ЕСКД</label>
+          <label className="flex items-center gap-1"><input type="checkbox" checked={printFrame} onChange={event => setPrintFrame(event.target.checked)} />Рамка и основная надпись</label>
           <label className="flex items-center gap-1"><input type="checkbox" checked={printMonochrome} onChange={event => setPrintMonochrome(event.target.checked)} />Ч/б</label>
           <div className="ml-auto flex gap-2"><button type="button" disabled={!exportPlan?.placement.fits} onClick={() => downloadSchematic(exportTarget)} className="rounded bg-blue-600 px-3 py-1.5 text-white disabled:opacity-40">{exportTarget === 'print' ? 'Печать…' : `Скачать ${exportTarget.toUpperCase()}`}</button><button type="button" onClick={() => setExportTarget(null)} className="rounded border border-slate-300 px-3 py-1.5">Закрыть</button></div>
         </div>
-        <div className="mx-auto w-full max-w-6xl bg-white px-4 py-1 text-xs text-slate-600">{exportPlan && <>Схема: {exportPlan.placement.contentWidthMm.toFixed(1)} × {exportPlan.placement.contentHeightMm.toFixed(1)} мм · фактический масштаб {printScaleLabel(exportPlan.placement.scale)} · лист {exportPlan.placement.widthMm} × {exportPlan.placement.heightMm} мм</>}{exportError && <span className="text-red-700">{exportError}</span>}{exportPlan && !exportPlan.placement.fits && <span className="ml-2 text-red-700">Схема не помещается: выберите А3, уменьшите масштаб или включите «Вписать в страницу». Автоматическое обрезание отключено.</span>}</div>
+        <div className="mx-auto w-full max-w-6xl bg-white px-4 py-1 text-xs text-slate-600">{exportPlan && <>Схема: {exportPlan.placement.contentWidthMm.toFixed(1)} × {exportPlan.placement.contentHeightMm.toFixed(1)} мм · фактический масштаб {printScaleLabel(exportPlan.placement.scale)} · лист {exportPlan.placement.widthMm} × {exportPlan.placement.heightMm} мм</>}{exportError && <span className="text-red-700">{exportError}</span>}{exportPlan && !exportPlan.placement.fits && <span className="ml-2 text-red-700">Схема не помещается: выберите А3, уменьшите масштаб или включите «Вписать в страницу». Автоматическое обрезание отключено.</span>}{printFrame && printLayout.format === 'A4' && printLayout.orientation === 'landscape' && <span className="ml-2 text-amber-800">Для графического документа A4 ГОСТ Р 2.104-2023 требует книжную ориентацию. Альбомный экспорт доступен как пользовательский вариант.</span>}</div>
         <iframe ref={printPreviewRef} title="Предварительный просмотр листа" srcDoc={exportPlan?.html ?? ''} className="mx-auto min-h-0 w-full max-w-6xl flex-1 rounded-b bg-white" />
       </div>}
     </div>

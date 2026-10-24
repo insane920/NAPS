@@ -15,6 +15,28 @@ import { paperSize, parsePrintLayout, computePrintPlacement, SCHEMATIC_UNITS_PER
 import { titleBlockBounds, TITLE_BLOCK_HEIGHT_MM, TITLE_BLOCK_WIDTH_MM } from '../src/utils/eskdTitleBlock';
 import { rasterPagePdf } from '../src/utils/rasterPdf';
 import { DEFAULT_CHIP_PINS } from '../src/utils/chipPins';
+import { pickEditorHit } from '../src/utils/editorHitTest';
+
+const overlappingHits = [
+  { kind: 'wire' as const, id: 'wire-b', distancePx: 0 },
+  { kind: 'wire' as const, id: 'wire-a', distancePx: 0 },
+  { kind: 'pin' as const, id: 'pin-a', distancePx: 5 },
+  { kind: 'junction' as const, id: 'junction-a', distancePx: 8 },
+  { kind: 'waypoint' as const, id: 'waypoint-a', distancePx: 1 },
+  { kind: 'wire-end' as const, id: 'end-a', distancePx: 1 },
+  { kind: 'element' as const, id: 'body-a', distancePx: 0 },
+  { kind: 'label' as const, id: 'label-a', distancePx: 0 },
+];
+assert.equal(pickEditorHit(overlappingHits, 'select')?.id, 'junction-a',
+  'explicit junction wins over handles, body and wire independent of paint order');
+assert.equal(pickEditorHit(overlappingHits.filter(hit => hit.kind !== 'junction'), 'select')?.id, 'end-a',
+  'a selected wire endpoint wins over a coincident waypoint or wire segment');
+assert.equal(pickEditorHit(overlappingHits, 'connect')?.id, 'pin-a',
+  'connection tool prefers a terminal to a visual wire crossing');
+assert.equal(pickEditorHit(overlappingHits.filter(hit => hit.kind === 'wire'), 'select')?.id, 'wire-a',
+  'coincident wire hits have a stable ID tie-break independent of DOM order');
+assert.equal(pickEditorHit([{ kind: 'element', id: 'body', distancePx: 0 }], 'connect'), null,
+  'a symbol body is never an electrical endpoint');
 
 const recoveryData = new Map<string, string>();
 const reconnectElements = [[100, 100], [500, 100], [300, 100]].map(([x, y], index) => ({

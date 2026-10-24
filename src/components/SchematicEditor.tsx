@@ -41,6 +41,7 @@ import { componentObstacle, routeAroundObstacles, routeIsClear } from '../utils/
 import type { CircuitDescription } from '../utils/yamlScm';
 import { createTitleBlock } from '../utils/eskdTitleBlock';
 import { SpatialIndex } from '../utils/spatialIndex';
+import { pickEditorHit } from '../utils/editorHitTest';
 import { chipPins, DEFAULT_CHIP_PINS } from '../utils/chipPins';
 
 interface SchematicEditorProps {
@@ -1368,14 +1369,10 @@ export function SchematicEditor({
   const junctionAtPointer = (clientX: number, clientY: number) => {
     const pointer = screenToWorld(clientX, clientY);
     const radius = 9 / zoom;
-    let nearest: CircuitElement | null = null;
-    let distance = radius;
-    for (const element of elements) {
-      if (element.type !== 'JUNCTION') continue;
-      const current = Math.hypot(pointer.rawX - element.x, pointer.rawY - element.y);
-      if (current <= distance) { nearest = element; distance = current; }
-    }
-    return nearest;
+    return pickEditorHit(elements.filter(element => element.type === 'JUNCTION').map(element => ({
+      kind: 'junction' as const, id: element.id, element,
+      distancePx: Math.hypot(pointer.rawX - element.x, pointer.rawY - element.y) * zoom,
+    })).filter(hit => hit.distancePx <= radius * zoom), 'select')?.element ?? null;
   };
 
   // Горячие клавиши редактора и быстрый выбор элемента из библиотеки.
@@ -1909,26 +1906,29 @@ export function SchematicEditor({
     | { kind: 'pin'; pin: NonNullable<ReturnType<typeof pinPositions.get>> }
     | { kind: 'wire'; wireId: string; segmentIndex: number; point: Point }
     | null => {
-    let nearestPin: ReturnType<typeof pinPositions.get>;
-    let pinDistance = 12 / zoom;
-    for (const pin of pinSpatialIndex.query(x, y, pinDistance)) {
+    type ConnectionCandidate =
+      | { kind: 'pin'; id: string; distancePx: number; pin: NonNullable<ReturnType<typeof pinPositions.get>> }
+      | { kind: 'wire'; id: string; distancePx: number; wireId: string; segmentIndex: number; point: Point };
+    const candidates: ConnectionCandidate[] = [];
+    const pinRadius = 12 / zoom;
+    for (const pin of pinSpatialIndex.query(x, y, pinRadius)) {
       const distance = Math.hypot(x - pin.x, y - pin.y);
-      if (distance <= pinDistance) { nearestPin = pin; pinDistance = distance; }
+      if (distance <= pinRadius) candidates.push({ kind: 'pin', id: `${pin.compId}_${pin.pinId}`,
+        distancePx: distance * zoom, pin });
     }
-    if (nearestPin) return { kind: 'pin', pin: nearestPin };
-    let wireHit: { kind: 'wire'; wireId: string; segmentIndex: number; point: Point } | null = null;
-    let wireDistance = 8 / zoom;
-    for (const segment of wireSpatialIndex.query(x, y, wireDistance)) {
+    const wireRadius = 8 / zoom;
+    for (const segment of wireSpatialIndex.query(x, y, wireRadius)) {
       if (segment.wireId === excludedWireId) continue;
       const geometry = wireGeometries.find(item => item.wire.id === segment.wireId);
       if (!geometry || geometry.wire.disabled) continue;
       const hit = projectPointToWire(geometry.points, { x, y }, gridUnits);
-      if (hit && hit.distance <= wireDistance) {
-        wireDistance = hit.distance;
-        wireHit = { kind: 'wire', wireId: segment.wireId, segmentIndex: hit.segmentIndex, point: hit.point };
-      }
+      if (hit && hit.distance <= wireRadius) candidates.push({ kind: 'wire', id: `${segment.wireId}:${hit.segmentIndex}`,
+        distancePx: hit.distance * zoom, wireId: segment.wireId, segmentIndex: hit.segmentIndex, point: hit.point });
     }
-    return wireHit;
+    const chosen = pickEditorHit(candidates, 'connect');
+    if (!chosen) return null;
+    return chosen.kind === 'pin' ? { kind: 'pin', pin: chosen.pin } :
+      { kind: 'wire', wireId: chosen.wireId, segmentIndex: chosen.segmentIndex, point: chosen.point };
   };
   const endpointTargetAt = (x: number, y: number, sourceWireId: string):
     { target: ReconnectTarget; point: Point } => {

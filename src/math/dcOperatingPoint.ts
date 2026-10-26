@@ -121,7 +121,9 @@ export function solveDCOperatingPoint(elements: CircuitElement[], wires: Circuit
       ? Math.max(0, ...answer.map((value, i) => Math.abs(value - guess[i]))) : 0;
     guess = answer;
     if (!changes && delta <= 1e-8 * Math.max(1, ...answer.map(Math.abs))) {
-      return { potentials, states, branchCurrents: new Map(active.filter(e => e.type === 'L').map(e => [e.id, answer[extraIndex.get(e.id)!]])) };
+      // Retain every current already solved as an MNA unknown, including
+      // voltage sources and controlled branches, not only inductors.
+      return { potentials, states, branchCurrents: new Map(extras.map(id => [id, answer[extraIndex.get(id)!]])) };
     }
   }
   throw new Error('DC-рабочая точка: нелинейная схема не сошлась за 80 итераций.');

@@ -44,6 +44,32 @@ for (const drive of [1000, 1e12]) {
   near(voltage / 1000 + voltage ** 3, drive, 1e-8);
 }
 
+// A uniform nonlinear series chain has the exact equal-drop solution. This
+// exercises the coupled DC Jacobian rather than independent one-node devices.
+for (const direction of [-1, 1]) {
+  const count = 128, drop = direction * 0.1;
+  const chain = [element('DC', 'V_DC', count * drop), element('GND', 'GND', 0),
+    ...Array.from({ length: count }, (_, index) => element(`R${index}`, 'R', 10, nonlinear(0.5)))];
+  const connections = [wire('DC', '1', 'R0', '1'), wire('DC', '2', 'GND', '1'),
+    wire(`R${count - 1}`, '2', 'GND', '1'),
+    ...Array.from({ length: count - 1 }, (_, index) => wire(`R${index}`, '2', `R${index + 1}`, '1'))];
+  const point = solveDCOperatingPoint(chain, connections);
+  const { buildCircuitGraph } = await import('../src/math/circuitSolver');
+  const nodes = buildCircuitGraph(chain, connections).pinToNode;
+  for (let index = 0; index < count; index++) {
+    const first = point.potentials.get(nodes.get(`R${index}_1`)!)!;
+    const last = point.potentials.get(nodes.get(`R${index}_2`)!)!;
+    near(first - last, drop, 1e-8);
+  }
+  near(point.branchCurrents.get('DC')!, -(drop / 10 + 0.5 * drop ** 3), 1e-9);
+}
+assert.throws(() => solveDCOperatingPoint([element('V1', 'V_DC', 1), element('V2', 'V_DC', 2), element('G', 'GND', 0)],
+  [wire('V1', '1', 'V2', '1'), wire('V1', '2', 'G', '1'), wire('V2', '2', 'G', '1')]), /DC-рабочая точка/,
+  'incompatible ideal sources are diagnosed rather than assigned a fictitious operating point');
+assert.throws(() => solveDCOperatingPoint([element('I', 'I_DC', 1), element('C', 'C', 1e-6), element('G', 'GND', 0)],
+  [wire('I', '1', 'C', '1'), wire('I', '2', 'G', '1'), wire('C', '2', 'G', '1')]), /DC-рабочая точка/,
+  'a DC current into an open capacitor is diagnosed as having no steady operating point');
+
 const capacitor = [element('V', 'I_DC', -2),
   element('C', 'C', 0.001, { ...nonlinear(0.001), initialCondition: 0 }), element('G', 'GND', 0)];
 const capacitorWires = [wire('V', '1', 'C', '1'), wire('V', '2', 'G', '1'), wire('C', '2', 'G', '1')];
@@ -54,6 +80,40 @@ assert.equal(validateSimulation(capacitor, capacitorWires, cSettings, cTransient
 const biasedCapacitor = capacitor.map(item => item.id === 'V' ? { ...item, type: 'V_AC' as const, value: 1,
   secondaryValue: 1, modelParams: { sourceOffset: 2 } } : item);
 near(solveCircuitAC(biasedCapacitor, capacitorWires, ac('mag(I(C))', 1 / (2 * Math.PI))).signals['mag(I(C))'][0], 0.001 + 3 * 0.001 * 2 ** 2);
+
+// Independent charge and energy references: Q(t)=Q(U0)+I*t and
+// W(U)=integral U*dQ. Neither reference calls the implementation's passiveLaw.
+for (const capacitance of [1e-6, 1e-3, 0.1]) for (const direction of [-1, 1]) {
+  for (const kind of ['cubic', 'expression'] as const) {
+    const initialVoltage = direction * 0.5, current = direction * capacitance * 20;
+    const coefficient = capacitance * 2;
+    const charge = (u: number) => kind === 'cubic' ? capacitance * u + coefficient * u ** 3
+      : capacitance * u + coefficient * Math.tanh(u);
+    const energy = (u: number) => kind === 'cubic' ? capacitance * u * u / 2 + 3 * coefficient * u ** 4 / 4
+      : capacitance * u * u / 2 + coefficient * (u * Math.tanh(u) - Math.log(Math.cosh(u)));
+    const definition: Partial<CircuitElement> = kind === 'cubic' ? nonlinear(coefficient)
+      : { passiveModel: 'nonlinear', passiveLawDefinition: {
+        kind: 'expression', expression: 'n*x + y0*tanh(x/x0)', argumentScale: 1, outputScale: coefficient,
+      } };
+    const model = [element('V', 'I_DC', -current), element('C', 'C', capacitance,
+      { ...definition, initialCondition: initialVoltage }), element('G', 'GND', 0)];
+    const response = solveCircuitTransient(model, capacitorWires, transient('U(C)', 0.2, 0.0005));
+    const voltage = response.signals['U(C)'];
+    near(voltage[0], initialVoltage);
+    let suppliedEnergy = 0;
+    for (let index = 1; index < response.time.length; index++) {
+      const expectedCharge = charge(initialVoltage) + current * response.time[index];
+      assert(Math.abs(charge(voltage[index]) - expectedCharge) <= capacitance * 1e-6,
+        `${kind} C=${capacitance}, direction=${direction}: charge conservation at t=${response.time[index]}`);
+      suppliedEnergy += current * (voltage[index - 1] + voltage[index]) / 2 *
+        (response.time[index] - response.time[index - 1]);
+    }
+    const storedEnergy = energy(voltage.at(-1)!) - energy(initialVoltage);
+    assert(storedEnergy > 0, 'charging in either polarity increases stored energy');
+    assert(Math.abs(suppliedEnergy - storedEnergy) / storedEnergy < 2e-5,
+      `${kind} C=${capacitance}: source energy agrees with integral U*dQ within trapezoidal error`);
+  }
+}
 
 const inductor = [element('V', 'V_DC', 1), element('L', 'L', 1, { ...nonlinear(1), initialCondition: 0 }), element('G', 'GND', 0)];
 const inductorWires = [wire('V', '1', 'L', '1'), wire('V', '2', 'G', '1'), wire('L', '2', 'G', '1')];
@@ -66,6 +126,29 @@ const biasedInductor = [element('IA', 'I_AC', 1, { secondaryValue: 1, modelParam
   element('L', 'L', 1, nonlinear(1)), element('G', 'GND', 0)];
 const biasedInductorWires = [wire('IA', '1', 'L', '1'), wire('IA', '2', 'G', '1'), wire('L', '2', 'G', '1')];
 near(solveCircuitAC(biasedInductor, biasedInductorWires, ac('mag(U(L))', 1 / (2 * Math.PI))).signals['mag(U(L))'][0], 4);
+
+// A biased nonlinear R-L-C circuit has an independently derived small-signal
+// transfer 1 / (1 - w²*Ld*Cd + j*w*Rd*Cd). The DC current sink establishes
+// U(R)=1 V, U(C)=2 V and I(L)=1.5 mA; its AC current is zero.
+const mixedRLC = [element('VS', 'V_AC', 1, { secondaryValue: 100, modelParams: { sourceOffset: 3 } }),
+  element('RN', 'R', 1000, nonlinear(0.0005)), element('LN', 'L', 0.02, nonlinear(200)),
+  element('CN', 'C', 1e-6, nonlinear(2e-7)), element('BIAS', 'I_DC', 0.0015), element('G', 'GND', 0)];
+const mixedWires = [wire('VS', '1', 'RN', '1'), wire('RN', '2', 'LN', '1'), wire('LN', '2', 'CN', '1'),
+  wire('CN', '1', 'BIAS', '1'), wire('VS', '2', 'G', '1'), wire('CN', '2', 'G', '1'), wire('BIAS', '2', 'G', '1')];
+const mixedBias = solveDCOperatingPoint(mixedRLC, mixedWires);
+near(mixedBias.branchCurrents.get('LN')!, 0.0015, 1e-9);
+for (const frequency of [1, 10, 100, 1000, 10000]) {
+  const w = 2 * Math.PI * frequency;
+  const rd = 1 / (0.001 + 3 * 0.0005);
+  const cd = 1e-6 + 3 * 2e-7 * 2 ** 2;
+  const ld = 0.02 + 3 * 200 * 0.0015 ** 2;
+  const re = 1 - w * w * ld * cd, im = w * rd * cd;
+  const settings = ac('mag(U(CN))', frequency);
+  settings.signals.push({ ...settings.signals[0], id: 'phase', exprY: 'phs(U(CN))' });
+  const response = solveCircuitAC(mixedRLC, mixedWires, settings);
+  near(response.signals['mag(U(CN))'][0], 1 / Math.hypot(re, im), 1e-7);
+  near(response.signals['phs(U(CN))'][0], -Math.atan2(im, re) * 180 / Math.PI, 1e-7);
+}
 
 for (const [elements, wires, settings] of [[resistor, resistorWires, transient('I(R)', 0.25, 0.25)],
   [capacitor, capacitorWires, cSettings], [inductor, inductorWires, lSettings]] as const) {

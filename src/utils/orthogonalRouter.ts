@@ -123,7 +123,21 @@ export function routeAroundObstacles(start: RoutePoint, end: RoutePoint, startDi
     ys.push(point.y - step, point.y + step);
   }
   const xValues = ordered(xs), yValues = ordered(ys);
-  if (xValues.length * yValues.length > 30000) return null;
+  if (xValues.length * yValues.length > 30000) {
+    // Dense, irregular layouts can exceed the visibility-grid budget even
+    // when a simple outside corridor exists. Try four bounded detours first.
+    const left = Math.min(...xValues) - step, right = Math.max(...xValues) + step;
+    const top = Math.min(...yValues) - step, bottom = Math.max(...yValues) + step;
+    const detours = [
+      ...[top, bottom].map(y => [start, from, { x: from.x, y }, { x: to.x, y }, to, end]),
+      ...[left, right].map(x => [start, from, { x, y: from.y }, { x, y: to.y }, to, end]),
+    ].map(simplify).sort((a, b) => {
+      const length = (points: RoutePoint[]) => points.slice(1).reduce((sum, point, index) =>
+        sum + Math.hypot(point.x - points[index].x, point.y - points[index].y), 0);
+      return length(a) - length(b);
+    });
+    return detours.find(points => routeIsClear(points, obstacles, foreign)) ?? null;
+  }
   const width = xValues.length, height = yValues.length;
   const startX = xValues.findIndex(x => Math.abs(x - from.x) <= EPS);
   const startY = yValues.findIndex(y => Math.abs(y - from.y) <= EPS);

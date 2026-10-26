@@ -13,6 +13,7 @@ import {
   removeWiresPreservingTopology,
   reconnectWireEndpoint,
   projectPointToWire,
+  reanchorManualWiresForChanges,
   simplifyPoints,
   snapManualWirePoint,
   type Point,
@@ -23,9 +24,25 @@ import { SAMPLE_CIRCUITS } from '../src/data/sampleCircuits';
 import { SpatialIndex, type SpatialEntry } from '../src/utils/spatialIndex';
 import { componentObstacle, routeAroundObstacles, routeIsClear } from '../src/utils/orthogonalRouter';
 import { mergeCoincidentAutomaticCrossings, mergeCoincidentJunctions, promoteAnchoredCrossings } from '../src/utils/junctionTopology';
+import { uniqueWireInk } from '../src/utils/wireInk';
 import type { CircuitElement, CircuitWire } from '../src/types';
 
 const close = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y) < 1e-6;
+for (const angle of [0, 45, 90, 135, 180, 225, 270, 315]) {
+  const point = (t: number) => ({ x: t * Math.cos(angle * Math.PI / 180), y: t * Math.sin(angle * Math.PI / 180) });
+  const inkRoutes = [
+    { id: 'first', net: 'one', points: [point(0), point(100)] },
+    { id: 'overlap', net: 'one', points: [point(50), point(150), point(75)] },
+    { id: 'foreign', net: 'two', points: [point(0), point(100)] },
+  ];
+  const untouched = structuredClone(inkRoutes);
+  const ink = uniqueWireInk(inkRoutes);
+  assert(!ink.has('first') && !ink.has('foreign'), 'independent electrical nets keep separate visible geometry');
+  const retained = ink.get('overlap')!;
+  assert.equal(retained.length, 1, `${angle}°: partial overlap and reverse backtrack are painted once`);
+  assert(close(retained[0][0], point(100)) && close(retained[0][1], point(150)), `${angle}°: exact uncovered stretch`);
+  assert.deepEqual(inkRoutes, untouched, 'render minimization never changes manual geometry or topology');
+}
 const coincidentNodes: CircuitElement[] = [
   ['left', 0, 0], ['a', 100, 0], ['b', 100, 0], ['right', 200, 0],
 ].map(([id, x, y]) => ({ id: String(id), name: String(id), type: 'JUNCTION',
@@ -76,6 +93,42 @@ const rotatedStart = { x: rotatedPin.x, y: rotatedPin.y };
 const outward = { x: rotatedStart.x + Math.SQRT1_2 * 20, y: rotatedStart.y + Math.SQRT1_2 * 20 };
 assert(routeIsClear([rotatedStart, outward], [rotatedBox], []),
   '45° terminal lead is outside its rotated component body');
+const groupBefore = [
+  { ...blockingElements[0], id: 'group_a', name: 'RA', x: 0, y: 0, rotation: 0 },
+  { ...blockingElements[0], id: 'group_b', name: 'RB', x: 160, y: 40, rotation: 90 },
+];
+const groupAfter = groupBefore.map(element => ({ ...element, rotation: 45 }));
+const betweenGroup: CircuitWire = { id: 'group_route', fromCompId: 'group_a', fromPinId: '2',
+  toCompId: 'group_b', toPinId: '1', manual: true, routeMode: 'direct',
+  waypoints: [{ x: 50, y: 20 }] };
+const terminalDelta = (before: CircuitElement, after: CircuitElement, pinId: string) => {
+  const oldPin = getComponentPins(before).find(pin => pin.id === pinId)!;
+  const newPin = getComponentPins(after).find(pin => pin.id === pinId)!;
+  return { x: after.x + newPin.x - before.x - oldPin.x,
+    y: after.y + newPin.y - before.y - oldPin.y };
+};
+const groupDeltas = [terminalDelta(groupBefore[0], groupAfter[0], '2'),
+  terminalDelta(groupBefore[1], groupAfter[1], '1')];
+const groupAnchored = reanchorManualWiresForChanges([betweenGroup], groupBefore.map((before, index) => ({
+  before, after: groupAfter[index],
+})))[0];
+assert.deepEqual(groupAnchored.waypoints?.[0], {
+  x: 50 + (groupDeltas[0].x + groupDeltas[1].x) / 2,
+  y: 20 + (groupDeltas[0].y + groupDeltas[1].y) / 2,
+}, 'one manual bend follows the midpoint of both rotated terminals exactly once');
+assert.equal(buildCircuitGraph(groupAfter, [groupAnchored]).pinToNode.get('group_a_2'),
+  buildCircuitGraph(groupAfter, [groupAnchored]).pinToNode.get('group_b_1'),
+  'group rotation preserves the electrical endpoints');
+const groupRestored = parseYamlScm(exportToYamlScm(groupAfter, [groupAnchored], SAMPLE_CIRCUITS[0].transient,
+  undefined, undefined, 'current', 'connect'));
+assert.deepEqual(groupRestored.wires[0].waypoints, groupAnchored.waypoints,
+  'group rotation preserves the manual bend across SCM 8 save and load');
+const multiBend = { ...betweenGroup, waypoints: [{ x: 50, y: 20 }, { x: 90, y: 60 }, { x: 130, y: 20 }] };
+const multiAnchored = reanchorManualWiresForChanges([multiBend], groupBefore.map((before, index) => ({
+  before, after: groupAfter[index],
+})))[0];
+assert.deepEqual(multiAnchored.waypoints?.[1], multiBend.waypoints?.[1],
+  'group rotation keeps interior user bend fixed');
 const denseBlocks = Array.from({ length: 90 }, (_, index) => ({
   ...blockingElements[0], id: `dense_${index}`, x: 50 + index % 10 * 40,
   y: -180 + Math.floor(index / 10) * 40,
@@ -90,6 +143,20 @@ const denseRoute = routeAroundObstacles({ x: 0, y: 0 }, { x: 450, y: 0 }, { x: 1
 assert(denseRoute && routeIsClear(denseRoute, [...denseBlocks, ...remoteBlocks],
   [[{ x: 220, y: -240 }, { x: 220, y: -190 }]]), 'dense route avoids 90 local and 500 remote bodies');
 assert(Date.now() - denseStart < 10000, 'dense route search remains bounded');
+const irregularBlocks = Array.from({ length: 130 }, (_, index) => ({
+  left: 80 + index * 2.1, right: 90 + index * 2.1,
+  top: -100 + index * 1.3, bottom: -80 + index * 1.3,
+}));
+const budgetStart = Date.now();
+const budgetRoute = routeAroundObstacles({ x: 0, y: 0 }, { x: 500, y: 0 }, { x: 1, y: 0 },
+  { x: -1, y: 0 }, 20, [{ x: 0, y: 0 }, { x: 500, y: 0 }], irregularBlocks, []);
+assert(budgetRoute && routeIsClear(budgetRoute, irregularBlocks, []),
+  'a dense irregular layout beyond the visibility-grid budget uses a safe exterior corridor');
+assert(Date.now() - budgetStart < 1000, 'budget fallback is bounded independently of the Cartesian grid');
+const enclosedRoute = [[{ x: 10, y: -200 }, { x: 10, y: 200 }]];
+assert.equal(routeAroundObstacles({ x: 0, y: 0 }, { x: 500, y: 0 }, { x: 1, y: 0 },
+  { x: -1, y: 0 }, 20, [{ x: 0, y: 0 }, { x: 500, y: 0 }], irregularBlocks, enclosedRoute), null,
+  'budget fallback never bypasses a foreign network blocking the terminal lead');
 assert.equal(routeAroundObstacles({ x: 0, y: 0 }, { x: 200, y: 0 }, { x: 1, y: 0 },
   { x: -1, y: 0 }, 20, [{ x: 0, y: 0 }, { x: 200, y: 0 }],
   [{ left: 5, right: 15, top: -5, bottom: 5 }], []), null,
@@ -122,8 +189,79 @@ reconnectNodes = buildCircuitGraph(toNetwork.elements, toNetwork.wires).pinToNod
 assert.equal(reconnectNodes.get('A_1'), reconnectNodes.get('D_1'));
 assert.equal(parseYamlScm(exportToYamlScm(toNetwork.elements, toNetwork.wires, SAMPLE_CIRCUITS[0].transient,
   undefined, undefined, 'current', 'explicit')).crossingMode, 'explicit', 'SCM 7 keeps explicit crossings');
+const overlappingTargets = Array.from({ length: 40 }, (_, index) => ({
+  ...blockingElements[0], id: `target_${index}`, name: `TARGET${index}`, x: 400, y: 200, rotation: 0,
+}));
+const reconnectStressElements = [...reconnectElements, ...overlappingTargets];
+for (const target of overlappingTargets) {
+  const result = reconnectWireEndpoint(reconnectStressElements, reconnectWires, reconnectRoutes, 'ab', 'to',
+    { kind: 'pin', compId: target.id, pinId: '1' });
+  const graph = buildCircuitGraph(result.elements, result.wires).pinToNode;
+  assert.equal(graph.get('A_1'), graph.get(`${target.id}_1`), 'explicit target identity wins among coincident contacts');
+  for (const other of overlappingTargets) if (other.id !== target.id) {
+    assert.notEqual(graph.get('A_1'), graph.get(`${other.id}_1`), 'unselected coincident contacts remain disconnected');
+  }
+  assert.notEqual(graph.get('A_1'), graph.get('B_1'), 'old endpoint is detached on every reconnection');
+  assert.deepEqual(result.wires[0].waypoints, reconnectWires[0].waypoints, 'reconnection stress preserves manual bends');
+  for (const mode of ['explicit', 'connect'] as const) {
+    const reloaded = parseYamlScm(exportToYamlScm(result.elements, result.wires, SAMPLE_CIRCUITS[0].transient,
+      undefined, undefined, 'current', mode));
+    const ids = new Map(reloaded.elements.map(element => [element.name, element.id]));
+    const restoredGraph = buildCircuitGraph(reloaded.elements, reloaded.wires).pinToNode;
+    assert.equal(restoredGraph.get(`${ids.get('A')}_1`), restoredGraph.get(`${ids.get(target.name)}_1`),
+      `${mode}: reconnection target survives round-trip among overlapping contacts`);
+  }
+}
 const key = (a: Point, b: Point) => [a, b]
   .map(point => `${point.x},${point.y}`).sort().join('|');
+
+// One conductor crosses many initially separate networks. Removing the
+// intersection must restore every original network, including after SCM reload.
+const stressElements: CircuitElement[] = [];
+const stressWires: CircuitWire[] = [];
+const stressNode = (id: string, x: number, y: number) => {
+  stressElements.push({ id, name: id, type: 'JUNCTION', x, y, rotation: 0,
+    value: 0, valueStr: '', unit: '' });
+};
+stressNode('bus_start', 0, 0); stressNode('bus_end', 1620, 0);
+stressWires.push({ id: 'stress_bus', fromCompId: 'bus_start', fromPinId: '1', toCompId: 'bus_end',
+  toPinId: '1', routeMode: 'direct', manual: true });
+for (let index = 0; index < 80; index++) {
+  stressNode(`top_${index}`, 20 + index * 20, -40);
+  stressNode(`bottom_${index}`, 20 + index * 20, 40);
+  stressWires.push({ id: `vertical_${index}`, fromCompId: `top_${index}`, fromPinId: '1',
+    toCompId: `bottom_${index}`, toPinId: '1', routeMode: 'direct', manual: true });
+}
+const stressRoutes = (elements: CircuitElement[], wires: CircuitWire[]) => {
+  const positions = new Map(elements.map(element => [element.id, { x: element.x, y: element.y }]));
+  return wires.map(wire => ({ wire, points: [positions.get(wire.fromCompId)!,
+    ...(wire.waypoints ?? []), positions.get(wire.toCompId)!] }));
+};
+const stressTime = Date.now();
+const denseConnected = normalizeCrossingTopology(stressElements, stressWires,
+  stressRoutes(stressElements, stressWires), 'connect');
+const stressGraph = buildCircuitGraph(denseConnected.elements, denseConnected.wires).pinToNode;
+assert.equal(new Set(stressElements.map(element => stressGraph.get(`${element.id}_1`))).size, 1,
+  '80 crossed networks become a single electrical net');
+const stressSCM = parseYamlScm(exportToYamlScm(denseConnected.elements, denseConnected.wires,
+  SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect'));
+const stressBase = collapseAutomaticCrossings(stressSCM.elements, stressSCM.wires,
+  stressRoutes(stressSCM.elements, stressSCM.wires));
+const stressMovedElements = stressBase.elements.map(element => element.name.startsWith('bus_')
+  ? { ...element, y: -80 } : element);
+const stressSeparated = normalizeCrossingTopology(stressMovedElements, stressBase.wires,
+  stressRoutes(stressMovedElements, stressBase.wires), 'connect');
+const separatedGraph = buildCircuitGraph(stressSeparated.elements, stressSeparated.wires).pinToNode;
+assert.equal(new Set(stressSeparated.elements.map(element => separatedGraph.get(`${element.id}_1`))).size, 81,
+  'moving the bus away after SCM reload restores all 81 independent networks');
+assert.equal(stressSeparated.elements.filter(element => element.autoCrossing).length, 0,
+  'no obsolete crossing marker remains');
+const stressLegacy = normalizeCrossingTopology(stressElements, stressWires,
+  stressRoutes(stressElements, stressWires), 'explicit');
+assert.equal(stressLegacy.elements, stressElements, 'SCM 7 does not reinterpret dense geometric crossings');
+assert.equal(new Set(stressElements.map(element => buildCircuitGraph(stressLegacy.elements,
+  stressLegacy.wires).pinToNode.get(`${element.id}_1`))).size, 81);
+assert(Date.now() - stressTime < 10000, 'dense crossing normalization has a bounded regression budget');
 
 function assertRoute(points: Point[], start: Point, end: Point, label: string) {
   assert(points.length > 0, `${label}: nonempty route`);

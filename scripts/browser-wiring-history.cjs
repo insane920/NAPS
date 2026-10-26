@@ -33,10 +33,12 @@ const assert = require('node:assert/strict');
     });
     await page.mouse.click(center.x, center.y);
     for (let index = 0; index < 50; index++) {
-      await page.keyboard.press('ArrowRight');
+      // Move away from R2: moving through its body is now correctly rejected.
+      // This case exercises history; blocked moves have a separate regression.
+      await page.keyboard.press('ArrowLeft');
       await page.waitForTimeout(5);
     }
-    assert.equal(await components.first().getAttribute('transform'), 'translate(1200, 200)', '50 moves keep the connected element on the grid');
+    assert.equal(await components.first().getAttribute('transform'), 'translate(-800, 200)', '50 moves keep the connected element on the grid');
     const movedPath = await wirePaths.first().getAttribute('d');
     assert.notEqual(movedPath, originalPath, 'wire follows the moved terminal');
     assert.equal(await wirePaths.count(), 1, 'rapid history leaves no duplicate wire');
@@ -44,7 +46,7 @@ const assert = require('node:assert/strict');
     assert.equal(await components.first().getAttribute('transform'), 'translate(200, 200)', '50 undos restore the original element');
     assert.equal(await wirePaths.first().getAttribute('d'), originalPath, '50 undos restore the original route');
     for (let index = 0; index < 50; index++) await page.keyboard.press('Control+y');
-    assert.equal(await components.first().getAttribute('transform'), 'translate(1200, 200)', '50 redos restore the moved element');
+    assert.equal(await components.first().getAttribute('transform'), 'translate(-800, 200)', '50 redos restore the moved element');
     assert.equal(await wirePaths.first().getAttribute('d'), movedPath, '50 redos restore the same route');
     const coincidentFixture = await page.evaluate(async () => {
       const { exportToYamlScm } = await import('/src/utils/yamlScm.ts');

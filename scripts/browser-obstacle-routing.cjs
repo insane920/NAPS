@@ -105,6 +105,56 @@ const fs = require('node:fs/promises');
     assert.equal(await movingBlock.getAttribute('transform'), beforeMove, 'impossible move restores component position');
     await page.keyboard.press('Control+z');
     assert.equal(await movingBlock.getAttribute('transform'), beforeMove, 'cancelled move does not enter undo history');
+    for (const mode of ['explicit', 'connect']) {
+      const keyboardFixture = await page.evaluate(async ({ scm, mode }) => {
+        const { parseYamlScm, exportToYamlScm } = await import('/src/utils/yamlScm.ts');
+        const parsed = parseYamlScm(scm);
+        return exportToYamlScm(parsed.elements, parsed.wires, parsed.transient,
+          parsed.ac, parsed.printLayout, 'current', mode);
+      }, { scm: moveScm, mode });
+      await page.locator('input[type="file"]').setInputFiles({ name: `keyboard-${mode}.scm`,
+        mimeType: 'text/plain', buffer: Buffer.from(keyboardFixture) });
+      const point = await movingBlock.evaluate(group => ({ x: group.getScreenCTM().e, y: group.getScreenCTM().f }));
+      await page.mouse.click(point.x, point.y);
+      for (let step = 0; step < 5; step++) await page.keyboard.press('ArrowUp');
+      assert.equal(await movingBlock.getAttribute('transform'), 'translate(160, 220)',
+        `${mode}: keyboard movement rejects the blocked fifth step`);
+      assert.match(dialogs.at(-1), /Изменение отменено.*нет безопасного маршрута/);
+      await page.keyboard.press('Control+z');
+      assert.equal(await movingBlock.getAttribute('transform'), 'translate(160, 240)',
+        `${mode}: cancelled keyboard step does not consume an undo entry`);
+      const drag = await movingBlock.evaluate(group => ({ x: group.getScreenCTM().e,
+        y: group.getScreenCTM().f, scale: group.getScreenCTM().d }));
+      await page.mouse.move(drag.x, drag.y); await page.mouse.down();
+      await page.mouse.move(drag.x, drag.y - 40 * drag.scale, { steps: 4 }); await page.mouse.up();
+      assert.equal(await movingBlock.getAttribute('transform'), 'translate(160, 240)',
+        `${mode}: blocked drag rolls back after Undo`);
+      await page.keyboard.press('Control+y');
+      assert.equal(await movingBlock.getAttribute('transform'), 'translate(160, 220)',
+        `${mode}: rejected drag preserves the pre-existing Redo stack`);
+      const rotateFixture = await page.evaluate(async ({ scm, mode }) => {
+        const { parseYamlScm, exportToYamlScm } = await import('/src/utils/yamlScm.ts');
+        const parsed = parseYamlScm(scm);
+        const blocker = parsed.elements.find(element => element.name === 'BLOCK');
+        blocker.x = 100; blocker.y = 240;
+        return exportToYamlScm(parsed.elements, parsed.wires, parsed.transient,
+          parsed.ac, parsed.printLayout, 'current', mode);
+      }, { scm: moveScm, mode });
+      await page.locator('input[type="file"]').setInputFiles({ name: `rotate-${mode}.scm`,
+        mimeType: 'text/plain', buffer: Buffer.from(rotateFixture) });
+      const sourceElement = page.locator('[data-component-id]').first();
+      const initialTransform = await sourceElement.getAttribute('transform');
+      const initialSymbol = await sourceElement.locator('g[transform^="rotate("]').getAttribute('transform');
+      const sourceCenter = await sourceElement.evaluate(group => ({ x: group.getScreenCTM().e, y: group.getScreenCTM().f }));
+      await page.mouse.click(sourceCenter.x, sourceCenter.y);
+      await page.keyboard.press('r');
+      assert.match(dialogs.at(-1), /Изменение отменено.*нет безопасного маршрута/);
+      assert.equal(await sourceElement.getAttribute('transform'), initialTransform,
+        `${mode}: rotation with a blocked terminal rolls back`);
+      assert.equal(await sourceElement.locator('g[transform^="rotate("]').getAttribute('transform'), initialSymbol,
+        `${mode}: rejected rotation restores the symbol and pin orientation`);
+      assert.equal(await page.locator('[data-wire-id]').count(), 1, `${mode}: rejected rotation preserves the conductor`);
+    }
     assert.deepEqual(errors, []);
     console.log('PASS: obstacle detours, safe cancellation, SCM 7/8 topology and round trip.');
   } finally { await browser.close(); }

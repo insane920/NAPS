@@ -22,11 +22,13 @@ const assert = require('node:assert/strict');
         const horizontal = page.getByLabel('Горизонтальная прокрутка схемы');
         const vertical = page.getByLabel('Вертикальная прокрутка схемы');
         const before = await component.evaluate(group => ({ x: group.getScreenCTM().e, y: group.getScreenCTM().f }));
-        await horizontal.evaluate(element => {
-          element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); element.scrollLeft += 75;
-        });
-        await vertical.evaluate(element => {
-          element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); element.scrollTop += 60;
+        await page.evaluate(() => {
+          const horizontal = document.querySelector('[aria-label="Горизонтальная прокрутка схемы"]');
+          const vertical = document.querySelector('[aria-label="Вертикальная прокрутка схемы"]');
+          horizontal.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+          vertical.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+          horizontal.scrollLeft += 75;
+          vertical.scrollTop += 60;
         });
         await page.waitForFunction(({ before }) => {
           const group = document.querySelector('[data-component-id]');

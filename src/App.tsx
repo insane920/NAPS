@@ -73,6 +73,7 @@ export default function App() {
   const historyGroupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyGroupOpen = useRef(false);
   const continuousHistoryGroup = useRef(false);
+  const continuousRedoBackup = useRef<HistorySnapshot[] | null>(null);
   const [, setHistoryVersion] = useState(0);
 
   const stopCalculation = useCallback(() => {
@@ -100,12 +101,14 @@ export default function App() {
     }
   }, []);
   const beginContinuousHistory = useCallback(() => {
+    if (!continuousHistoryGroup.current) continuousRedoBackup.current = redoStack.current.slice();
     continuousHistoryGroup.current = true;
     if (historyGroupTimer.current) clearTimeout(historyGroupTimer.current);
     historyGroupTimer.current = null;
     beginHistoryChange();
   }, [beginHistoryChange]);
   const endContinuousHistory = useCallback(() => {
+    continuousRedoBackup.current = null;
     continuousHistoryGroup.current = false; closeHistoryGroup();
   }, [closeHistoryGroup]);
   const changeElements = useCallback((value: CircuitElement[]) => {
@@ -141,8 +144,11 @@ export default function App() {
   }, [restoreSnapshot]);
   const cancelContinuousHistory = useCallback(() => {
     if (!continuousHistoryGroup.current) return;
+    const savedRedo = continuousRedoBackup.current;
+    continuousRedoBackup.current = null;
     continuousHistoryGroup.current = false;
     const previous = undoStack.current.pop();
+    if (savedRedo) redoStack.current = savedRedo;
     if (previous) restoreSnapshot(previous, 'Перемещение отменено');
     else closeHistoryGroup();
   }, [restoreSnapshot, closeHistoryGroup]);

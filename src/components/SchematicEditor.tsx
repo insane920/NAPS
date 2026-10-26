@@ -45,6 +45,7 @@ import { hitTestEditorScene, pickEditorHit, type EditorHitShape } from '../utils
 import { chipPins, DEFAULT_CHIP_PINS } from '../utils/chipPins';
 import { textBlockBounds } from '../utils/textBlock';
 import { mergeCoincidentAutomaticCrossings, mergeCoincidentJunctions, promoteAnchoredCrossings } from '../utils/junctionTopology';
+import { uniqueWireInk } from '../utils/wireInk';
 
 interface SchematicEditorProps {
   elements: CircuitElement[];
@@ -978,23 +979,39 @@ export function getComponentPins(el: CircuitElement): CircuitPin[] {
   ];
 }
 
-/** Move only the waypoint next to a moved terminal; the middle of a manual route stays put. */
-export function reanchorManualWires(wires: CircuitWire[], before: CircuitElement, after: CircuitElement): CircuitWire[] {
-  const oldPins = new Map(getComponentPins(before).map(pin => [pin.id, { x: before.x + pin.x, y: before.y + pin.y }]));
-  const newPins = new Map(getComponentPins(after).map(pin => [pin.id, { x: after.x + pin.x, y: after.y + pin.y }]));
+/** Move terminal-adjacent bends once, using the original geometry for both ends of a group edit. */
+export function reanchorManualWiresForChanges(
+  wires: CircuitWire[], changes: ReadonlyArray<{ before: CircuitElement; after: CircuitElement }>,
+): CircuitWire[] {
+  const deltas = new Map<string, Map<string, Point>>();
+  for (const { before, after } of changes) {
+    const newPins = new Map(getComponentPins(after).map(pin => [pin.id, pin]));
+    deltas.set(before.id, new Map(getComponentPins(before).flatMap(pin => {
+      const next = newPins.get(pin.id);
+      return next ? [[pin.id, { x: after.x + next.x - before.x - pin.x,
+        y: after.y + next.y - before.y - pin.y }] as const] : [];
+    })));
+  }
   return wires.map(wire => {
-    if (!wire.waypoints?.length || (wire.fromCompId !== before.id && wire.toCompId !== before.id)) return wire;
+    if (!wire.waypoints?.length) return wire;
+    const from = deltas.get(wire.fromCompId)?.get(wire.fromPinId);
+    const to = deltas.get(wire.toCompId)?.get(wire.toPinId);
+    if (!from && !to) return wire;
     const waypoints = wire.waypoints.map(point => ({ ...point }));
-    const shift = (pinId: string, index: number) => {
-      const oldPin = oldPins.get(pinId), newPin = newPins.get(pinId);
-      if (!oldPin || !newPin) return;
-      waypoints[index].x += newPin.x - oldPin.x;
-      waypoints[index].y += newPin.y - oldPin.y;
-    };
-    if (wire.fromCompId === before.id) shift(wire.fromPinId, 0);
-    if (wire.toCompId === before.id) shift(wire.toPinId, waypoints.length - 1);
+    if (waypoints.length === 1 && from && to) {
+      waypoints[0].x += (from.x + to.x) / 2;
+      waypoints[0].y += (from.y + to.y) / 2;
+    } else {
+      if (from) { waypoints[0].x += from.x; waypoints[0].y += from.y; }
+      if (to) { const last = waypoints.at(-1)!; last.x += to.x; last.y += to.y; }
+    }
     return { ...wire, waypoints };
   });
+}
+
+/** Keep the single-element edit API for drag and property actions. */
+export function reanchorManualWires(wires: CircuitWire[], before: CircuitElement, after: CircuitElement): CircuitWire[] {
+  return reanchorManualWiresForChanges(wires, [{ before, after }]);
 }
 
 /** Keep electrical endpoints fixed while translating the geometry of a selected group. */
@@ -1161,11 +1178,16 @@ export function SchematicEditor({
   const [endpointDrag, setEndpointDrag] = useState<{ wireId: string; end: 'from' | 'to'; points: Point[]; cursor: Point } | null>(null);
   const geometryDragChanged = useRef(false);
   const normalizedThisDrag = useRef(false);
-  const normalizeReleasedDrag = useRef<() => void>(() => {});
+  const normalizeReleasedDrag = useRef<() => boolean>(() => true);
   const unroutedBeforeDrag = useRef<Set<string>>(new Set());
   const dragReleaseHandled = useRef(false);
   const finishGeometryDrag = useRef<() => void>(() => {});
-  const geometryActionPending = useRef(false);
+  const geometryActionPending = useRef<Set<string> | null>(null);
+  const currentUnroutedWires = useRef<Set<string>>(new Set());
+  const beginGeometryAction = useCallback(() => {
+    geometryActionPending.current = new Set(currentUnroutedWires.current);
+    onBeginContinuousEdit?.();
+  }, [onBeginContinuousEdit]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -1191,10 +1213,14 @@ export function SchematicEditor({
   const horizontalOrigin = (horizontalSpan - horizontalViewport) / 2;
   const verticalOrigin = (verticalSpan - verticalViewport) / 2;
   useLayoutEffect(() => {
-    scrollTargetRef.current = { horizontal: horizontalOrigin - pan.x, vertical: verticalOrigin - pan.y };
+    scrollTargetRef.current.horizontal = horizontalOrigin - pan.x;
     if (horizontalScrollRef.current) horizontalScrollRef.current.scrollLeft = scrollTargetRef.current.horizontal;
+  }, [horizontalOrigin, pan.x]);
+  useLayoutEffect(() => {
+    // An X-scroll must not overwrite a pending Y-scroll (and vice versa).
+    scrollTargetRef.current.vertical = verticalOrigin - pan.y;
     if (verticalScrollRef.current) verticalScrollRef.current.scrollTop = scrollTargetRef.current.vertical;
-  }, [horizontalOrigin, verticalOrigin, pan.x, pan.y]);
+  }, [verticalOrigin, pan.y]);
   useEffect(() => {
     const canvas = containerRef.current;
     if (!canvas) return;
@@ -1336,12 +1362,12 @@ export function SchematicEditor({
   // Снэп к сетке
   const snapToGrid = (val: number) => Math.round(val / gridUnits) * gridUnits;
   const changeElementGeometry = useCallback((before: CircuitElement, after: CircuitElement) => {
-    if (crossingMode === 'connect') { geometryActionPending.current = true; onBeginContinuousEdit?.(); }
+    beginGeometryAction();
     onElementsChange(elements.map(element => element.id === before.id ? after : element));
     if (wires.some(wire => wire.waypoints?.length && (wire.fromCompId === before.id || wire.toCompId === before.id))) {
       onWiresChange(reanchorManualWires(wires, before, after));
     }
-  }, [elements, wires, crossingMode, onBeginContinuousEdit, onElementsChange, onWiresChange]);
+  }, [elements, wires, beginGeometryAction, onElementsChange, onWiresChange]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const removeWireIds = (ids: ReadonlySet<string>) => {
     const next = removeWiresPreservingTopology(elements, wires, ids);
@@ -1355,12 +1381,11 @@ export function SchematicEditor({
   };
   const transformSelection = (transform: (element: CircuitElement) => CircuitElement) => {
     if (!selectedSet.size) return;
-    if (crossingMode === 'connect') { geometryActionPending.current = true; onBeginContinuousEdit?.(); }
+    beginGeometryAction();
     const changed = elements.map(element => selectedSet.has(element.id) ? transform(element) : element);
-    let routes = wires;
-    for (let index = 0; index < elements.length; index++) {
-      if (changed[index] !== elements[index]) routes = reanchorManualWires(routes, elements[index], changed[index]);
-    }
+    const changes = changed.flatMap((after, index) => after !== elements[index]
+      ? [{ before: elements[index], after }] : []);
+    const routes = reanchorManualWiresForChanges(wires, changes);
     onElementsChange(changed);
     if (routes !== wires) onWiresChange(routes);
   };
@@ -1531,7 +1556,7 @@ export function SchematicEditor({
         const dx = e.key === 'ArrowLeft' ? -gridUnits : e.key === 'ArrowRight' ? gridUnits : 0;
         const dy = e.key === 'ArrowUp' ? -gridUnits : e.key === 'ArrowDown' ? gridUnits : 0;
         if (selectedSet.size > 1) {
-          if (crossingMode === 'connect') { geometryActionPending.current = true; onBeginContinuousEdit?.(); }
+          beginGeometryAction();
           const moved = moveSelectedElements(elements, wires, selectedSet, dx, dy);
           onElementsChange(moved.elements); onWiresChange(moved.wires);
         } else transformSelection(element => ({ ...element, x: element.x + dx, y: element.y + dy }));
@@ -1869,29 +1894,41 @@ export function SchematicEditor({
     for (const id of automaticRouteCache.current.keys()) if (!wires.some(wire => wire.id === id)) automaticRouteCache.current.delete(id);
     return geometries;
   }, [wires, pinPositions, circuitGraph, gridUnits, elements, fitRevision]);
+  const wireInk = useMemo(() => uniqueWireInk(wireGeometries.filter(item => !item.wire.disabled && !item.unrouted)
+    .map(item => ({ id: item.wire.id, points: item.points,
+      net: String(circuitGraph.pinToNode.get(`${item.wire.fromCompId}_${item.wire.fromPinId}`) ?? item.wire.id) }))),
+  [wireGeometries, circuitGraph]);
+  currentUnroutedWires.current = new Set(wireGeometries.filter(item => item.unrouted).map(item => item.wire.id));
   useEffect(() => {
-    if (!geometryActionPending.current) return;
-    geometryActionPending.current = false;
+    const previousUnrouted = geometryActionPending.current;
+    if (!previousUnrouted) return;
+    geometryActionPending.current = null;
     try {
+      if (wireGeometries.some(item => item.unrouted && !previousUnrouted.has(item.wire.id))) {
+        throw new Error('Изменение отменено: для подключённого провода нет безопасного маршрута. Освободите место или измените трассу вручную.');
+      }
       const normalized = normalizeCrossingTopology(elements, wires, wireGeometries, crossingMode);
       if (normalized.elements !== elements) onElementsChange(normalized.elements);
       if (normalized.wires !== wires) onWiresChange(normalized.wires);
-    } catch (cause) {
-      window.alert(cause instanceof Error ? cause.message : 'Не удалось обновить пересечения после поворота.');
-    } finally {
       onEndContinuousEdit?.();
+    } catch (cause) {
+      onCancelContinuousEdit?.();
+      window.alert(cause instanceof Error ? cause.message : 'Не удалось обновить пересечения после поворота.');
     }
-  }, [elements, wires, wireGeometries, crossingMode, onElementsChange, onWiresChange, onEndContinuousEdit]);
+  }, [elements, wires, wireGeometries, crossingMode, onElementsChange, onWiresChange, onEndContinuousEdit, onCancelContinuousEdit]);
   normalizeReleasedDrag.current = () => {
     if (normalizedThisDrag.current || crossingMode !== 'connect' ||
-        !(geometryDragChanged.current || wireSegmentDrag.current?.started)) return;
+        !(geometryDragChanged.current || wireSegmentDrag.current?.started)) return true;
     normalizedThisDrag.current = true;
     try {
       const normalized = normalizeCrossingTopology(elements, wires, wireGeometries, crossingMode);
       if (normalized.elements !== elements) onElementsChange(normalized.elements);
       if (normalized.wires !== wires) onWiresChange(normalized.wires);
+      return true;
     } catch (cause) {
+      onCancelContinuousEdit?.();
       window.alert(cause instanceof Error ? cause.message : 'Не удалось обновить пересечения проводов.');
+      return false;
     }
   };
   finishGeometryDrag.current = () => {
@@ -1905,8 +1942,7 @@ export function SchematicEditor({
       onCancelContinuousEdit?.();
       window.alert('Перемещение отменено: для подключённого провода нет безопасного маршрута. Освободите место или измените трассу вручную.');
     } else {
-      normalizeReleasedDrag.current();
-      onEndContinuousEdit?.();
+      if (normalizeReleasedDrag.current()) onEndContinuousEdit?.();
     }
   };
   const sceneLabels = useMemo(() => arrangeComponentLabels(elements, wireGeometries, elements.flatMap(element => {
@@ -2428,11 +2464,9 @@ export function SchematicEditor({
             setHoveredWirePoint(null);
             return;
           }
-          onBeginContinuousEdit?.();
-          geometryActionPending.current = crossingMode === 'connect';
+          beginGeometryAction();
           if (next.elements !== elements) onElementsChange(next.elements);
           onWiresChange(next.wires);
-          if (crossingMode !== 'connect') onEndContinuousEdit?.();
         }
       }
       setEndpointDrag(null); setHoveredPin(null); setHoveredWirePoint(null);
@@ -3269,6 +3303,8 @@ export function SchematicEditor({
             {useMemo(() => wireGeometries.map((wg) => {
               const { wire, pathD } = wg;
               const isSelected = selectedWireId === wire.id;
+              const visibleSegments = wireInk.get(wire.id);
+              const visiblePath = visibleSegments ? visibleSegments.map(segment => pointsToSvgPath(segment)).join(' ') : pathD;
               const coincidentEndpoint = wg.points.length === 1 ? wg.points[0] : null;
 
               return (
@@ -3322,7 +3358,8 @@ export function SchematicEditor({
                   />
                   {/* Видимый провод схемы под прямыми углами */}
                   <path
-                    d={pathD}
+                    data-wire-ink="true"
+                    d={visiblePath}
                     fill="none"
                     stroke={wg.unrouted ? '#dc2626' : wire.disabled ? '#94a3b8' : isSelected ? '#2563eb' : appearance.wire}
                     strokeWidth={isSelected ? 2.5 : 2}
@@ -3330,6 +3367,8 @@ export function SchematicEditor({
                     strokeLinecap="round"
                     strokeLinejoin="round"
                   />
+                  {isSelected && visibleSegments && <path data-export-hide="true" d={pathD}
+                    fill="none" stroke="#2563eb" strokeWidth={2.5} pointerEvents="none" />}
                   {/* Keep an explicit connection between coincident pins visible, even without a line segment. */}
                   {coincidentEndpoint && (
                     <circle
@@ -3344,7 +3383,7 @@ export function SchematicEditor({
                   )}
                 </g>
               );
-            }), [wireGeometries, selectedWireId, zoom, wiringFrom, pendingComponentType, wires, elements, gridUnits, wiringWaypoints, wireMode, pan, appearance.wire, onWiresChange, onElementsChange])}
+            }), [wireGeometries, wireInk, selectedWireId, zoom, wiringFrom, pendingComponentType, wires, elements, gridUnits, wiringWaypoints, wireMode, pan, appearance.wire, onWiresChange, onElementsChange])}
             {endpointDrag && <path data-export-hide="true" data-reconnect-preview="true" pointerEvents="none"
               d={pointsToSvgPath(endpointDrag.end === 'from'
                 ? [endpointDrag.cursor, ...endpointDrag.points.slice(1)]

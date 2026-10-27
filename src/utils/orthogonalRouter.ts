@@ -121,12 +121,29 @@ function hitsBox(a: RoutePoint, b: RoutePoint, box: RouteBox): boolean {
   });
 }
 
-export function routeIsClear(points: RoutePoint[], obstacles: RouteBox[], foreign: RoutePoint[][]): boolean {
+function onlyTouchesAllowedContact(a: RoutePoint, b: RoutePoint, c: RoutePoint, d: RoutePoint,
+  contacts: RoutePoint[]): boolean {
+  return contacts.some(point => {
+    if (!onSegment(a, b, point) || !onSegment(c, d, point) ||
+        !((Math.hypot(a.x - point.x, a.y - point.y) <= EPS) ||
+          (Math.hypot(b.x - point.x, b.y - point.y) <= EPS))) return false;
+    if (Math.abs(orientation(a, b, c)) > EPS || Math.abs(orientation(a, b, d)) > EPS) return true;
+    const other = Math.hypot(a.x - point.x, a.y - point.y) <= EPS ? b : a;
+    const towards = { x: other.x - point.x, y: other.y - point.y };
+    const cDot = (c.x - point.x) * towards.x + (c.y - point.y) * towards.y;
+    const dDot = (d.x - point.x) * towards.x + (d.y - point.y) * towards.y;
+    return Math.max(cDot, dDot) <= EPS;
+  });
+}
+
+export function routeIsClear(points: RoutePoint[], obstacles: RouteBox[], foreign: RoutePoint[][],
+  allowedContacts: RoutePoint[] = []): boolean {
   for (let index = 1; index < points.length; index++) {
     const a = points[index - 1], b = points[index];
     if (obstacles.some(box => hitsBox(a, b, box))) return false;
     for (const route of foreign) for (let other = 1; other < route.length; other++) {
-      if (segmentsMeet(a, b, route[other - 1], route[other])) return false;
+      if (segmentsMeet(a, b, route[other - 1], route[other]) &&
+          !onlyTouchesAllowedContact(a, b, route[other - 1], route[other], allowedContacts)) return false;
     }
   }
   return true;
@@ -181,13 +198,15 @@ export function reanchorAutomaticRoute(previous: RoutePoint[], start: RoutePoint
 
 /** Bounded visibility-grid search. No geometry is saved: only explicit user bends belong in SCM. */
 export function routeAroundObstacles(start: RoutePoint, end: RoutePoint, startDirection: RoutePoint,
-  endDirection: RoutePoint, grid: number, baseline: RoutePoint[], obstacles: RouteBox[], foreign: RoutePoint[][], shared: RoutePoint[][] = []): RoutePoint[] | null {
+  endDirection: RoutePoint, grid: number, baseline: RoutePoint[], obstacles: RouteBox[], foreign: RoutePoint[][],
+  shared: RoutePoint[][] = [], protectedShared: RoutePoint[][] = [], sharedContacts: RoutePoint[] = []): RoutePoint[] | null {
   const step = Math.max(1, grid);
   if (![start.x, start.y, end.x, end.y, grid].every(Number.isFinite) || grid <= 0) return null;
   if (Math.hypot(start.x - end.x, start.y - end.y) <= EPS) return [{ ...start }];
   if (shared.length && !liesOnShared(end, shared)) {
     if (liesOnShared(start, shared)) {
-      const reversed = routeAroundObstacles(end, start, endDirection, startDirection, grid, [...baseline].reverse(), obstacles, foreign, shared);
+      const reversed = routeAroundObstacles(end, start, endDirection, startDirection, grid, [...baseline].reverse(), obstacles, foreign,
+        shared, protectedShared, sharedContacts);
       return reversed ? [...reversed].reverse() : null;
     }
     foreign = [...foreign, ...shared]; shared = [];
@@ -196,7 +215,8 @@ export function routeAroundObstacles(start: RoutePoint, end: RoutePoint, startDi
     && Math.hypot(points[0].x - start.x, points[0].y - start.y) < EPS
     && Math.hypot(points.at(-1)!.x - end.x, points.at(-1)!.y - end.y) < EPS
     && outward(points[0], points[1], startDirection) && outward(points.at(-1)!, points.at(-2)!, endDirection)
-    && routeIsClear(points, obstacles, foreign) && followsSharedNetwork(points, shared);
+    && routeIsClear(points, obstacles, foreign) && routeIsClear(points, [], protectedShared, sharedContacts)
+    && followsSharedNetwork(points, shared);
   const choose = (candidates: RoutePoint[][]) => {
     const selected = candidates.map(simplify).filter(valid).reduce<RoutePoint[] | null>((best, points) => {
     if (!best) return points;
@@ -225,13 +245,16 @@ export function routeAroundObstacles(start: RoutePoint, end: RoutePoint, startDi
   const nearbyRoutes = foreign.filter(route => route.some((point, index) => index > 0 &&
     Math.max(point.x, route[index - 1].x) >= region.left && Math.min(point.x, route[index - 1].x) <= region.right &&
     Math.max(point.y, route[index - 1].y) >= region.top && Math.min(point.y, route[index - 1].y) <= region.bottom));
+  const nearbyProtected = protectedShared.filter(route => route.some((point, index) => index > 0 &&
+    Math.max(point.x, route[index - 1].x) >= region.left && Math.min(point.x, route[index - 1].x) <= region.right &&
+    Math.max(point.y, route[index - 1].y) >= region.top && Math.min(point.y, route[index - 1].y) <= region.bottom));
   const xs = [from.x, to.x, from.x - step, from.x + step, to.x - step, to.x + step, middleX],
     ys = [from.y, to.y, from.y - step, from.y + step, to.y - step, to.y + step, middleY];
   for (const box of nearbyBoxes) {
     xs.push(box.left, box.right, box.left - step, box.right + step);
     ys.push(box.top, box.bottom, box.top - step, box.bottom + step);
   }
-  for (const route of nearbyRoutes) for (const point of route) {
+  for (const route of [...nearbyRoutes, ...nearbyProtected]) for (const point of route) {
     xs.push(point.x - step, point.x + step, point.x - 2, point.x + 2);
     ys.push(point.y - step, point.y + step, point.y - 2, point.y + 2);
   }
@@ -290,7 +313,8 @@ export function routeAroundObstacles(start: RoutePoint, end: RoutePoint, startDi
       if (axis && Math.ceil(axis / 2) === Math.ceil(nextAxis / 2) && axis !== nextAxis) continue;
       if (current.id === startId && !outward(a, b, startDirection)) continue;
       if (ny * width + nx === targetCell && !outward(b, a, endDirection)) continue;
-      if (!routeIsClear([a, b], nearbyBoxes, nearbyRoutes)) continue;
+      if (!routeIsClear([a, b], nearbyBoxes, nearbyRoutes) ||
+          !routeIsClear([a, b], [], nearbyProtected, sharedContacts)) continue;
       let nextJoined = joined;
       if (joined) { if (!sharedSegment(a, b, shared)) continue; }
       else {

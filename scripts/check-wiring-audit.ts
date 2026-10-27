@@ -3,6 +3,7 @@ import {
   buildStoredWireRoute,
   computeOrthogonalWirePoints,
   routeCircuitWires,
+  promoteVisibleBranch,
   getComponentPins,
   isAllowedWireSegment,
   moveFreeWireSegment,
@@ -30,6 +31,54 @@ import type { CircuitElement, CircuitWire } from '../src/types';
 
 const freeCorner = routeAroundObstacles({ x: 0, y: 0 }, { x: 120, y: 80 }, { x: 0, y: 0 }, { x: 0, y: 0 }, 20, [], [], [])!;
 assert.deepEqual(freeCorner, [{ x: 0, y: 0 }, { x: 120, y: 0 }, { x: 120, y: 80 }], 'free contacts use one deterministic L, not a midpoint Z');
+const referencePair: CircuitElement[] = [[200, 300], [600, 500]].map(([x, y], index) => ({
+  id: `pair_${index}`, name: `R${index + 1}`, type: 'R', x, y, rotation: 0,
+  value: 1000, valueStr: '1к', unit: 'Ом',
+}));
+const referenceWire: CircuitWire = { id: 'pair_wire', fromCompId: 'pair_0', fromPinId: '2',
+  toCompId: 'pair_1', toPinId: '1', routeMode: 'orthogonal' };
+const referenceCache = new Map<string, Point[]>();
+const pairRoute = (secondY: number) => routeCircuitWires(
+  referencePair.map((element, index) => index ? { ...element, y: secondY } : element),
+  [referenceWire], 20, referenceCache)[0].points.map(({ x, y }) => ({ x, y }));
+const offsetPair = pairRoute(500);
+assert.equal(automaticRouteCost(offsetPair).bends, 2,
+  'FASTMEAN reference: displaced horizontal contacts use the minimum two bends');
+assert.deepEqual(pairRoute(300), [{ x: 230, y: 300 }, { x: 570, y: 300 }],
+  'FASTMEAN reference: aligning two resistors collapses the route to a straight line');
+assert.deepEqual(pairRoute(500), offsetPair,
+  'returning the resistor to its starting position restores the same stable Z route');
+const branchElements: CircuitElement[] = [
+  ['A', 'R', 200, 300, 0], ['B', 'R', 600, 300, 0], ['C', 'R', 420, 100, 90], ['J', 'JUNCTION', 420, 320, 0],
+].map(([id, type, x, y, rotation]) => ({ id: String(id), name: String(id), type: type as CircuitElement['type'],
+  x: Number(x), y: Number(y), rotation: Number(rotation), value: 1000, valueStr: '1к', unit: 'Ом' }));
+const branchWires: CircuitWire[] = [['a', 'A', '2'], ['b', 'B', '1'], ['c', 'C', '2']].map(([id, fromCompId, fromPinId]) =>
+  ({ id, fromCompId, fromPinId, toCompId: 'J', toPinId: '1' }));
+const branchBefore = routeCircuitWires(branchElements, branchWires, 20);
+const promotedBranch = promoteVisibleBranch(branchElements, branchWires, branchBefore, { x: 420, y: 300 });
+assert(promotedBranch?.junction.branchAnchor, 'clicked visual T becomes a durable electrical junction');
+assert.equal(promotedBranch.wires.length, 4, 'shared suffix to the old junction is stored only once');
+const branchPins = buildCircuitGraph(promotedBranch.elements, promotedBranch.wires).pinToNode;
+assert.equal(new Set(['A_2', 'B_1', 'C_2', 'J_1', `${promotedBranch.junction.id}_1`].map(key => branchPins.get(key))).size, 1);
+const branchCache = new Map<string, Point[]>();
+for (let repetition = 0; repetition < 50; repetition++) {
+  const [x, y] = [[440, 280], [460, 260], [420, 300]][repetition % 3];
+  const moved = promotedBranch.elements.map(element => element.id === promotedBranch.junction.id ? { ...element, x, y } : element);
+  const routes = routeCircuitWires(moved, promotedBranch.wires, 20, branchCache);
+  assert(routes.every(route => !route.unrouted && isOrthogonalAutomaticRoute(route.points)),
+    '50 movements keep every branch orthogonal and routed');
+  assert(routes.every(route => automaticRouteCost(route.points).bends <= 2),
+    'FASTMEAN reference: moving the T node keeps each unobstructed branch simple');
+  assert.deepEqual(derivedBranchMarkers(routes.map(route => ({ id: route.wire.id, net: 'shared', points: route.points })),
+    moved.filter(element => element.type === 'JUNCTION').map(({ x, y }) => ({ x, y }))), [],
+  'all four visible branches meet at the controlled junction without another T marker');
+}
+const promotedSaved = parseYamlScm(exportToYamlScm(promotedBranch.elements, promotedBranch.wires,
+  SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect'));
+assert(promotedSaved.elements.some(element => element.type === 'JUNCTION' && element.branchAnchor),
+  'SCM 8 retains the user-controlled branch identity');
+assert(routeCircuitWires(promotedSaved.elements, promotedSaved.wires, 20).every(route => !route.unrouted),
+  'SCM 8 reload keeps every promoted branch routable');
 const outOfOrderNodes: CircuitElement[] = [0, 100, 300, 400].map((x, index) => ({
   id: `order_${index}`, name: `N${index}`, type: 'JUNCTION', x, y: 0,
   rotation: 0, value: 0, valueStr: '', unit: '',
@@ -63,6 +112,20 @@ assert(detouredBridge && !detouredBridge.unrouted && detouredBridge.points.lengt
 assert(routeIsClear(detouredBridge.points, [],
   [reservedForeign.find(route => route.wire.id === 'foreign')!.points]),
   'the automatic bridge never creates a false crossing with the other network');
+const cachedStraight = [{ x: 100, y: 0 }, { x: 300, y: 0 }];
+const movingForeignCache = new Map<string, { x: number; y: number }[]>([['bc', cachedStraight]]);
+const movedForeign = routeCircuitWires([...outOfOrderNodes, ...otherNetNodes],
+  [...mixedOrderWires, crossingOtherNet], 20, movingForeignCache);
+const movedBridge = movedForeign.find(route => route.wire.id === 'bc');
+assert(movedBridge && !movedBridge.unrouted &&
+  routeIsClear(movedBridge.points, [], [movedForeign.find(route => route.wire.id === 'foreign')!.points]),
+  'a cached automatic route is revalidated when another electrical net moves across it');
+const clearAgainElements = [...outOfOrderNodes, ...otherNetNodes.map(element => ({ ...element, x: 500 }))];
+const clearAgain = routeCircuitWires(clearAgainElements, [...mixedOrderWires, crossingOtherNet],
+  20, movingForeignCache);
+assert.deepEqual(clearAgain.find(route => route.wire.id === 'bc')?.points.map(({ x, y }) => ({ x, y })),
+  [{ x: 100, y: 0 }, { x: 300, y: 0 }],
+  'when the foreign network moves away, an automatic detour collapses to the straight route');
 for (const crossingMode of ['explicit', 'connect'] as const) {
   for (const savedWires of [outOfOrderWires, mixedOrderWires]) {
     const saved = parseYamlScm(exportToYamlScm(outOfOrderNodes, savedWires, SAMPLE_CIRCUITS[0].transient,
@@ -662,6 +725,23 @@ const automaticInputs = editorWires.map(wire => ({ ...wire, manual: false, route
 const automaticCross = normalizeCrossingTopology(editorElements, automaticInputs,
   routedFor(editorElements, editorWires).map((route, index) => ({ ...route, wire: automaticInputs[index] })), 'connect');
 assert.ok(automaticCross.wires.every(wire => wire.originRoute && !wire.originRoute.manual), 'split automatic branches retain original constraint provenance');
+const crossNode = automaticCross.elements.find(element => element.autoCrossing)!;
+const frozenCross = freezeCrossingProvenance(automaticCross.elements, automaticCross.wires,
+  new Set(automaticCross.wires.filter(wire => wire.fromCompId === crossNode.id || wire.toCompId === crossNode.id).map(wire => wire.id)));
+const movedCrossNode = frozenCross.elements.map(element => element.id === crossNode.id
+  ? { ...element, x: element.x + 40, y: element.y + 40, autoCrossing: undefined, branchAnchor: true } : element);
+const movedCrossRoutes = routeCircuitWires(movedCrossNode, frozenCross.wires, 20);
+assert(movedCrossRoutes.every(route => !route.unrouted && isOrthogonalAutomaticRoute(route.points)),
+  'moving an SCM 8 automatic X junction keeps all four branches orthogonal and routed');
+assert.equal(new Set(editorElements.map(element => buildCircuitGraph(movedCrossNode, frozenCross.wires)
+  .pinToNode.get(`${element.id}_${element.id === 'editor_0' || element.id === 'editor_2' ? '2' : '1'}`))).size, 1,
+  'moving an automatic X junction preserves the electrical network');
+const movedCrossSaved = parseYamlScm(exportToYamlScm(movedCrossNode, frozenCross.wires,
+  SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect'));
+assert.deepEqual(routeCircuitWires(movedCrossSaved.elements, movedCrossSaved.wires, 20)
+  .map(route => route.points.map(({ x, y }) => ({ x, y }))),
+  movedCrossRoutes.map(route => route.points.map(({ x, y }) => ({ x, y }))),
+  'SCM 8 reopening preserves the moved X junction and all four routes');
 const persistedCross = parseYamlScm(exportToYamlScm(automaticCross.elements, automaticCross.wires, SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect'));
 const automaticRestored = collapseAutomaticCrossings(persistedCross.elements, persistedCross.wires, routedFor(persistedCross.elements, persistedCross.wires));
 assert.equal(automaticRestored.wires.length, 2);

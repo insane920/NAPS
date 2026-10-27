@@ -22,6 +22,8 @@ const assert = require('node:assert/strict');
       );
     });
     await page.locator('input[type="file"]').setInputFiles({ name: 'history.scm', mimeType: 'text/plain', buffer: Buffer.from(fixture) });
+    await page.waitForFunction(() => document.querySelectorAll('#schematic-world > g[transform^="translate"]').length === 2,
+      null, { timeout: 10000 });
     const components = page.locator('#schematic-world > g[transform^="translate"]');
     const wirePaths = page.locator('#schematic-world path[stroke="transparent"]');
     await wirePaths.first().waitFor({ state: 'attached' });

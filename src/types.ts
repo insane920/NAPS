@@ -364,6 +364,8 @@ export interface CircuitElement {
   textDirective?: string; // Text content for TEXT component
   /** Generated at a geometric crossing in SCM 8; can be rebuilt after routing edits. */
   autoCrossing?: boolean;
+  /** User-promoted branch: attached routes must meet at this electrical point. */
+  branchAnchor?: boolean;
 }
 
 export interface CircuitWire {

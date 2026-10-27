@@ -301,6 +301,61 @@ export function splitWireRoute(points: Point[], segmentIndex: number, point: Poi
 
 type RoutedWire = { wire: CircuitWire; points: Point[] };
 
+/** Turn a visible same-net T branch into an editable electrical junction.
+ * Only the clicked conductors are split. Identical tails to an existing
+ * junction are retained once, so promoting a shared trunk creates no loop. */
+export function promoteVisibleBranch(
+  elements: CircuitElement[], wires: CircuitWire[], routed: RoutedWire[], point: Point,
+): { elements: CircuitElement[]; wires: CircuitWire[]; junction: CircuitElement } | null {
+  if (elements.some(element => element.type === 'JUNCTION' && samePoint(element, point))) return null;
+  const graph = buildCircuitGraph(elements, wires);
+  const touching = routed.flatMap(route => {
+    if (route.wire.disabled || route.points.length < 2 || samePoint(route.points[0], point) ||
+        samePoint(route.points.at(-1)!, point)) return [];
+    const segmentIndex = route.points.findIndex((end, index) => index < route.points.length - 1 && (() => {
+      const next = route.points[index + 1], dx = next.x - end.x, dy = next.y - end.y;
+      const length2 = dx * dx + dy * dy;
+      if (length2 < ROUTE_EPSILON) return false;
+      const t = ((point.x - end.x) * dx + (point.y - end.y) * dy) / length2;
+      return t >= -ROUTE_EPSILON && t <= 1 + ROUTE_EPSILON &&
+        Math.abs((point.x - end.x) * dy - (point.y - end.y) * dx) < ROUTE_EPSILON;
+    })());
+    return segmentIndex < 0 ? [] : [{ wire: route.wire, points: route.points, segmentIndex }];
+  });
+  if (touching.length < 2 || new Set(touching.map(route => graph.pinToNode.get(`${route.wire.fromCompId}_${route.wire.fromPinId}`))).size !== 1) return null;
+  const frozen = freezeCrossingProvenance(elements, wires, new Set(touching.map(route => route.wire.id)));
+  const junction: CircuitElement = { id: `junction_branch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    name: nextComponentName(frozen.elements, 'N'), type: 'JUNCTION', x: point.x, y: point.y,
+    rotation: 0, value: 0, valueStr: '', unit: '', branchAnchor: true };
+  const byId = new Map(touching.map(route => [route.wire.id, route]));
+  const seenParts = new Set<string>();
+  const nextWires = frozen.wires.flatMap(wire => {
+    const hit = byId.get(wire.id);
+    if (!hit) return [wire];
+    const split = splitWireRoute(hit.points, hit.segmentIndex, point);
+    const manual = !!wire.manual || !!wire.waypoints?.length || wire.routeMode === 'direct';
+    const parts = [
+      { id: `${wire.id}_branch_a_${junction.id}`, fromCompId: wire.fromCompId, fromPinId: wire.fromPinId,
+        toCompId: junction.id, toPinId: '1', points: split.first },
+      { id: `${wire.id}_branch_b_${junction.id}`, fromCompId: junction.id, fromPinId: '1',
+        toCompId: wire.toCompId, toPinId: wire.toPinId, points: split.second },
+    ];
+    return parts.flatMap(part => {
+      if (part.points.length < 2) return [];
+      const key = `${part.fromCompId}:${part.fromPinId}|${part.toCompId}:${part.toPinId}|${part.points.map(p => `${p.x},${p.y}`).join(';')}`;
+      if (seenParts.has(key)) return [];
+      seenParts.add(key);
+      return [{ ...wire, id: part.id, fromCompId: part.fromCompId, fromPinId: part.fromPinId,
+        toCompId: part.toCompId, toPinId: part.toPinId,
+        originWireId: undefined, originRoute: undefined,
+        routeMode: wire.routeMode === 'direct' ? 'direct' as const : 'orthogonal' as const,
+        manual, waypoints: manual ? part.points.slice(1, -1).map(({ x, y }) => ({ x, y })) : undefined,
+        autoRoute: !manual ? part.points.map(({ x, y }) => ({ x, y })) : undefined }];
+    });
+  });
+  return { elements: [...frozen.elements, junction], wires: nextWires, junction };
+}
+
 
 /** A rotation keeps the physical crossing attached; only editing a conductor removes it. */
 function prepareCrossingRotation(wires: CircuitWire[], routed: RoutedWire[]): CircuitWire[] {
@@ -806,10 +861,12 @@ export function computeOrthogonalWirePoints(
 }
 
 function automaticWireRoute(start: Point, end: Point, startRel: Point, endRel: Point,
-  startType: string, endType: string, grid: number, elements: CircuitElement[], foreign: Point[][], previous: Point[] = [], shared: Point[][] = []): Point[] | null {
+  startType: string, endType: string, grid: number, elements: CircuitElement[], foreign: Point[][],
+  previous: Point[] = [], shared: Point[][] = [], protectedShared: Point[][] = [], sharedContacts: Point[] = []): Point[] | null {
   const obstacles = elements.map(element => componentObstacle(element)).filter((box): box is NonNullable<typeof box> => box !== null);
-  return routeAroundObstacles(start, end, startType === 'JUNCTION' ? { x: 0, y: 0 } : startRel,
-    endType === 'JUNCTION' ? { x: 0, y: 0 } : endRel, grid, previous, obstacles, foreign, shared);
+  return routeAroundObstacles(start, end, startType === 'JUNCTION' && !startRel.x && !startRel.y ? { x: 0, y: 0 } : startRel,
+    endType === 'JUNCTION' && !endRel.x && !endRel.y ? { x: 0, y: 0 } : endRel, grid, previous, obstacles, foreign,
+    shared, protectedShared, sharedContacts);
 }
 
 /** Refuse a reconnection whose visible route cannot reach the new electrical terminal. */
@@ -1069,6 +1126,44 @@ export function routeCircuitWires(elements: CircuitElement[], wires: CircuitWire
     // A manually edited conductor has priority even when it appears later in SCM.
     const obstacles = elements.map(element => componentObstacle(element)).filter((box): box is NonNullable<typeof box> => box !== null);
     const wireOrder = new Map(wires.map((wire, index) => [wire.id, index]));
+    const anchorDirections = new Map<string, Point>();
+    const cardinal: Point[] = [{ x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 0, y: -1 }];
+    for (const anchor of elements.filter(element => element.type === 'JUNCTION' && element.branchAnchor)) {
+      const adjacent = wires.filter(wire => !wire.disabled &&
+        (wire.fromCompId === anchor.id || wire.toCompId === anchor.id)).map(wire => {
+        const other = wire.fromCompId === anchor.id
+          ? pinPositions.get(`${wire.toCompId}_${wire.toPinId}`)
+          : pinPositions.get(`${wire.fromCompId}_${wire.fromPinId}`);
+        const distance = other ? Math.hypot(other.x - anchor.x, other.y - anchor.y) : 0;
+        return { wire, vector: distance > ROUTE_EPSILON
+          ? { x: (other!.x - anchor.x) / distance, y: (other!.y - anchor.y) / distance }
+          : { x: 0, y: 0 } };
+      });
+      if (!adjacent.length) continue;
+      if (adjacent.length > 4) {
+        adjacent.forEach(({ wire, vector }) => {
+          const direction = cardinal.reduce((best, candidate) =>
+            vector.x * candidate.x + vector.y * candidate.y > vector.x * best.x + vector.y * best.y ? candidate : best);
+          anchorDirections.set(`${anchor.id}:${wire.id}`, direction);
+        });
+        continue;
+      }
+      let best: number[] = [], bestCost = Infinity;
+      const assign = (chosen: number[], cost: number) => {
+        if (chosen.length === adjacent.length) {
+          if (cost < bestCost - ROUTE_EPSILON) { bestCost = cost; best = chosen; }
+          return;
+        }
+        const { vector } = adjacent[chosen.length];
+        for (let index = 0; index < cardinal.length; index++) {
+          if (chosen.includes(index)) continue;
+          const direction = cardinal[index];
+          assign([...chosen, index], cost + 1 - vector.x * direction.x - vector.y * direction.y);
+        }
+      };
+      assign([], 0);
+      adjacent.forEach(({ wire }, index) => anchorDirections.set(`${anchor.id}:${wire.id}`, cardinal[best[index]]));
+    }
     const unchanged = (wire: CircuitWire) => {
       const stored = wire.autoRoute;
       const p1 = pinPositions.get(`${wire.fromCompId}_${wire.fromPinId}`), p2 = pinPositions.get(`${wire.toCompId}_${wire.toPinId}`);
@@ -1136,6 +1231,12 @@ export function routeCircuitWires(elements: CircuitElement[], wires: CircuitWire
 
       let pts: Point[];
       let unrouted = false;
+      const sharedRoutes = occupiedByNode.get(node) ?? [];
+      const anchorContacts = [
+        elements.find(element => element.id === wire.fromCompId)?.branchAnchor ? p1 : null,
+        elements.find(element => element.id === wire.toCompId)?.branchAnchor ? p2 : null,
+      ].filter((point): point is typeof p1 => point !== null);
+      const protectedShared = anchorContacts.length ? sharedRoutes : [];
       if (fixedRoutes.has(wire.id)) {
         pts = fixedRoutes.get(wire.id)!;
         unrouted = !wire.disabled && !routeIsClear(pts, obstacles, []);
@@ -1143,9 +1244,22 @@ export function routeCircuitWires(elements: CircuitElement[], wires: CircuitWire
         if (!cache.has(wire.id) && wire.autoRoute) cache.set(wire.id, wire.autoRoute);
         const old = cache.get(wire.id);
         const previous = old ? reanchorAutomaticRoute(old, p1, p2) : [];
-        const safeRoute = unchanged(wire) ? old!
-          : automaticWireRoute(p1, p2, { x: p1.relX, y: p1.relY }, { x: p2.relX, y: p2.relY },
-            p1.elType, p2.elType, gridUnits, elements, foreignRoutes, previous, occupiedByNode.get(node) ?? []);
+        const firstDirection = anchorDirections.get(`${wire.fromCompId}:${wire.id}`) ?? { x: p1.relX, y: p1.relY };
+        const lastDirection = anchorDirections.get(`${wire.toCompId}:${wire.id}`) ?? { x: p2.relX, y: p2.relY };
+        const correctAnchorLead = !anchorContacts.length || !old ||
+          (old.length > 1 &&
+            (!anchorDirections.has(`${wire.fromCompId}:${wire.id}`) ||
+              (old[1].x - old[0].x) * firstDirection.x + (old[1].y - old[0].y) * firstDirection.y > ROUTE_EPSILON) &&
+            (!anchorDirections.has(`${wire.toCompId}:${wire.id}`) ||
+              (old.at(-2)!.x - old.at(-1)!.x) * lastDirection.x + (old.at(-2)!.y - old.at(-1)!.y) * lastDirection.y > ROUTE_EPSILON));
+        // Re-evaluate the old path against current geometry. A foreign network
+        // can move away without changing either terminal; keeping a valid but
+        // obsolete detour would leave the wire floating instead of straightening.
+        const safeRoute = automaticWireRoute(p1, p2, firstDirection, lastDirection,
+          p1.elType, p2.elType, gridUnits, elements, foreignRoutes,
+          unchanged(wire) && correctAnchorLead && routeIsClear(old!, [], foreignRoutes) &&
+            routeIsClear(old!, [], protectedShared, anchorContacts) ? old! : previous,
+          anchorContacts.length ? [] : sharedRoutes, protectedShared, anchorContacts);
         unrouted = !safeRoute;
         pts = safeRoute ?? computeOrthogonalWirePoints(p1, p2, { x: p1.relX, y: p1.relY },
           { x: p2.relX, y: p2.relY }, p1.elType, p2.elType, 0, gridUnits);
@@ -2064,8 +2178,8 @@ export function SchematicEditor({
   const wireInk = useMemo(() => uniqueWireInk(electricalInkRoutes), [electricalInkRoutes]);
   const derivedJunctions = useMemo(() => crossingMode === 'connect'
     ? derivedBranchMarkers(electricalInkRoutes,
-      elements.filter(element => element.type === 'JUNCTION').map(({ x, y }) => ({ x, y }))) : [],
-  [electricalInkRoutes, elements, crossingMode]);
+      Array.from(pinPositions.values(), ({ x, y }) => ({ x, y }))) : [],
+  [electricalInkRoutes, pinPositions, crossingMode]);
   routedSceneRef.current = wireGeometries;
   currentUnroutedWires.current = new Set(wireGeometries.filter(item => item.unrouted).map(item => item.wire.id));
   useEffect(() => {
@@ -2603,7 +2717,8 @@ export function SchematicEditor({
           onWiresChange(moved.wires);
         } else {
           const updated = { ...moving, x: targetX, y: targetY,
-            autoCrossing: moving.autoCrossing ? undefined : moving.autoCrossing };
+            autoCrossing: moving.autoCrossing ? undefined : moving.autoCrossing,
+            branchAnchor: dragged.autoCrossing || moving.branchAnchor ? true : moving.branchAnchor };
           onElementsChange(base.elements.map(element => element.id === moving.id ? updated : element));
           const routes = reanchorManualWires(base.wires, moving, updated);
           if (routes !== wires) onWiresChange(routes);
@@ -3602,8 +3717,25 @@ export function SchematicEditor({
               );
             }), [wireGeometries, wireInk, selectedWireId, zoom, wiringFrom, pendingComponentType, wires, elements, gridUnits, wiringWaypoints, wireMode, pan, appearance.wire, onWiresChange, onElementsChange])}
             {derivedJunctions.map(point => <circle key={`${point.x},${point.y}`} data-derived-branch="true"
-              cx={point.x} cy={point.y} r={4} fill={appearance.wire} data-document-fill={appearance.wire}
-              pointerEvents="none" />)}
+              cx={point.x} cy={point.y} r={Math.max(5, 7 / zoom)} fill={appearance.wire} data-document-fill={appearance.wire}
+              className={wiringFrom ? 'cursor-crosshair' : 'cursor-move'}
+              onMouseDown={event => {
+                if (event.button !== 0 || pendingComponentType || wiringFromRef.current || wiringFrom) return;
+                event.preventDefault(); event.stopPropagation();
+                const promoted = promoteVisibleBranch(elements, wires, wireGeometries, point);
+                if (!promoted) return;
+                onBeginContinuousEdit?.();
+                geometryDragChanged.current = true;
+                normalizedThisDrag.current = false;
+                dragReleaseHandled.current = false;
+                unroutedBeforeDrag.current = new Set(wireGeometries.filter(geometry => geometry.unrouted).map(geometry => geometry.wire.id));
+                onElementsChange(promoted.elements); onWiresChange(promoted.wires);
+                setSelectedId(promoted.junction.id); setSelectedIds([promoted.junction.id]); setSelectedWireId(null);
+                onSelectElement(promoted.junction);
+                setDraggingElemId(promoted.junction.id); setDragOffset({ x: 0, y: 0 });
+                junctionDragIntent.current = { id: promoted.junction.id, clientX: event.clientX, clientY: event.clientY };
+                groupDragIds.current = new Set([promoted.junction.id]);
+              }} />)}
             {endpointDrag && <path data-export-hide="true" data-reconnect-preview="true" pointerEvents="none"
               d={pointsToSvgPath(endpointDrag.end === 'from'
                 ? [endpointDrag.cursor, ...endpointDrag.points.slice(1)]

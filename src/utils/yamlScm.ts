@@ -152,6 +152,7 @@ export function exportToYamlScm(
     params['Unit'] = el.unit;
     if (el.isolation) params['Isolation'] = el.isolation;
     if (format === 'current' && crossingMode === 'connect' && el.autoCrossing) params['AutoCrossing'] = 'true';
+    if (format === 'current' && crossingMode === 'connect' && el.type === 'JUNCTION' && el.branchAnchor) params['BranchAnchor'] = 'true';
     if (el.controlSource) params['ControlSource'] = el.controlSource;
     if (el.controlVoltage) params['ControlVoltage'] = JSON.stringify({
       positive: { ...el.controlVoltage.positive, elementId: String(idMap.get(el.controlVoltage.positive.elementId) ?? 0) },
@@ -808,6 +809,7 @@ function commitCurrentObject(
     portName: params['Label'] || (type === 'PORT' ? raw.Name : undefined),
     textDirective: params['Directive'],
     autoCrossing: type === 'JUNCTION' && params['AutoCrossing'] === 'true' ? true : undefined,
+    branchAnchor: type === 'JUNCTION' && params['BranchAnchor'] === 'true' ? true : undefined,
   });
 }
 

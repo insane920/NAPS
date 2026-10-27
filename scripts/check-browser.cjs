@@ -19,6 +19,7 @@ cases.push('browser-appearance.cjs');
 cases.push('browser-view-preferences.cjs');
 cases.push('browser-shortcut-variants.cjs');
 cases.push('browser-terminal-swap.cjs');
+cases.push('browser-p0-routing.cjs');
 cases.push('browser-source-variants.cjs');
 cases.push('browser-controlled-references.cjs');
 cases.push('browser-model-roundtrip.cjs');

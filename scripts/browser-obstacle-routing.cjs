@@ -80,13 +80,18 @@ const fs = require('node:fs/promises');
     await page.mouse.click(source.x, source.y);
     await page.getByText('Проводка активна: выберите конечный контакт или существующий провод').waitFor();
     await page.mouse.click(target.x, target.y);
-    assert.match(dialogs.join(' '), /Не удалось проложить провод/);
-    assert.equal(await page.locator('[data-wire-id]').count(), 0, 'blocked wire was not saved');
+    assert.deepEqual(dialogs, [], 'the narrow but open corridor is routed without a false refusal');
+    assert.equal(await page.locator('[data-wire-id]').count(), 1, 'new valid corridor survives drawing');
+    const narrowPath = await page.locator('[data-wire-id] path[stroke="transparent"]').first().getAttribute('d');
+    assert.ok(narrowPath && narrowPath.split(' L ').length >= 4, 'the corridor has a visible orthogonal detour');
+    const [narrowDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
+    const narrowScm = await fs.readFile(await narrowDownload.path(), 'utf8');
+    assert.equal(await page.evaluate(async scm => { const {parseYamlScm}=await import('/src/utils/yamlScm.ts'); const {buildCircuitGraph}=await import('/src/math/circuitSolver.ts'); const data=parseYamlScm(scm), graph=buildCircuitGraph(data.elements,data.wires); return graph.pinToNode.get(data.elements[0].id+'_2')===graph.pinToNode.get(data.elements[1].id+'_1'); },narrowScm), true, 'the visible narrow detour has a real electrical connection');
     const moveScm = await page.evaluate(async () => {
       const { exportToYamlScm } = await import('/src/utils/yamlScm.ts');
       const { SAMPLE_CIRCUITS } = await import('/src/data/sampleCircuits.ts');
       const resistor = (id, x, y) => ({ id, name: id, type: 'R', x, y, rotation: 0, value: 1000, valueStr: '1к', unit: 'Ом' });
-      return exportToYamlScm([resistor('A', 100, 200), resistor('B', 500, 200), resistor('BLOCK', 160, 300)],
+      return exportToYamlScm([resistor('A', 100, 200), resistor('B', 500, 200), resistor('BLOCK', 140, 300)],
         [{ id: 'ab', fromCompId: 'A', fromPinId: '2', toCompId: 'B', toPinId: '1' }],
         SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect');
     });
@@ -116,21 +121,29 @@ const fs = require('node:fs/promises');
         mimeType: 'text/plain', buffer: Buffer.from(keyboardFixture) });
       const point = await movingBlock.evaluate(group => ({ x: group.getScreenCTM().e, y: group.getScreenCTM().f }));
       await page.mouse.click(point.x, point.y);
-      for (let step = 0; step < 5; step++) await page.keyboard.press('ArrowUp');
-      assert.equal(await movingBlock.getAttribute('transform'), 'translate(160, 220)',
+      for (let step = 0; step < 4; step++) {
+        await page.keyboard.press('ArrowUp');
+        const position = 'translate(140, ' + (280 - step * 20) + ')';
+        await page.waitForFunction(expected => [...document.querySelectorAll('[data-component-id]')]
+          .some(node => node.textContent.includes('BLOCK') && node.getAttribute('transform') === expected), position);
+      }
+      const rejectedKeyMove = page.waitForEvent('dialog', { timeout: 5000 });
+      await page.keyboard.press('ArrowUp');
+      await rejectedKeyMove;
+      assert.equal(await movingBlock.getAttribute('transform'), 'translate(140, 220)',
         `${mode}: keyboard movement rejects the blocked fifth step`);
       assert.match(dialogs.at(-1), /Изменение отменено.*нет безопасного маршрута/);
       await page.keyboard.press('Control+z');
-      assert.equal(await movingBlock.getAttribute('transform'), 'translate(160, 240)',
+      assert.equal(await movingBlock.getAttribute('transform'), 'translate(140, 240)',
         `${mode}: cancelled keyboard step does not consume an undo entry`);
       const drag = await movingBlock.evaluate(group => ({ x: group.getScreenCTM().e,
         y: group.getScreenCTM().f, scale: group.getScreenCTM().d }));
       await page.mouse.move(drag.x, drag.y); await page.mouse.down();
       await page.mouse.move(drag.x, drag.y - 40 * drag.scale, { steps: 4 }); await page.mouse.up();
-      assert.equal(await movingBlock.getAttribute('transform'), 'translate(160, 240)',
+      assert.equal(await movingBlock.getAttribute('transform'), 'translate(140, 240)',
         `${mode}: blocked drag rolls back after Undo`);
       await page.keyboard.press('Control+y');
-      assert.equal(await movingBlock.getAttribute('transform'), 'translate(160, 220)',
+      assert.equal(await movingBlock.getAttribute('transform'), 'translate(140, 220)',
         `${mode}: rejected drag preserves the pre-existing Redo stack`);
       const rotateFixture = await page.evaluate(async ({ scm, mode }) => {
         const { parseYamlScm, exportToYamlScm } = await import('/src/utils/yamlScm.ts');

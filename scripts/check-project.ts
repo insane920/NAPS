@@ -279,8 +279,8 @@ const straightRoute = computeOrthogonalWirePoints({ x: 0, y: 0 }, { x: 120, y: 0
 const separatedRoute = computeOrthogonalWirePoints({ x: 0, y: 0 }, { x: 120, y: 0 }, { x: 30, y: 0 }, { x: -30, y: 0 }, undefined, undefined, 20);
 assert.notDeepEqual(separatedRoute, straightRoute, 'Parallel wires must support separate grid tracks');
 assert.ok(separatedRoute.slice(1).every((point, i) => point.x === separatedRoute[i].x || point.y === separatedRoute[i].y), 'Separated wire tracks must remain orthogonal');
-const fineRoute = computeOrthogonalWirePoints({ x: 0, y: 0 }, { x: 120, y: 80 }, undefined, undefined, undefined, undefined, 0, 10);
-const coarseRoute = computeOrthogonalWirePoints({ x: 0, y: 0 }, { x: 120, y: 80 }, undefined, undefined, undefined, undefined, 0, 40);
+const fineRoute = computeOrthogonalWirePoints({ x: 0, y: 0 }, { x: 120, y: 80 }, { x: 1, y: 0 }, { x: -1, y: 0 }, undefined, undefined, 0, 10);
+const coarseRoute = computeOrthogonalWirePoints({ x: 0, y: 0 }, { x: 120, y: 80 }, { x: 1, y: 0 }, { x: -1, y: 0 }, undefined, undefined, 0, 40);
 assert.equal(fineRoute[1].x, 60, '2.5 mm grid controls automatic wire bends');
 assert.equal(coarseRoute[1].x, 80, '10 mm grid controls automatic wire bends');
 assert.deepEqual(projectPointToWire([{ x: 0, y: 0 }, { x: 120, y: 0 }], { x: 55, y: 2 }, 10)?.point, { x: 60, y: 0 }, 'Junction snaps to selected 2.5 mm grid');

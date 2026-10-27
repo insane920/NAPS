@@ -46,7 +46,7 @@ import { hitTestEditorScene, pickEditorHit, type EditorHitShape } from '../utils
 import { chipPins, DEFAULT_CHIP_PINS } from '../utils/chipPins';
 import { textBlockBounds } from '../utils/textBlock';
 import { mergeCoincidentAutomaticCrossings, mergeCoincidentJunctions, promoteAnchoredCrossings } from '../utils/junctionTopology';
-import { uniqueWireInk } from '../utils/wireInk';
+import { derivedBranchMarkers, uniqueWireInk } from '../utils/wireInk';
 import { swapElementTerminals } from '../utils/terminalSwap';
 
 interface SchematicEditorProps {
@@ -2030,10 +2030,15 @@ export function SchematicEditor({
     }
     return routeCircuitWires(elements, wires, gridUnits, automaticRouteCache.current);
   }, [wires, pinPositions, circuitGraph, gridUnits, elements, viewRevision]);
-  const wireInk = useMemo(() => uniqueWireInk(wireGeometries.filter(item => !item.wire.disabled && !item.unrouted)
+  const electricalInkRoutes = useMemo(() => wireGeometries.filter(item => !item.wire.disabled && !item.unrouted)
     .map(item => ({ id: item.wire.id, points: item.points,
-      net: String(circuitGraph.pinToNode.get(`${item.wire.fromCompId}_${item.wire.fromPinId}`) ?? item.wire.id) }))),
+      net: String(circuitGraph.pinToNode.get(`${item.wire.fromCompId}_${item.wire.fromPinId}`) ?? item.wire.id) })),
   [wireGeometries, circuitGraph]);
+  const wireInk = useMemo(() => uniqueWireInk(electricalInkRoutes), [electricalInkRoutes]);
+  const derivedJunctions = useMemo(() => crossingMode === 'connect'
+    ? derivedBranchMarkers(electricalInkRoutes,
+      elements.filter(element => element.type === 'JUNCTION').map(({ x, y }) => ({ x, y }))) : [],
+  [electricalInkRoutes, elements, crossingMode]);
   routedSceneRef.current = wireGeometries;
   currentUnroutedWires.current = new Set(wireGeometries.filter(item => item.unrouted).map(item => item.wire.id));
   useEffect(() => {
@@ -3569,6 +3574,9 @@ export function SchematicEditor({
                 </g>
               );
             }), [wireGeometries, wireInk, selectedWireId, zoom, wiringFrom, pendingComponentType, wires, elements, gridUnits, wiringWaypoints, wireMode, pan, appearance.wire, onWiresChange, onElementsChange])}
+            {derivedJunctions.map(point => <circle key={`${point.x},${point.y}`} data-derived-branch="true"
+              cx={point.x} cy={point.y} r={4} fill={appearance.wire} data-document-fill={appearance.wire}
+              pointerEvents="none" />)}
             {endpointDrag && <path data-export-hide="true" data-reconnect-preview="true" pointerEvents="none"
               d={pointsToSvgPath(endpointDrag.end === 'from'
                 ? [endpointDrag.cursor, ...endpointDrag.points.slice(1)]

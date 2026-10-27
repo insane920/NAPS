@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   buildStoredWireRoute,
   computeOrthogonalWirePoints,
+  routeCircuitWires,
   getComponentPins,
   isAllowedWireSegment,
   moveFreeWireSegment,
@@ -22,10 +23,38 @@ import { buildCircuitGraph, getCircuitPinIds } from '../src/math/circuitSolver';
 import { exportToYamlScm, parseYamlScm } from '../src/utils/yamlScm';
 import { SAMPLE_CIRCUITS } from '../src/data/sampleCircuits';
 import { SpatialIndex, type SpatialEntry } from '../src/utils/spatialIndex';
-import { componentObstacle, routeAroundObstacles, routeIsClear } from '../src/utils/orthogonalRouter';
+import { componentObstacle, routeAroundObstacles, routeIsClear, automaticRouteCost, isOrthogonalAutomaticRoute, reanchorAutomaticRoute } from '../src/utils/orthogonalRouter';
 import { mergeCoincidentAutomaticCrossings, mergeCoincidentJunctions, promoteAnchoredCrossings } from '../src/utils/junctionTopology';
-import { uniqueWireInk } from '../src/utils/wireInk';
+import { derivedBranchMarkers, uniqueWireInk } from '../src/utils/wireInk';
 import type { CircuitElement, CircuitWire } from '../src/types';
+
+const freeCorner = routeAroundObstacles({ x: 0, y: 0 }, { x: 120, y: 80 }, { x: 0, y: 0 }, { x: 0, y: 0 }, 20, [], [], [])!;
+assert.deepEqual(freeCorner, [{ x: 0, y: 0 }, { x: 120, y: 0 }, { x: 120, y: 80 }], 'free contacts use one deterministic L, not a midpoint Z');
+const visibleTree = [
+  { id: 'left', net: 'n1', points: [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }] },
+  { id: 'right', net: 'n1', points: [{ x: 40, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }] },
+  { id: 'top', net: 'n1', points: [{ x: 20, y: -20 }, { x: 20, y: 20 }] },
+];
+assert.deepEqual(derivedBranchMarkers(visibleTree, [{ x: 20, y: 20 }]), [{ x: 20, y: 0 }], 'a shared real electrical branch is marked at its geometric T point');
+assert.deepEqual(derivedBranchMarkers(visibleTree, [{ x: 20, y: 0 }]), [], 'an explicit junction is not painted twice');
+assert.deepEqual(derivedBranchMarkers([...visibleTree, { id: 'other', net: 'n2', points: [{ x: 0, y: 0 }, { x: 40, y: 0 }] }], []), [],
+  'a foreign electrical net at the same geometric point must not gain a false branch marker');
+const mazeBoxes = [
+  { left: 100, right: 160, top: -1000, bottom: 20 },
+  { left: 260, right: 320, top: -20, bottom: 1000 },
+  { left: 420, right: 480, top: -1000, bottom: 20 },
+];
+const fewestBends = routeAroundObstacles({ x: 0, y: 0 }, { x: 600, y: 0 }, { x: 1, y: 0 }, { x: -1, y: 0 }, 20, [], mazeBoxes, [])!;
+assert.ok(fewestBends && isOrthogonalAutomaticRoute(fewestBends));
+assert.equal(automaticRouteCost(fewestBends).bends, 4, 'four-turn outside path beats a shorter path with more turns');
+assert.equal(automaticRouteCost(fewestBends).length, 2600, 'minimum length within the four-turn class');
+assert.deepEqual(routeAroundObstacles({ x: 0, y: 0 }, { x: 600, y: 0 }, { x: 1, y: 0 }, { x: -1, y: 0 }, 20, [], [...mazeBoxes].reverse(), []), fewestBends, 'obstacle iteration order does not change routing');
+let movingAutomatic = [{ x: 230, y: 300 }, { x: 400, y: 300 }, { x: 400, y: 500 }, { x: 570, y: 500 }];
+for (let repeat = 0; repeat < 30; repeat++) for (const end of [{ x: 570, y: 340 }, { x: 650, y: 340 }, { x: 490, y: 340 }, { x: 570, y: 500 }]) {
+  movingAutomatic = routeAroundObstacles(movingAutomatic[0], end, { x: 1, y: 0 }, { x: -1, y: 0 }, 20, reanchorAutomaticRoute(movingAutomatic, movingAutomatic[0], end), [], [])!;
+  assert.equal(automaticRouteCost(movingAutomatic).bends, 2, 'repeated moves do not accumulate corners');
+  assert.ok(isOrthogonalAutomaticRoute(movingAutomatic));
+}
 
 const close = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y) < 1e-6;
 for (const angle of [0, 45, 90, 135, 180, 225, 270, 315]) {
@@ -159,8 +188,12 @@ assert.equal(routeAroundObstacles({ x: 0, y: 0 }, { x: 500, y: 0 }, { x: 1, y: 0
   'budget fallback never bypasses a foreign network blocking the terminal lead');
 assert.equal(routeAroundObstacles({ x: 0, y: 0 }, { x: 200, y: 0 }, { x: 1, y: 0 },
   { x: -1, y: 0 }, 20, [{ x: 0, y: 0 }, { x: 200, y: 0 }],
-  [{ left: 5, right: 15, top: -5, bottom: 5 }], []), null,
+  [{ left: 0, right: 15, top: -5, bottom: 5 }], []), null,
   'blocked terminal reports failure instead of returning an invalid baseline');
+const shortLead = routeAroundObstacles({ x: 0, y: 0 }, { x: 200, y: 0 }, { x: 1, y: 0 },
+  { x: -1, y: 0 }, 20, [], [{ left: 5, right: 15, top: -5, bottom: 5 }], []);
+assert.ok(shortLead && routeIsClear(shortLead, [{ left: 5, right: 15, top: -5, bottom: 5 }], []),
+  'a safe short lead can turn before an obstacle; a full grid-length stub is not mandatory');
 const reconnectElements: CircuitElement[] = ['A', 'B', 'C', 'D'].map((name, index) => ({
   id: name, name, type: 'JUNCTION', x: index * 100, y: 0, rotation: 0, value: 0, valueStr: '', unit: '',
 }));
@@ -581,6 +614,32 @@ const routedFor = (items: CircuitElement[], routes: CircuitWire[]) => routes.map
   points: [endpointFor(items, wire.fromCompId, wire.fromPinId), ...(wire.waypoints ?? []), endpointFor(items, wire.toCompId, wire.toPinId)] }));
 const normalizedCross = normalizeCrossingTopology(editorElements, editorWires, routedFor(editorElements, editorWires), 'connect');
 assert.equal(normalizedCross.elements.filter(element => element.autoCrossing).length, 1, 'shared normalizer creates a crossing');
+
+const automaticInputs = editorWires.map(wire => ({ ...wire, manual: false, routeMode: 'orthogonal' as const, waypoints: undefined }));
+const automaticCross = normalizeCrossingTopology(editorElements, automaticInputs,
+  routedFor(editorElements, editorWires).map((route, index) => ({ ...route, wire: automaticInputs[index] })), 'connect');
+assert.ok(automaticCross.wires.every(wire => wire.originRoute && !wire.originRoute.manual), 'split automatic branches retain original constraint provenance');
+const persistedCross = parseYamlScm(exportToYamlScm(automaticCross.elements, automaticCross.wires, SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect'));
+const automaticRestored = collapseAutomaticCrossings(persistedCross.elements, persistedCross.wires, routedFor(persistedCross.elements, persistedCross.wires));
+assert.equal(automaticRestored.wires.length, 2);
+assert.ok(automaticRestored.wires.every(wire => wire.manual === false && wire.routeMode === 'orthogonal' && !wire.waypoints?.length), 'SCM round trip + removal of intersection restores automatic routing, not pinned fragments');
+
+
+const distantElements = editorElements.map(e => ({ ...e, id: e.id + '_far', name: e.name + '_far', x: e.x + 1000 }));
+const distantWires = editorWires.map(w => ({ ...w, id: w.id + '_far', fromCompId: w.fromCompId + '_far', toCompId: w.toCompId + '_far', waypoints: w.waypoints?.map(p => ({x:p.x+1000,y:p.y})) }));
+const bothElements = [...editorElements, ...distantElements], bothWires = [...editorWires, ...distantWires];
+const twoCrossings = normalizeCrossingTopology(bothElements, bothWires, routedFor(bothElements, bothWires), 'connect');
+assert.equal(twoCrossings.elements.filter(e=>e.autoCrossing).length, 2);
+const damagedWires = twoCrossings.wires.filter((_,index)=>index!==0);
+const recoveredGroups = collapseAutomaticCrossings(twoCrossings.elements, damagedWires, routedFor(twoCrossings.elements, damagedWires));
+assert.equal(recoveredGroups.elements.filter(e=>e.autoCrossing).length, 0, 'incomplete origin freezes locally; the complete distant crossing is still collapsed');
+assert.equal(recoveredGroups.elements.filter(e=>e.type==='JUNCTION').length, 1, 'only the damaged cluster remains as an explicit physical junction');
+assert.ok(recoveredGroups.wires.some(w=>w.id==='h_far') && recoveredGroups.wires.some(w=>w.id==='v_far'), 'unrelated original conductors remain editable');
+const repairedTopology = normalizeCrossingTopology(twoCrossings.elements, damagedWires, routedFor(twoCrossings.elements, damagedWires), 'connect');
+const graphBeforeRepair=buildCircuitGraph(twoCrossings.elements,damagedWires), graphAfterRepair=buildCircuitGraph(repairedTopology.elements,repairedTopology.wires);
+const physicalPins=bothElements.flatMap(e=>getComponentPins(e).map(p=>e.id+'_'+p.id));
+for(const a of physicalPins)for(const b of physicalPins)assert.equal(graphBeforeRepair.pinToNode.get(a)===graphBeforeRepair.pinToNode.get(b),graphAfterRepair.pinToNode.get(a)===graphAfterRepair.pinToNode.get(b),'repair never guesses a deleted connection');
+
 const collapsedCross = collapseAutomaticCrossings(normalizedCross.elements, normalizedCross.wires,
   routedFor(normalizedCross.elements, normalizedCross.wires));
 const detouredWires = collapsedCross.wires.map(wire => wire.id === 'v' ? { ...wire,
@@ -648,5 +707,39 @@ for (let iteration = 0; iteration < 1000; iteration++) {
   const brute = boxes.filter(box => box.minX <= x + radius && box.maxX >= x - radius && box.minY <= y + radius && box.maxY >= y - radius).map(box => box.value).sort((a, b) => a - b);
   assert.deepEqual(index.query(x, y, radius).sort((a, b) => a - b), brute, `spatial query ${iteration}`);
 }
+
+
+
+for (const sample of SAMPLE_CIRCUITS) {
+  const routed = routeCircuitWires(sample.elements, sample.wires, 20);
+  assert.equal(routed.filter(route => route.unrouted).length, 0, sample.id + ': contacts reserved before routing prevent later branches being trapped');
+  for (const route of routed.filter(route => !route.wire.manual && route.wire.routeMode !== 'direct')) {
+    assert.ok(isOrthogonalAutomaticRoute(route.points), sample.id + ': no hidden 180-degree reversal');
+    const graph = buildCircuitGraph(sample.elements, sample.wires);
+    const node = graph.pinToNode.get(route.wire.fromCompId + '_' + route.wire.fromPinId);
+    const foreignPins = sample.elements.flatMap(e => getComponentPins(e).filter(p => graph.pinToNode.get(e.id + '_' + p.id) !== node).map(p => [{x:e.x+p.x,y:e.y+p.y},{x:e.x+p.x,y:e.y+p.y}]));
+    assert.ok(routeIsClear(route.points, [], foreignPins), sample.id + ': automatic route cannot cover a foreign terminal');
+  }
+}
+
+// Automatic geometry is a snapshot, never a user constraint. Exercise real editor routing + SCM.
+const snapshotElements: CircuitElement[] = [
+  { id: 'snapshot-a', name: 'A', type: 'R', x: 200, y: 300, rotation: 0, value: 1000, valueStr: '1k', unit: 'Ohm' },
+  { id: 'snapshot-b', name: 'B', type: 'R', x: 600, y: 500, rotation: 0, value: 1000, valueStr: '1k', unit: 'Ohm' },
+];
+const snapshotWire: CircuitWire = { id: 'snapshot', fromCompId: 'snapshot-a', fromPinId: '2', toCompId: 'snapshot-b', toPinId: '1' };
+const initialSnapshot = routeCircuitWires(snapshotElements, [snapshotWire], 20)[0].points.map(({x,y}) => ({x,y}));
+for (const mode of ['explicit', 'connect'] as const) {
+  const text = exportToYamlScm(snapshotElements, [{ ...snapshotWire, autoRoute: initialSnapshot }], SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', mode);
+  const loaded = parseYamlScm(text);
+  assert.deepEqual(loaded.wires[0].autoRoute, initialSnapshot, 'automatic snapshot round trips in mm');
+  assert.deepEqual(routeCircuitWires(loaded.elements, loaded.wires, 20)[0].points.map(({x,y}) => ({x,y})), initialSnapshot);
+  const moved = loaded.elements.map((e, i) => i === 1 ? { ...e, y: 340 } : e);
+  const rerouted = routeCircuitWires(moved, loaded.wires, 20)[0];
+  assert.equal(rerouted.unrouted, false);
+  assert.equal(automaticRouteCost(rerouted.points).bends, 2, 'stored automatic corners do not become pinned after reopening');
+  assert.equal(loaded.wires[0].manual, undefined);
+}
+assert.throws(() => exportToYamlScm(snapshotElements, [{ ...snapshotWire, autoRoute: [{x:230,y:300},{x:570,y:500}] }], SAMPLE_CIRCUITS[0].transient), /автомат|трасс/i, 'invalid diagonal automatic snapshots cannot be saved');
 
 console.log('PASS: 1000 generated wire routes, 1000 spatial queries, direct-mode SCM, topology and round trip.');

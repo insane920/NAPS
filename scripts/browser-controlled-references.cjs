@@ -12,7 +12,8 @@ const fs = require('node:fs/promises');
     await page.goto(process.env.NAPS_TEST_URL || 'http://127.0.0.1:3000/', { waitUntil: 'networkidle' });
     async function properties(name) {
       const group = page.locator('[data-component-id]').filter({ has: page.locator('text[data-label-kind="name"]').filter({ hasText: new RegExp(`^${name}$`) }) });
-      const point = await group.evaluate(g => { const p = g.ownerSVGElement.createSVGPoint(); const v = p.matrixTransform(g.getScreenCTM()); return { x: v.x, y: v.y }; });
+      await group.waitFor({ state: 'visible' });
+      const point = await group.evaluate(g => { if (!g.ownerSVGElement) throw new Error(JSON.stringify({tag:g.tagName,connected:g.isConnected,parent:g.parentElement?.outerHTML.slice(0,500)})); const p = g.ownerSVGElement.createSVGPoint(); const v = p.matrixTransform(g.getScreenCTM()); return { x: v.x, y: v.y }; });
       await page.mouse.dblclick(point.x, point.y);
       await page.locator('#element-name').waitFor();
     }

@@ -10,9 +10,13 @@ const fs = require('node:fs/promises');
     page.on('pageerror', e => errors.push(e.message));
     page.on('dialog', d => { dialogs.push(d.message()); d.accept(); });
     await page.goto(process.env.NAPS_TEST_URL || 'http://127.0.0.1:3000/', { waitUntil: 'networkidle' });
+    let lastDownload = 0;
     async function save() {
+      const delay = 150 - (Date.now() - lastDownload);
+      if (delay > 0) await page.waitForTimeout(delay);
       try {
         const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
+        lastDownload = Date.now();
         return fs.readFile(await download.path(), 'utf8');
       } catch (error) {
         console.error('Save diagnostic', { url: page.url(), error: await page.locator('.error-banner').allTextContents(), status: await page.locator('.status-text').allTextContents(), dialogs });

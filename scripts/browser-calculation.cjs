@@ -6,6 +6,11 @@ const { version } = require('../package.json');
 (async () => {
   const browser = await chromium.launch({ ...(process.env.NAPS_CHROME_PATH ? { executablePath: process.env.NAPS_CHROME_PATH } : { channel: 'chrome' }), headless: true, args: ['--no-sandbox'] });
   const page = await browser.newPage({ viewport: { width: 900, height: 700 }, acceptDownloads: true });
+  async function expectResults() {
+    await page.waitForFunction(() => document.querySelector('[role="dialog"][aria-label="Результаты расчёта"]') || document.querySelector('[role="alert"]'));
+    assert.equal(await page.getByRole('alert').count(), 0, 'calculation rejected: ' + (await page.getByRole('alert').allTextContents()).join('; '));
+    await page.getByRole('dialog', { name: 'Результаты расчёта' }).waitFor();
+  }
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(process.env.NAPS_TEST_URL || 'http://127.0.0.1:3000/', { waitUntil: 'networkidle' });
@@ -30,7 +35,7 @@ const { version } = require('../package.json');
   page.on('dialog', dialog => dialog.accept());
   await page.getByText('ФНЧ 1-го порядка (RC-фильтр)', { exact: true }).click();
   await page.getByRole('button', { name: 'Переходный процесс' }).click();
-  await page.getByRole('dialog', { name: 'Результаты расчёта' }).waitFor({ timeout: 30000 });
+  await expectResults();
   const [csv] = await Promise.all([
     page.waitForEvent('download'),
     page.getByTitle('Экспортировать точки осциллограмм в CSV').click(),
@@ -76,14 +81,14 @@ const { version } = require('../package.json');
   await page.waitForFunction(() => document.querySelector('[role="alert"]') || document.querySelector('[role="dialog"][aria-label="Результаты расчёта"]'));
   if (await page.getByRole('dialog', { name: 'Результаты расчёта' }).count()) {
     await page.getByRole('button', { name: 'Закрыть график' }).click();
-  } else assert.match(await page.getByRole('alert').innerText(), /вырождена|неподключ/);
+  } else assert.match(await page.getByRole('alert').innerText(), /вырождена|неподключ|нет корректной видимой трассы/);
   await fileInput.setInputFiles({ name: 'example.scm', mimeType: 'text/plain', buffer: Buffer.from(valid) });
   await page.getByRole('button', { name: 'Переходный процесс' }).click();
-  await page.getByRole('dialog', { name: 'Результаты расчёта' }).waitFor();
+  await expectResults();
   await page.getByRole('button', { name: 'Закрыть график' }).click();
   await fileInput.setInputFiles({ name: 'rectifier.scm', mimeType: 'text/plain', buffer: Buffer.from(rectifier) });
   await page.getByRole('button', { name: 'Переходный процесс' }).click();
-  await page.getByRole('dialog', { name: 'Результаты расчёта' }).waitFor();
+  await expectResults();
   await page.getByRole('button', { name: 'Математический расчёт' }).click();
   const rectifierText = await page.getByRole('dialog', { name: 'Результаты расчёта' }).innerText();
   assert.match(rectifierText, /Узловой расчёт нелинейной цепи/);
@@ -95,7 +100,7 @@ const { version } = require('../package.json');
   await page.locator('#model-forwardVoltage').fill('0.8');
   await page.getByRole('button', { name: 'OK' }).click();
   await page.getByRole('button', { name: 'Переходный процесс' }).click();
-  await page.getByRole('dialog', { name: 'Результаты расчёта' }).waitFor();
+  await expectResults();
   assert.equal(errors.length, 0);
   console.log('PASS: empty and incomplete circuits, SCM validation, nonlinear scope, RC graph, CSV and HTML report.');
   await browser.close();

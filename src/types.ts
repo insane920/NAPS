@@ -309,6 +309,10 @@ export interface CircuitElement {
   initialCondition?: number; // IC (начальное условие тока/напряжения)
   /** Name of the independent voltage source whose branch current controls CCVS/CCCS. */
   controlSource?: string;
+  /** Stable current-control binding. A missing target must not fall back to a reused name. */
+  controlSourceId?: string;
+  /** Non-loading voltage probe; omitted preserves legacy physical control pins. */
+  controlVoltage?: { positive: { elementId: string; pinId: string }; negative: { elementId: string; pinId: string } };
   /** Omitted in legacy projects: preserve their piecewise-linear diode. */
   diodeModel?: 'ideal' | 'pwl';
   transistorModel?: 'nonlinear' | 'small-signal';

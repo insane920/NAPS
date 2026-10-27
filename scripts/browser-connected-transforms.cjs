@@ -99,8 +99,9 @@ const fs = require('node:fs/promises');
       await page.keyboard.press('Control+z');
       assert.deepEqual(await snapshot(await save()), original, 'group rotation and bends are one undo');
       await page.keyboard.press('Control+y');
-      assert.deepEqual(await snapshot(await save()), transformed, 'redo restores group rotation and bends');
-      await load(await save(), `group-reopen-${mode}`);
+      const redoScm = await save();
+      assert.deepEqual(await snapshot(redoScm), transformed, 'redo restores group rotation and bends');
+      await load(redoScm, `group-reopen-${mode}`);
       assert.deepEqual(await snapshot(await save()), transformed, 'manual bend survives save and reload');
     }
     assert.deepEqual(dialogs, [], 'valid transforms must not show routing errors');

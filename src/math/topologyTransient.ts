@@ -96,7 +96,7 @@ export function solveTopologyTransient(elements: CircuitElement[], wires: Circui
   }
   const graph = buildCircuitGraph(elements, wires);
   const pin = (e: CircuitElement, id: string) => graph.pinToNode.get(`${e.id}_${id}`)!;
-  const used = [...new Set(active.flatMap(e => getCircuitPinIds(e.type, e).map(id => pin(e, id))))].filter(n => n !== 0);
+  const used = [...new Set(active.flatMap(e => [...getCircuitPinIds(e.type, e), ...(e.controlVoltage ? ['ctrl_pos', 'ctrl_neg'] : [])].map(id => pin(e, id))))].filter(n => n !== 0);
   const nodeIndex = new Map(used.map((n, i) => [n, i]));
   const models = new Map(active.map(e => [e.id, modelOf(e)]));
   const state = new Map<string, State>();

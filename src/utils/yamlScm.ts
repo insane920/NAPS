@@ -3,6 +3,18 @@ import { getCircuitPinIds, parseEngValue } from '../math/circuitSolver';
 import { DEFAULT_PRINT_LAYOUT, parsePrintLayout, SCHEMATIC_UNITS_PER_MM, type PrintLayout } from './printLayout';
 import { validateChipPins } from './chipPins';
 import { validatePassiveModel } from '../math/passiveModel';
+import { bindCurrentControls } from '../math/controlledSources';
+
+function readVoltageControl(text: string | undefined): CircuitElement['controlVoltage'] {
+  if (text === undefined) return undefined;
+  try {
+    const value = JSON.parse(text);
+    for (const ref of [value.positive, value.negative]) {
+      if (!ref || !Number.isSafeInteger(Number(ref.elementId)) || Number(ref.elementId) < 0 || typeof ref.pinId !== 'string' || !ref.pinId) throw new Error();
+    }
+    return value;
+  } catch { throw new Error('Некорректные ссылки управляющего напряжения.'); }
+}
 import { mergeCoincidentAutomaticCrossings, mergeCoincidentJunctions, promoteAnchoredCrossings } from './junctionTopology';
 
 /**
@@ -138,6 +150,15 @@ export function exportToYamlScm(
     if (el.isolation) params['Isolation'] = el.isolation;
     if (format === 'current' && crossingMode === 'connect' && el.autoCrossing) params['AutoCrossing'] = 'true';
     if (el.controlSource) params['ControlSource'] = el.controlSource;
+    if (el.controlVoltage) params['ControlVoltage'] = JSON.stringify({
+      positive: { ...el.controlVoltage.positive, elementId: String(idMap.get(el.controlVoltage.positive.elementId) ?? 0) },
+      negative: { ...el.controlVoltage.negative, elementId: String(idMap.get(el.controlVoltage.negative.elementId) ?? 0) },
+    });
+    if (el.controlSourceId) {
+      params['ControlSourceID'] = String(idMap.get(el.controlSourceId) ?? 0);
+      const target = elements.find(item => item.id === el.controlSourceId);
+      if (target) params['ControlSource'] = target.name;
+    }
     if (el.type === 'DIODE' && el.diodeModel) params['DiodeModel'] = el.diodeModel;
     if (el.transistorModel) params['TransistorModel'] = el.transistorModel;
     if (['R', 'C', 'L'].includes(el.type) && el.passiveModel) params['PassiveModel'] = el.passiveModel;
@@ -562,6 +583,18 @@ export function parseYamlScm(yamlText: string): {
     commitCurrentObject(currentObj, elements, numIdToElemId);
   }
   if (pendingFrom) throw new Error(`Провод ${wires.length + 1}: отсутствует конечный вывод.`);
+  for (const element of elements) {
+    if (element.controlVoltage) {
+      for (const ref of [element.controlVoltage.positive, element.controlVoltage.negative]) {
+        ref.elementId = numIdToElemId.get(Number(ref.elementId)) ?? `missing-control:${ref.elementId}`;
+      }
+    }
+    if (element.controlSourceId !== undefined) {
+      const storedId = Number(element.controlSourceId);
+      if (!Number.isSafeInteger(storedId) || storedId < 0) throw new Error(`${element.name}: некорректная ссылка управляющего источника.`);
+      element.controlSourceId = numIdToElemId.get(storedId) ?? `missing-control:${storedId}`;
+    }
+  }
   if (!Number.isInteger(majorVersion) || majorVersion < 1 || majorVersion > 8) throw new Error('Неподдерживаемая версия SCM. Исходный файл не изменён.');
   if (majorVersion === 8 && crossings !== 'connect') throw new Error('SCM 8 требует Topology Crossings: connect.');
   if (majorVersion < 8 && crossings !== undefined) throw new Error('Режим пересечений требует SCM 8.');
@@ -622,7 +655,7 @@ export function parseYamlScm(yamlText: string): {
   const anchored = promoteAnchoredCrossings(deduplicated.elements, deduplicated.wires, crossingMode);
   const junctions = mergeCoincidentJunctions(anchored.elements, anchored.wires, crossingMode);
   return {
-    elements: junctions.elements,
+    elements: bindCurrentControls(junctions.elements),
     wires: junctions.wires,
     crossingMode,
     printLayout: parsePrintLayout(pageFormat, pageOrientation, gridMm),
@@ -735,6 +768,8 @@ function commitCurrentObject(
     secondaryStr: params['SecondaryText'] ?? params['f'],
     initialCondition,
     controlSource: params['ControlSource'] || undefined,
+    controlSourceId: params['ControlSourceID'],
+    controlVoltage: readVoltageControl(params['ControlVoltage']),
     diodeModel: type === 'DIODE' && params['DiodeModel'] === 'ideal' ? 'ideal' : undefined,
     transistorModel: params['TransistorModel'] === 'small-signal' ? 'small-signal' : ['NPN', 'PNP', 'NMOS', 'PMOS'].includes(type) ? 'nonlinear' : undefined,
     passiveModel: ['R', 'C', 'L'].includes(type) && params['PassiveModel'] ? params['PassiveModel'] as 'linear' | 'nonlinear' : undefined,

@@ -22,7 +22,7 @@ export function solveDCOperatingPoint(elements: CircuitElement[], wires: Circuit
   validateControlledSources(elements);
   const graph = buildCircuitGraph(elements, wires);
   const pin = (e: CircuitElement, p: string) => graph.pinToNode.get(`${e.id}_${p}`)!;
-  const used = [...new Set(active.flatMap(e => getCircuitPinIds(e.type, e).map(p => pin(e, p))))].filter(n => n !== 0);
+  const used = [...new Set(active.flatMap(e => [...getCircuitPinIds(e.type, e), ...(e.controlVoltage ? ['ctrl_pos', 'ctrl_neg'] : [])].map(p => pin(e, p))))].filter(n => n !== 0);
   const nodes = new Map(used.map((n, i) => [n, i]));
   const extras = active.flatMap(e => e.type === 'TR3' ? [`${e.id}:1`, `${e.id}:2`] : e.type.startsWith('V_') || e.type === 'VCVS' || e.type === 'CCVS' || (e.type === 'DIODE' && e.diodeModel === 'ideal') || e.type === 'L' || e.type === 'OPAMP' ? [e.id] : []);
   const extraIndex = new Map(extras.map((id, i) => [id, used.length + i]));

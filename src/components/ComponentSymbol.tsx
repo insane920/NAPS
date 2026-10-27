@@ -305,7 +305,7 @@ export function renderComponentSymbol(el: CircuitElement, selected = false, show
     case 'CCVS':
     case 'CCCS': {
       const voltageOutput = el.type === 'VCVS' || el.type === 'CCVS';
-      const voltageControl = el.type === 'VCVS' || el.type === 'VCCS';
+      const voltageControl = (el.type === 'VCVS' || el.type === 'VCCS') && !el.controlVoltage;
       return <g fill="none" stroke={stroke} strokeWidth={strokeW}>
         <path d="M -30 0 H -14 M 14 0 H 30" />
         {voltageControl && <path d="M 0 -30 V -14 M 0 14 V 30" />}

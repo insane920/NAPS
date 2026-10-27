@@ -3,6 +3,7 @@ import { buildCircuitGraph } from './circuitSolver';
 import { assembleLinearSystem, electricalElements, sourceValue } from './linearTransient';
 import { transistorCurrent, transistorTypes } from './transistorModel';
 import { passiveLaw } from './passiveModel';
+import { controlBranch } from './controlledSources';
 
 export const numberText = (value: number | undefined) => value === undefined ? '—' : Number.isFinite(value) ? String(Number(value.toPrecision(10))) : String(value);
 export interface CalculationReport {
@@ -143,7 +144,7 @@ export function buildCalculationReport(elements: CircuitElement[], wires: Circui
         add(`${e.name}: управление`, e.type === 'VCVS' ? 'Uвых=K·(Vctrl+−Vctrl−)' : 'Iвых=g·(Vctrl+−Vctrl−)', `${n(e.value)}·(${n(cp)}−(${n(cm)}))`, e.type === 'VCVS' ? u : i, e.type === 'VCVS' ? 'В' : 'А');
         add(`${e.name}: Uупр`, 'Uупр=Vctrl+−Vctrl−', `${n(cp)}−(${n(cm)})`, control, 'В');
       } else if (e.type === 'CCVS' || e.type === 'CCCS') {
-        const control = Object.entries(results.branchCurrents).find(([name]) => name.toUpperCase() === e.controlSource?.toUpperCase())?.[1]?.[k];
+        const control = results.branchCurrents[controlBranch(e, elements).name]?.[k];
         add(`${e.name}: управление`, e.type === 'CCVS' ? 'Uвых=Rm·Iупр' : 'Iвых=β·Iупр', `${n(e.value)}·${n(control)}`, e.type === 'CCVS' ? u : i, e.type === 'CCVS' ? 'В' : 'А');
       } else if (transistorTypes.has(e.type)) {
         const control = potential(node(e, 'gate'))!;

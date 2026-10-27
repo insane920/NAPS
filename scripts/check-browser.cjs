@@ -17,6 +17,8 @@ cases.push('browser-description.cjs');
 cases.push('browser-reconnect.cjs');
 cases.push('browser-appearance.cjs');
 cases.push('browser-source-variants.cjs');
+cases.push('browser-controlled-references.cjs');
+cases.push('browser-model-roundtrip.cjs');
 cases.push('browser-obstacle-routing.cjs');
 cases.push('browser-sheet-navigation.cjs');
 cases.push('browser-junction-selection.cjs');

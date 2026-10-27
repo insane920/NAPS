@@ -128,7 +128,7 @@ export function getCircuitPinIds(type: ComponentType, element?: CircuitElement):
   if (type === 'CHIP') return (element?.chipPins ?? DEFAULT_CHIP_PINS).map(pin => pin.id);
   if (type === 'GND' || type === 'PORT' || type === 'JUNCTION') return ['1'];
   if (type === 'OPAMP' || type === 'COMPARATOR') return ['in_neg', 'in_pos', 'out'];
-  if (type === 'VCVS' || type === 'VCCS') return ['1', '2', 'ctrl_pos', 'ctrl_neg'];
+  if (type === 'VCVS' || type === 'VCCS') return element?.controlVoltage ? ['1', '2'] : ['1', '2', 'ctrl_pos', 'ctrl_neg'];
   if (type === 'SWITCH' || type === 'THYRISTOR' || ['NPN', 'PNP', 'NMOS', 'PMOS'].includes(type)) return ['1', '2', 'gate'];
   if (type === 'AND' || type === 'OR' || type === 'XOR') return ['1', '2', '3'];
   if (type === 'JK_FF') return ['1', '2', '3', '4', 'clk'];
@@ -198,6 +198,15 @@ export function buildCircuitGraph(
       rootToNode.set(r, nIdx);
     }
     pinToNode.set(pinKey, nIdx);
+  }
+
+  // A voltage probe reads two existing networks; it never merges them.
+  for (const el of elements) {
+    if (!el.controlVoltage || !['VCVS', 'VCCS'].includes(el.type)) continue;
+    for (const [pin, ref] of [['ctrl_pos', el.controlVoltage.positive], ['ctrl_neg', el.controlVoltage.negative]] as const) {
+      const node = pinToNode.get(`${ref.elementId}_${ref.pinId}`);
+      if (node !== undefined) pinToNode.set(`${el.id}_${pin}`, node);
+    }
   }
 
   // Связка портов с именами

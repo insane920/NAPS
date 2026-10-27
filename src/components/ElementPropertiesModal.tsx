@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { CircuitElement } from '../types';
-import { parseEngValue, normalizeEngNotation } from '../math/circuitSolver';
+import { CircuitElement, CircuitWire } from '../types';
+import { parseEngValue, normalizeEngNotation, getCircuitPinIds, buildCircuitGraph } from '../math/circuitSolver';
+import { validateControlledSources } from '../math/controlledSources';
 import { useModalFocus } from '../hooks/useModalFocus';
 import { chipPins, validateChipPins } from '../utils/chipPins';
 import { validateSourceModel } from '../math/sourceModel';
@@ -10,7 +11,9 @@ import { validatePassiveModel } from '../math/passiveModel';
 interface ElementPropertiesModalProps {
   element: CircuitElement | null;
   existingNames: string[];
-  controlSources: string[];
+  controlSources: CircuitElement[];
+  circuitElements: CircuitElement[];
+  circuitWires: CircuitWire[];
   isOpen: boolean;
   onClose: () => void;
   onSave: (updated: CircuitElement) => void;
@@ -27,7 +30,21 @@ function ElementPropertiesContent({
   onSave,
   existingNames,
   controlSources,
+  circuitElements,
+  circuitWires,
 }: ElementPropertiesModalProps & { element: CircuitElement }) {
+  const [voltageMode, setVoltageMode] = useState(!!element.controlVoltage);
+  const [voltagePositive, setVoltagePositive] = useState(element.controlVoltage ? JSON.stringify(element.controlVoltage.positive) : '');
+  const [voltageNegative, setVoltageNegative] = useState(element.controlVoltage ? JSON.stringify(element.controlVoltage.negative) : '');
+  const controlWired = circuitWires.some(wire =>
+    (wire.fromCompId === element.id && wire.fromPinId.startsWith('ctrl_')) ||
+    (wire.toCompId === element.id && wire.toPinId.startsWith('ctrl_')));
+  const controlGraph = buildCircuitGraph(circuitElements, circuitWires);
+  const voltageOptions = circuitElements.flatMap(item => getCircuitPinIds(item.type, item)
+    .filter(pinId => !pinId.startsWith('ctrl_')).map(pinId => ({
+      value: JSON.stringify({ elementId: item.id, pinId }),
+      label: `${item.name}:${pinId} — узел ${controlGraph.pinToNode.get(`${item.id}_${pinId}`)}`,
+    })));
 
   const modelFields: Array<{ key: keyof NonNullable<CircuitElement['modelParams']>; label: string; unit: string; defaultValue: number }> =
     ['R', 'C', 'L'].includes(element.type) ? [
@@ -88,10 +105,11 @@ function ElementPropertiesContent({
   const [secValStr, setSecValStr] = useState(
     element.secondaryStr || (element.secondaryValue !== undefined ? String(element.secondaryValue) : '')
   );
-  const [icStr, setIcStr] = useState(String(element.initialCondition ?? 0));
+  const [icStr, setIcStr] = useState(String(element.initialCondition ?? (['V_PULSE', 'I_PULSE'].includes(element.type) ? 0.5 : 0)));
   const [portName, setPortName] = useState(element.portName || element.name);
   const [directiveStr, setDirectiveStr] = useState(element.textDirective || '');
-  const [controlSource, setControlSource] = useState(element.controlSource || '');
+  const selectedControlId = () => element.controlSourceId ?? controlSources.find(source => source.name.toUpperCase() === element.controlSource?.toUpperCase())?.id ?? '';
+  const [controlSource, setControlSource] = useState(selectedControlId);
   const [diodeModel, setDiodeModel] = useState(element.diodeModel || 'pwl');
   const [transistorModel, setTransistorModel] = useState(element.transistorModel || 'nonlinear');
   const [passiveModel, setPassiveModel] = useState(element.passiveModel || 'linear');
@@ -118,10 +136,10 @@ function ElementPropertiesContent({
       element.secondaryStr ||
         (element.secondaryValue !== undefined ? String(element.secondaryValue) : '')
     );
-    setIcStr(String(element.initialCondition ?? 0));
+    setIcStr(String(element.initialCondition ?? (['V_PULSE', 'I_PULSE'].includes(element.type) ? 0.5 : 0)));
     setPortName(element.portName || element.name);
     setDirectiveStr(element.textDirective || '');
-    setControlSource(element.controlSource || '');
+    setControlSource(selectedControlId());
     setDiodeModel(element.diodeModel || 'pwl');
     setTransistorModel(element.transistorModel || 'nonlinear');
     setPassiveModel(element.passiveModel || 'linear');
@@ -214,7 +232,7 @@ function ElementPropertiesContent({
       setValidationError('Укажите число с допустимой инженерной приставкой. Лишние символы недопустимы.');
       return;
     }
-    if ((element.type === 'CCVS' || element.type === 'CCCS') && !controlSources.includes(controlSource)) {
+    if ((element.type === 'CCVS' || element.type === 'CCCS') && !controlSources.some(source => source.id === controlSource)) {
       setValidationError('Выберите существующий независимый источник напряжения для управления.');
       return;
     }
@@ -234,7 +252,7 @@ function ElementPropertiesContent({
       setValidationError('Коэффициент заполнения должен быть от 0 до 1.');
       return;
     }
-    const modelParams: NonNullable<CircuitElement['modelParams']> = {};
+    const modelParams: NonNullable<CircuitElement['modelParams']> = { ...element.modelParams };
     for (const field of modelFields) {
       if (field.key === 'cubicCoefficient' && (passiveModel !== 'nonlinear' || passiveLawKind !== 'cubic')) continue;
       const value = parseEngValue(modelInputs[field.key]);
@@ -258,8 +276,9 @@ function ElementPropertiesContent({
     }
     setValidationError('');
 
-    let passiveLawDefinition: CircuitElement['passiveLawDefinition'];
+    let passiveLawDefinition: CircuitElement['passiveLawDefinition'] = element.passiveLawDefinition;
     if (passiveModel === 'nonlinear' && ['R', 'C', 'L'].includes(element.type)) {
+      passiveLawDefinition = undefined;
       if (passiveLawKind === 'table' || passiveLawKind === 'inverseTable') {
         const rows = passiveTable.trim().split(/\r?\n/);
         const points = rows.map(row => {
@@ -283,7 +302,9 @@ function ElementPropertiesContent({
       secondaryValue: parsedSec,
       secondaryStr: normalizeEngNotation(secValStr),
       initialCondition: parsedIc,
-      controlSource: element.type === 'CCVS' || element.type === 'CCCS' ? controlSource : undefined,
+      controlSource: element.type === 'CCVS' || element.type === 'CCCS' ? controlSources.find(source => source.id === controlSource)?.name : undefined,
+      controlSourceId: element.type === 'CCVS' || element.type === 'CCCS' ? controlSource : undefined,
+      controlVoltage: undefined,
       diodeModel: element.type === 'DIODE' ? diodeModel : undefined,
       transistorModel: transistorTypes.has(element.type) ? transistorModel : undefined,
       passiveModel: ['R', 'C', 'L'].includes(element.type) ? passiveModel : undefined,
@@ -293,7 +314,15 @@ function ElementPropertiesContent({
       portName: element.type === 'PORT' ? (portName.trim() || name.trim()) : undefined,
       textDirective: element.type === 'TEXT' ? directiveStr.trim() : undefined,
     };
-    try { validateSourceModel(updated); validateTransistor(updated); validatePassiveModel(updated); }
+    try {
+      if (voltageMode && ['VCVS', 'VCCS'].includes(element.type)) {
+        if (controlWired) throw new Error('Сначала отсоедините провода от управляющих выводов; существующие соединения не удаляются автоматически.');
+        if (!voltageOptions.some(option => option.value === voltagePositive) || !voltageOptions.some(option => option.value === voltageNegative)) throw new Error('Выберите оба существующих контакта управляющего напряжения.');
+        updated.controlVoltage = { positive: JSON.parse(voltagePositive), negative: JSON.parse(voltageNegative) };
+      }
+      validateControlledSources([updated, ...circuitElements.filter(item => item.id !== updated.id)], updated.id);
+      validateSourceModel(updated); validateTransistor(updated); validatePassiveModel(updated);
+    }
     catch (error) { setValidationError(error instanceof Error ? error.message : 'Неверные параметры источника.'); return; }
 
     onSave(updated);
@@ -483,11 +512,30 @@ function ElementPropertiesContent({
             <label htmlFor="control-source" className="text-right font-medium text-slate-700">Управляющая ветвь:</label>
             <select id="control-source" value={controlSource} onChange={event => setControlSource(event.target.value)} className="w-full border border-slate-400 px-2 py-1 rounded bg-white text-slate-900 text-xs">
               <option value="">Выберите источник напряжения</option>
-              {controlSources.map(source => <option key={source} value={source}>I({source}), вывод 1 → 2</option>)}
+              {controlSource && !controlSources.some(source => source.id === controlSource) && <option value={controlSource} disabled>Управляющая ветвь недоступна: {element.controlSource}</option>}
+              {controlSources.map(source => <option key={source.id} value={source.id}>I({source.name}), вывод 1 → 2</option>)}
             </select>
             <span className="text-slate-600 font-mono">А</span>
           </div>}
 
+          {['VCVS', 'VCCS'].includes(element.type) && <fieldset className="grid gap-2 border-t pt-2">
+            <legend>Управляющее напряжение, В</legend>
+            <label>Способ выбора
+              <select aria-label="Способ выбора напряжения" value={voltageMode ? 'reference' : 'pins'} onChange={event => setVoltageMode(event.target.value === 'reference')} className="w-full border rounded p-1">
+                <option value="pins">Провода к управляющим выводам (совместимый режим)</option>
+                <option value="reference" disabled={controlWired}>Выбрать контакты электрических сетей</option>
+              </select>
+            </label>
+            {controlWired && <p className="text-xs">Чтобы выбрать сети, сначала отсоедините управляющие провода.</p>}
+            {voltageMode && ([['Положительный контакт', voltagePositive, setVoltagePositive], ['Отрицательный контакт', voltageNegative, setVoltageNegative]] as const).map(([label, value, setter]) => <label key={label}>{label}
+              <select aria-label={label} value={value} onChange={event => setter(event.target.value)} className="w-full border rounded p-1">
+                <option value="">Выберите контакт</option>
+                {value && !voltageOptions.some(option => option.value === value) && <option value={value} disabled>Контакт удалён или недоступен</option>}
+                {voltageOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>)}
+            {voltageMode && <p className="text-xs">Uупр = V(+) − V(−). Измерение не соединяет выбранные сети.</p>}
+          </fieldset>}
           {/* Дополнительные параметры источников (Частота, скважность) */}
           {(['V_AC', 'V_PULSE', 'I_AC', 'I_PULSE'].includes(element.type)) && (
             <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
@@ -517,7 +565,7 @@ function ElementPropertiesContent({
           </div>}
 
           {/* Начальные условия (IC) по стр. 6 */}
-          {(element.type === 'L' || element.type === 'C' || ['RS_FF', 'D_FF', 'JK_FF'].includes(element.type)) && (
+          {(element.type === 'L' || element.type === 'C' || element.type === 'TR3' || ['RS_FF', 'D_FF', 'JK_FF'].includes(element.type)) && (
             <div className="grid grid-cols-[11rem_minmax(0,1fr)_3rem] items-center gap-3">
               <label htmlFor="element-initial" className="text-right font-medium text-slate-700">
                 Начальные условия (IC):
@@ -534,7 +582,7 @@ function ElementPropertiesContent({
                 />
               </div>
               <div className="text-slate-600 font-mono">
-                {element.type === 'L' ? 'А' : element.type === 'C' ? 'В' : 'Q'}
+                {element.type === 'L' || element.type === 'TR3' ? 'А' : element.type === 'C' ? 'В' : 'Q'}
               </div>
             </div>
           )}

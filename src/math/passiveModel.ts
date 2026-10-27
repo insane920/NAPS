@@ -126,7 +126,8 @@ export function validatePassiveModel(element: CircuitElement): void {
     throw new Error(`${element.name}: неизвестная модель пассивного элемента.`);
   }
   const definition = element.passiveLawDefinition;
-  if (definition && element.passiveModel !== 'nonlinear') throw new Error(`${element.name}: зависимость допустима только в нелинейной модели.`);
+  // Keep the user's dormant constitutive law while the linear variant is selected.
+  // It is never evaluated in that variant; validate it when reactivated.
   if (element.passiveModel !== 'nonlinear') return;
   if (!definition) {
     const coefficient = element.modelParams?.cubicCoefficient;

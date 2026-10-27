@@ -59,7 +59,7 @@ export function solveACAnalysis(elements: CircuitElement[], wires: CircuitWire[]
   const operatingPoint = active.some(e => ['DIODE', 'SWITCH', 'THYRISTOR', 'OPAMP'].includes(e.type) || transistorTypes.has(e.type) || e.passiveModel === 'nonlinear')
     ? solveDCOperatingPoint(elements, wires) : undefined;
   const pin = (e: CircuitElement, p: string) => graph.pinToNode.get(`${e.id}_${p}`)!;
-  const used = [...new Set(active.flatMap(e => getCircuitPinIds(e.type, e).map(p => pin(e, p))))].filter(n => n !== 0);
+  const used = [...new Set(active.flatMap(e => [...getCircuitPinIds(e.type, e), ...(e.controlVoltage ? ['ctrl_pos', 'ctrl_neg'] : [])].map(p => pin(e, p))))].filter(n => n !== 0);
   const nodeIndex = new Map(used.map((n, i) => [n, i]));
   const extras = active.flatMap(e => e.type === 'TR3' ? [`${e.id}:primary`, `${e.id}:secondary`] : e.type.startsWith('V_') || e.type === 'VCVS' || e.type === 'CCVS' || (e.type === 'DIODE' && e.diodeModel === 'ideal') || e.type === 'OPAMP' ? [e.id] : []);
   const extraIndex = new Map(extras.map((id, i) => [id, used.length + i]));

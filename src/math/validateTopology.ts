@@ -4,6 +4,7 @@ import { sourceValue } from './linearTransient';
 import { solveTopologyTransient } from './topologyTransient';
 import { transistorCurrent, transistorTypes } from './transistorModel';
 import { passiveLaw } from './passiveModel';
+import { controlBranch } from './controlledSources';
 
 /** Independently checks KCL and each configured device equation at every sample. */
 export function validateTopologySimulation(elements: CircuitElement[], wires: CircuitWire[], settings: TransientSettings, result: CircuitSimulationResults) {
@@ -52,7 +53,7 @@ export function validateTopologySimulation(elements: CircuitElement[], wires: Ci
         absolute = e.type === 'VCVS' ? 1e-6 : 1e-8;
       }
       else if (e.type === 'CCVS' || e.type === 'CCCS') {
-        const controlName = Object.keys(result.branchCurrents).find(name => name.toLocaleUpperCase() === e.controlSource?.toLocaleUpperCase());
+        const controlName = controlBranch(e, elements).name;
         const control = controlName ? result.branchCurrents[controlName][k] : undefined;
         if (!Number.isFinite(control)) return fail(`${e.name}: отсутствует ток управляющей ветви.`);
         actual = e.type === 'CCVS' ? u : i;

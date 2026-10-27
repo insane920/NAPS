@@ -950,8 +950,10 @@ export function getComponentPins(el: CircuitElement): CircuitPin[] {
     return [
       { id: '1', name: '+', label: '+', ...outputPos },
       { id: '2', name: '−', label: '−', ...outputNeg },
-      { id: 'ctrl_pos', name: 'U+', label: 'U+', ...controlPos },
-      { id: 'ctrl_neg', name: 'U−', label: 'U−', ...controlNeg },
+      ...(!el.controlVoltage ? [
+        { id: 'ctrl_pos', name: 'U+', label: 'U+', ...controlPos },
+        { id: 'ctrl_neg', name: 'U−', label: 'U−', ...controlNeg },
+      ] : []),
     ];
   }
   if (el.type === 'CHIP') {
@@ -1468,6 +1470,16 @@ export function SchematicEditor({
           usedNames.add(name.toLocaleUpperCase());
           return { ...element, id, name, x: snapToGrid(element.x + 40), y: snapToGrid(element.y + 40) };
         });
+        for (const copy of copies) {
+          if (copy.controlVoltage) copy.controlVoltage = {
+            positive: { ...copy.controlVoltage.positive, elementId: ids.get(copy.controlVoltage.positive.elementId) ?? copy.controlVoltage.positive.elementId },
+            negative: { ...copy.controlVoltage.negative, elementId: ids.get(copy.controlVoltage.negative.elementId) ?? copy.controlVoltage.negative.elementId },
+          };
+          if (copy.controlSourceId && ids.has(copy.controlSourceId)) {
+            copy.controlSourceId = ids.get(copy.controlSourceId)!;
+            copy.controlSource = copies.find(item => item.id === copy.controlSourceId)!.name;
+          }
+        }
         const copiedWires = copiedGroup.wires.map(wire => ({ ...wire,
           id: `wire_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           fromCompId: ids.get(wire.fromCompId)!, toCompId: ids.get(wire.toCompId)!,

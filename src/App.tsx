@@ -9,6 +9,7 @@ import { exportToYamlScm, parseYamlScm, EMPTY_CIRCUIT_DESCRIPTION, type CircuitD
 import type { ACSettings, CircuitElement, CircuitWire, CircuitSimulationResults, TransientSettings, WireCrossingMode } from './types';
 import { useModalFocus } from './hooks/useModalFocus';
 import { NapsLogo } from './components/NapsLogo';
+import { bindCurrentControls, replaceElementPreservingControls } from './math/controlledSources';
 import { version as appVersion } from '../package.json';
 import { DEFAULT_PRINT_LAYOUT, type PrintLayout } from './utils/printLayout';
 import { readRecovery, writeRecovery, discardRecovery, type RecoveryCopy } from './utils/projectRecovery';
@@ -112,6 +113,7 @@ export default function App() {
     continuousHistoryGroup.current = false; closeHistoryGroup();
   }, [closeHistoryGroup]);
   const changeElements = useCallback((value: CircuitElement[]) => {
+    value = bindCurrentControls(value);
     beginHistoryChange(); currentSnapshot.current = { ...currentSnapshot.current, elements: value, dirty: true };
     setElements(value); markChanged();
   }, [beginHistoryChange, markChanged]);
@@ -246,6 +248,7 @@ export default function App() {
   }, [ac, elements, wires, stopCalculation]);
 
   const replaceProject = (data: { elements: CircuitElement[]; wires: CircuitWire[]; transient: TransientSettings; ac?: ACSettings; printLayout?: PrintLayout; description?: CircuitDescription; crossingMode?: WireCrossingMode }, title: string, edited = false) => {
+    data = { ...data, elements: bindCurrentControls(data.elements) };
     closeHistoryGroup(); undoStack.current = []; redoStack.current = [];
     setSelected(null);
     currentSnapshot.current = cloneSnapshot({ elements: data.elements, wires: data.wires, settings: data.transient, ac: data.ac ?? newACSettings, printLayout: data.printLayout ?? DEFAULT_PRINT_LAYOUT, description: data.description ?? EMPTY_CIRCUIT_DESCRIPTION, crossingMode: data.crossingMode ?? 'explicit', name: title, dirty: edited });
@@ -368,9 +371,9 @@ export default function App() {
         <span className="status-hint">Двойной щелчок — свойства · F9 — расчёт</span>
       </footer>
       {graphOpen && <div ref={graphDialogRef} className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Результаты расчёта"><div className="graph-dialog"><Suspense fallback={<div className="loading-panel">Загрузка графиков…</div>}><GraphWindow results={results} settings={settings} acSettings={ac} elements={elements} wires={wires} onOpenTransientSettings={() => results?.isAC ? setAcSettingsOpen(true) : setSettingsOpen(true)} onClose={() => setGraphOpen(false)} /></Suspense></div></div>}
-      <ElementPropertiesModal element={selected} existingNames={elements.filter(element => element.id !== selected?.id).map(element => element.name)} controlSources={elements.filter(element => ['V_DC', 'V_AC', 'V_PULSE'].includes(element.type) && !element.isolation).map(element => element.name)} isOpen={!!selected} onClose={() => setSelected(null)} onSave={value => {
+      <ElementPropertiesModal circuitElements={elements} circuitWires={wires} element={selected} existingNames={elements.filter(element => element.id !== selected?.id).map(element => element.name)} controlSources={elements.filter(element => ['V_DC', 'V_AC', 'V_PULSE'].includes(element.type) && !element.isolation)} isOpen={!!selected} onClose={() => setSelected(null)} onSave={value => {
         beginContinuousHistory();
-        changeElements(elements.map(element => element.id === value.id ? value : element));
+        changeElements(replaceElementPreservingControls(elements, value));
         if (value.type === 'CHIP') {
           const valid = new Set(value.chipPins?.map(pin => pin.id));
           changeWires(wires.filter(wire => (wire.fromCompId !== value.id || valid.has(wire.fromPinId)) && (wire.toCompId !== value.id || valid.has(wire.toPinId))));

@@ -376,12 +376,16 @@ export interface CircuitWire {
   routeMode?: 'orthogonal' | 'direct';
   /** User route points: legacy 0/45/90-degree routes or free-angle direct-mode edits. */
   waypoints?: Array<{ x: number; y: number }>;
+  /** Last committed automatic geometry, separate from user-pinned waypoints. */
+  autoRoute?: Array<{ x: number; y: number }>;
   /** Explicitly user-routed wire; also preserves a single straight 45-degree segment. */
   manual?: boolean;
   /** A visible planned route with no electrical continuity. */
   disabled?: boolean;
   /** Stable identity of a conductor before an automatic crossing split. */
   originWireId?: string;
+  /** Original constraints before a crossing split; generated bends are not manual. */
+  originRoute?: { routeMode: 'orthogonal' | 'direct'; manual: boolean; waypoints: Array<{ x: number; y: number }> };
 }
 
 /** SCM 6/7 keep explicit junctions; SCM 8 stores crossings made in the new editor as junctions. */

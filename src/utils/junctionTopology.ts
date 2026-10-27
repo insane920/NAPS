@@ -117,6 +117,7 @@ export function promoteAnchoredCrossings(
       fromCompId: aliases.get(wire.fromCompId) ?? wire.fromCompId,
       toCompId: aliases.get(wire.toCompId) ?? wire.toCompId,
       originWireId: wire.originWireId && origins.has(wire.originWireId) ? undefined : wire.originWireId,
+      originRoute: wire.originWireId && origins.has(wire.originWireId) ? undefined : wire.originRoute,
     })),
   };
 }

@@ -4,6 +4,7 @@ import { DEFAULT_PRINT_LAYOUT, parsePrintLayout, SCHEMATIC_UNITS_PER_MM, type Pr
 import { validateChipPins } from './chipPins';
 import { validatePassiveModel } from '../math/passiveModel';
 import { bindCurrentControls } from '../math/controlledSources';
+import { isOrthogonalAutomaticRoute } from './orthogonalRouter';
 
 function readVoltageControl(text: string | undefined): CircuitElement['controlVoltage'] {
   if (text === undefined) return undefined;
@@ -42,6 +43,8 @@ export interface YamlScmWire {
   Manual?: boolean;
   Disabled?: boolean;
   OriginWireId?: string;
+  OriginRoute?: CircuitWire['originRoute'];
+  AutoRoute?: CircuitWire['autoRoute'];
 }
 
 export interface YamlScmAnalysis {
@@ -189,6 +192,7 @@ export function exportToYamlScm(
 
   const scmWires: YamlScmWire[] = [];
   for (const w of wires) {
+    if (w.autoRoute && !isOrthogonalAutomaticRoute(w.autoRoute)) throw new Error(`Провод ${w.id}: повреждена автоматическая геометрия. Схема не сохранена.`);
     const fromId = idMap.get(w.fromCompId);
     const toId = idMap.get(w.toCompId);
     const from = elements.find(el => el.id === w.fromCompId);
@@ -206,6 +210,10 @@ export function exportToYamlScm(
       Manual: w.manual,
       Disabled: w.disabled,
       OriginWireId: format === 'current' && crossingMode === 'connect' ? w.originWireId : undefined,
+      OriginRoute: format === 'current' && crossingMode === 'connect' && w.originWireId && w.originRoute ? {
+        ...w.originRoute, waypoints: w.originRoute.waypoints.map(point => ({ x: point.x / unitsPerStoredUnit, y: point.y / unitsPerStoredUnit })),
+      } : undefined,
+      AutoRoute: format === 'current' ? w.autoRoute?.map(point => ({ x: point.x / unitsPerStoredUnit, y: point.y / unitsPerStoredUnit })) : undefined,
     });
   }
 
@@ -248,6 +256,8 @@ export function exportToYamlScm(
     if (w.Manual) yaml += `    Manual: true\n`;
     if (w.Disabled) yaml += `    Disabled: true\n`;
     if (w.OriginWireId) yaml += `    OriginWireId: ${JSON.stringify(w.OriginWireId)}\n`;
+    if (w.OriginRoute) yaml += `    OriginRoute: ${JSON.stringify(w.OriginRoute)}\n`;
+    if (w.AutoRoute) yaml += `    AutoRoute: ${JSON.stringify(w.AutoRoute)}\n`;
   }
 
   yaml += `\nAnalysis:\n  Transient:\n`;
@@ -487,6 +497,19 @@ export function parseYamlScm(yamlText: string): {
         }
       }
     } else if (currentSection === 'wires') {
+      if (trimmed.startsWith('AutoRoute:') && wires.length) {
+        const points = JSON.parse(trimmed.slice('AutoRoute:'.length));
+        if (!Array.isArray(points) || points.length > 1024 || !isOrthogonalAutomaticRoute(points)) throw new Error('Некорректная автоматическая геометрия провода.');
+        wires[wires.length - 1].autoRoute = points;
+        continue;
+      }
+      if (trimmed.startsWith('OriginRoute:') && wires.length) {
+        const stored = JSON.parse(trimmed.slice('OriginRoute:'.length));
+        if (!stored || !['orthogonal', 'direct'].includes(stored.routeMode) || typeof stored.manual !== 'boolean' || !Array.isArray(stored.waypoints) || stored.waypoints.length > 10000 ||
+          !stored.waypoints.every((point: { x: number; y: number }) => point && Number.isFinite(point.x) && Number.isFinite(point.y))) throw new Error('Некорректные исходные ограничения трассы.');
+        wires[wires.length - 1].originRoute = stored;
+        continue;
+      }
       if (trimmed.startsWith('RouteMode:') && wires.length) {
         const mode = trimmed.slice('RouteMode:'.length).trim();
         if (mode !== 'direct') throw new Error('Некорректный режим трассировки провода.');
@@ -604,14 +627,17 @@ export function parseYamlScm(yamlText: string): {
   if (majorVersion < 8 && (elements.some(element => element.autoCrossing) || wires.some(wire => wire.originWireId))) {
     throw new Error('Метаданные автоматических пересечений требуют SCM 8.');
   }
+  if (wires.some(wire => wire.originRoute && !wire.originWireId)) throw new Error('Исходные ограничения трассы требуют ID исходного проводника.');
   if (majorVersion >= 7) {
     if (geometryVersion !== 1 || geometryUnit !== 'mm') throw new Error('SCM 7/8 требует Geometry Version: 1 и Unit: mm.');
     // One import boundary: physical millimetres become legacy SVG drawing units.
     // Re-export divides by the same fixed factor; monitor DPI and zoom never participate.
     for (const element of elements) { element.x *= SCHEMATIC_UNITS_PER_MM; element.y *= SCHEMATIC_UNITS_PER_MM; }
     for (const wire of wires) if (wire.waypoints) wire.waypoints = wire.waypoints.map(point => ({ x: point.x * SCHEMATIC_UNITS_PER_MM, y: point.y * SCHEMATIC_UNITS_PER_MM }));
+    for (const wire of wires) if (wire.originRoute) wire.originRoute.waypoints = wire.originRoute.waypoints.map(point => ({ x: point.x * SCHEMATIC_UNITS_PER_MM, y: point.y * SCHEMATIC_UNITS_PER_MM }));
+    for (const wire of wires) if (wire.autoRoute) wire.autoRoute = wire.autoRoute.map(point => ({ x: point.x * SCHEMATIC_UNITS_PER_MM, y: point.y * SCHEMATIC_UNITS_PER_MM }));
     if (elements.some(element => !Number.isFinite(element.x) || !Number.isFinite(element.y)) ||
-        wires.some(wire => wire.waypoints?.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.y)))) {
+        wires.some(wire => [wire.waypoints, wire.autoRoute, wire.originRoute?.waypoints].some(points => points?.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.y))))) {
       throw new Error('Координаты SCM выходят за допустимый числовой диапазон.');
     }
   } else if (geometryVersion !== undefined || geometryUnit !== undefined) {

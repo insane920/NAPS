@@ -38,7 +38,7 @@ import { useModalFocus } from '../hooks/useModalFocus';
 import { ComponentPalette, COMPONENT_CATALOG, PLACEMENT_CATALOG, TERMINAL_GROUPS, terminalGroupForType, TerminalGroup } from './ComponentPalette';
 import { SYMBOL_METRICS } from './symbolMetrics';
 import { SCHEMATIC_UNITS_PER_MM, computePrintPlacement, paperSize, printScaleLabel, type PrintLayout, type PrintPlacement } from '../utils/printLayout';
-import { componentObstacle, routeAroundObstacles, routeIsClear } from '../utils/orthogonalRouter';
+import { componentObstacle, routeAroundObstacles, routeIsClear, reanchorAutomaticRoute, isOrthogonalAutomaticRoute } from '../utils/orthogonalRouter';
 import type { CircuitDescription } from '../utils/yamlScm';
 import { createTitleBlock } from '../utils/eskdTitleBlock';
 import { SpatialIndex } from '../utils/spatialIndex';
@@ -301,6 +301,49 @@ export function splitWireRoute(points: Point[], segmentIndex: number, point: Poi
 
 type RoutedWire = { wire: CircuitWire; points: Point[] };
 
+
+/** A rotation keeps the physical crossing attached; only editing a conductor removes it. */
+function prepareCrossingRotation(wires: CircuitWire[], routed: RoutedWire[]): CircuitWire[] {
+  const byId = new Map(routed.map(route => [route.wire.id, route.points]));
+  return wires.map(wire => wire.originRoute && !wire.originRoute.manual
+    ? { ...wire, routeMode: 'orthogonal', manual: false, waypoints: undefined,
+      autoRoute: byId.get(wire.id)?.map(({x,y}) => ({x,y})) }
+    : wire);
+}
+
+export function finishWireGeometry(elements: CircuitElement[], wires: CircuitWire[], routed: RoutedWire[], mode: WireCrossingMode) {
+  const byId = new Map(routed.map(route => [route.wire.id, route]));
+  let changed = false;
+  const stored = wires.map(wire => {
+    const route = byId.get(wire.id);
+    if (!route || wire.disabled || wire.manual || wire.routeMode === 'direct' || wire.waypoints?.length || !isOrthogonalAutomaticRoute(route.points) || ('unrouted' in route && route.unrouted)) return wire;
+    if (wire.autoRoute?.length === route.points.length && wire.autoRoute.every((point, index) => samePoint(point, route.points[index]))) return wire;
+    changed = true;
+    return { ...wire, autoRoute: route.points.map(point => ({ x: point.x, y: point.y })) };
+  });
+  return normalizeCrossingTopology(elements, changed ? stored : wires, routed, mode);
+}
+
+export function hasUnmaterializedCrossings(elements: CircuitElement[], wires: CircuitWire[], routed: RoutedWire[]): boolean {
+  const graph = buildCircuitGraph(elements, wires);
+  for (let i = 0; i < routed.length; i++) for (let j = i + 1; j < routed.length; j++) {
+    const a = routed[i], b = routed[j];
+    if (a.wire.disabled || b.wire.disabled || graph.pinToNode.get(`${a.wire.fromCompId}_${a.wire.fromPinId}`) === graph.pinToNode.get(`${b.wire.fromCompId}_${b.wire.fromPinId}`)) continue;
+    if (crossingOfRoutes(a.points, b.points)) return true;
+  }
+  return false;
+}
+
+export function validateCircuitGeometry(elements: CircuitElement[], wires: CircuitWire[], grid: number, mode: WireCrossingMode) {
+  const routes = routeCircuitWires(elements, wires, grid);
+  if (routes.some(route => !route.wire.disabled && route.unrouted) || routes.filter(route => !route.wire.disabled).length !== wires.filter(wire => !wire.disabled).length) {
+    throw new Error('Расчёт остановлен: для активного провода нет корректной видимой трассы. Исправьте выделенные красным соединения.');
+  }
+  if (mode === 'connect' && hasUnmaterializedCrossings(elements, wires, routes)) {
+    throw new Error('Расчёт остановлен: пересечения проводов ещё не согласованы с электрическими узлами. Завершите редактирование соединений.');
+  }
+}
+
 /** An explicit cut or isolation turns automatically split routes into editable branches. */
 export function freezeCrossingProvenance(elements: CircuitElement[], wires: CircuitWire[], changedWireIds: ReadonlySet<string>):
   { elements: CircuitElement[]; wires: CircuitWire[] } {
@@ -325,7 +368,14 @@ export function freezeCrossingProvenance(elements: CircuitElement[], wires: Circ
   return {
     elements: elements.map(element => frozenNodes.has(element.id) ? { ...element, autoCrossing: undefined } : element),
     wires: wires.map(wire => wire.originWireId && origins.has(wire.originWireId)
-      ? { ...wire, originWireId: undefined } : wire),
+      ? { ...wire, ...(wire.originRoute && !wire.originRoute.manual ? {
+          routeMode: 'orthogonal' as const, manual: false, waypoints: undefined,
+          autoRoute: (() => {
+            const from = elements.find(element => element.id === wire.fromCompId), to = elements.find(element => element.id === wire.toCompId);
+            const a = from && getComponentPins(from).find(pin => pin.id === wire.fromPinId), b = to && getComponentPins(to).find(pin => pin.id === wire.toPinId);
+            return from && to && a && b ? simplifyPoints([{ x: from.x + a.x, y: from.y + a.y }, ...(wire.waypoints ?? []), { x: to.x + b.x, y: to.y + b.y }]) : undefined;
+          })(),
+        } : {}), originWireId: undefined, originRoute: undefined } : wire),
   };
 }
 
@@ -424,6 +474,14 @@ export function collapseAutomaticCrossings(
     const group = groups.get(wire.originWireId) ?? [];
     group.push(wire); groups.set(wire.originWireId, group);
   }
+  const preserveDamagedGroup = (fragments: CircuitWire[]) => {
+    // Keep the actual remaining branches and freeze only their connected provenance
+    // cluster. An unrelated complete crossing must remain editable.
+    const frozen = freezeCrossingProvenance(elements, wires, new Set(fragments.map(wire => wire.id)));
+    const byId = new Map(frozen.wires.map(wire => [wire.id, wire]));
+    return collapseAutomaticCrossings(frozen.elements, frozen.wires,
+      routed.map(route => ({ ...route, wire: byId.get(route.wire.id) ?? route.wire })));
+  };
   const merged: RoutedWire[] = [];
   const endpointKey = (compId: string, pinId: string) => `${compId}\u0000${pinId}`;
   for (const [originId, fragments] of groups) {
@@ -431,19 +489,17 @@ export function collapseAutomaticCrossings(
       { compId: wire.fromCompId, pinId: wire.fromPinId },
       { compId: wire.toCompId, pinId: wire.toPinId },
     ]).filter(end => !automatic.has(end.compId));
-    // An incomplete group can arise after explicit deletion. Preserve it for
-    // a separate repair rather than guessing at missing electrical endpoints.
-    if (ends.length !== 2) return { elements, wires, routes: routed };
+    if (ends.length !== 2) return preserveDamagedGroup(fragments);
     let cursor = ends[0], path: Point[] = [];
     const used = new Set<string>();
     for (let index = 0; index < fragments.length; index++) {
       const fragment = fragments.find(wire => !used.has(wire.id) && (
         endpointKey(wire.fromCompId, wire.fromPinId) === endpointKey(cursor.compId, cursor.pinId) ||
         endpointKey(wire.toCompId, wire.toPinId) === endpointKey(cursor.compId, cursor.pinId)));
-      if (!fragment) return { elements, wires, routes: routed };
+      if (!fragment) return preserveDamagedGroup(fragments);
       const forward = endpointKey(fragment.fromCompId, fragment.fromPinId) === endpointKey(cursor.compId, cursor.pinId);
       const points = routes.get(fragment.id);
-      if (!points?.length) return { elements, wires, routes: routed };
+      if (!points?.length) return preserveDamagedGroup(fragments);
       const oriented = forward ? points : [...points].reverse();
       path = path.length ? [...path, ...oriented.slice(1)] : [...oriented];
       used.add(fragment.id);
@@ -452,12 +508,15 @@ export function collapseAutomaticCrossings(
         : { compId: fragment.fromCompId, pinId: fragment.fromPinId };
     }
     if (endpointKey(cursor.compId, cursor.pinId) !== endpointKey(ends[1].compId, ends[1].pinId)) {
-      return { elements, wires, routes: routed };
+      return preserveDamagedGroup(fragments);
     }
+    const constraints = fragments[0].originRoute;
     const original: CircuitWire = { ...fragments[0], id: originId,
       fromCompId: ends[0].compId, fromPinId: ends[0].pinId,
       toCompId: ends[1].compId, toPinId: ends[1].pinId,
-      routeMode: 'direct', manual: true, waypoints: simplifyPoints(path).slice(1, -1), originWireId: undefined };
+      routeMode: constraints?.routeMode ?? 'direct', manual: constraints?.manual ?? true,
+      waypoints: constraints ? constraints.waypoints.length ? constraints.waypoints.map(point => ({ ...point })) : undefined : simplifyPoints(path).slice(1, -1),
+      originWireId: undefined, originRoute: undefined };
     merged.push({ wire: original, points: simplifyPoints(path) });
   }
   const intact = wires.filter(wire => !wire.originWireId);
@@ -531,9 +590,10 @@ export function materializeWireCrossings(
     const split = (wire: CircuitWire, parts: { first: Point[]; second: Point[] }) => {
       if ((wire.fromCompId === junctionId && samePoint(routes.get(wire.id)![0], point)) ||
           (wire.toCompId === junctionId && samePoint(routes.get(wire.id)!.at(-1)!, point))) return [wire];
-      const before: CircuitWire = { ...wire, id: `${wire.id}_a_${junctionId}`, toCompId: junctionId, toPinId: '1',
+      const originRoute = wire.originRoute ?? { routeMode: wire.routeMode ?? 'orthogonal', manual: !!wire.manual || !!wire.waypoints?.length || wire.routeMode === 'direct', waypoints: wire.waypoints?.map(point => ({ ...point })) ?? [] };
+      const before: CircuitWire = { ...wire, originRoute, id: `${wire.id}_a_${junctionId}`, toCompId: junctionId, toPinId: '1',
         routeMode: 'direct', manual: true, waypoints: parts.first.slice(1, -1), originWireId: wire.originWireId ?? wire.id };
-      const after: CircuitWire = { ...wire, id: `${wire.id}_b_${junctionId}`, fromCompId: junctionId, fromPinId: '1',
+      const after: CircuitWire = { ...wire, originRoute, id: `${wire.id}_b_${junctionId}`, fromCompId: junctionId, fromPinId: '1',
         routeMode: 'direct', manual: true, waypoints: parts.second.slice(1, -1), originWireId: wire.originWireId ?? wire.id };
       routes.delete(wire.id);
       routes.set(before.id, parts.first);
@@ -610,6 +670,10 @@ export function computeOrthogonalWirePoints(
   trackOffset = 0,
   grid = GRID_SIZE
 ): Point[] {
+  if (trackOffset === 0) return routeAroundObstacles(p1, p2,
+    p1Type === 'JUNCTION' ? { x: 0, y: 0 } : p1PinRel ?? { x: 0, y: 0 },
+    p2Type === 'JUNCTION' ? { x: 0, y: 0 } : p2PinRel ?? { x: 0, y: 0 }, grid, [], [], [])
+    ?? simplifyPoints([p1, { x: p2.x, y: p1.y }, p2]);
   // Preserve the exact terminal coordinates, including 45° rotations.
   const x1 = p1.x;
   const y1 = p1.y;
@@ -741,36 +805,11 @@ export function computeOrthogonalWirePoints(
   ]);
 }
 
-function overlappingLength(points: Point[], occupied: Point[][]): number {
-  let total = 0;
-  for (let index = 1; index < points.length; index++) {
-    const a = points[index - 1];
-    const b = points[index];
-    for (const route of occupied) {
-      for (let otherIndex = 1; otherIndex < route.length; otherIndex++) {
-        const c = route[otherIndex - 1];
-        const d = route[otherIndex];
-        if (a.y === b.y && c.y === d.y && a.y === c.y) {
-          total += Math.max(0, Math.min(Math.max(a.x, b.x), Math.max(c.x, d.x)) - Math.max(Math.min(a.x, b.x), Math.min(c.x, d.x)));
-        } else if (a.x === b.x && c.x === d.x && a.x === c.x) {
-          total += Math.max(0, Math.min(Math.max(a.y, b.y), Math.max(c.y, d.y)) - Math.max(Math.min(a.y, b.y), Math.min(c.y, d.y)));
-        }
-      }
-    }
-  }
-  return total;
-}
-
 function automaticWireRoute(start: Point, end: Point, startRel: Point, endRel: Point,
-  startType: string, endType: string, grid: number, elements: CircuitElement[], foreign: Point[][]): Point[] | null {
+  startType: string, endType: string, grid: number, elements: CircuitElement[], foreign: Point[][], previous: Point[] = [], shared: Point[][] = []): Point[] | null {
   const obstacles = elements.map(element => componentObstacle(element)).filter((box): box is NonNullable<typeof box> => box !== null);
-  const offsets = [0, grid, -grid, grid * 2, -grid * 2, grid * 3, -grid * 3];
-  const candidates = offsets.map(offset => computeOrthogonalWirePoints(
-    start, end, startRel, endRel, startType, endType, offset, grid));
-  const clear = candidates.filter(route => routeIsClear(route, obstacles, foreign));
-  if (clear.length) return clear.reduce((best, route) =>
-    route.length < best.length || route.length === best.length && overlappingLength(route, foreign) < overlappingLength(best, foreign) ? route : best);
-  return routeAroundObstacles(start, end, startRel, endRel, grid, candidates[0], obstacles, foreign);
+  return routeAroundObstacles(start, end, startType === 'JUNCTION' ? { x: 0, y: 0 } : startRel,
+    endType === 'JUNCTION' ? { x: 0, y: 0 } : endRel, grid, previous, obstacles, foreign, shared);
 }
 
 /** Refuse a reconnection whose visible route cannot reach the new electrical terminal. */
@@ -1011,6 +1050,87 @@ export function getComponentPins(el: CircuitElement): CircuitPin[] {
   ];
 }
 
+/** One routing pipeline for import, previews, editing and crossing normalization. */
+export function routeCircuitWires(elements: CircuitElement[], wires: CircuitWire[], gridUnits: number, cache = new Map<string, Point[]>()) {
+  const circuitGraph = buildCircuitGraph(elements, wires);
+  const pinPositions = new Map<string, { compId: string; pinId: string; componentName: string; x: number; y: number; name: string; label?: string; relX: number; relY: number; elType: string }>();
+  for (const element of elements) for (const pin of getComponentPins(element)) pinPositions.set(`${element.id}_${pin.id}`, {
+    compId: element.id, pinId: pin.id, componentName: element.name, x: element.x + pin.x, y: element.y + pin.y,
+    name: pin.name, label: pin.label, relX: pin.x, relY: pin.y, elType: element.type,
+  });
+    const occupiedByNode = new Map<number | undefined, Point[][]>();
+    const fixedRoutes = new Map<string, Point[]>();
+    const nodeFor = (wire: CircuitWire) => circuitGraph.pinToNode.get(`${wire.fromCompId}_${wire.fromPinId}`);
+    const remember = (wire: CircuitWire, points: Point[]) => {
+      const node = nodeFor(wire), routes = occupiedByNode.get(node);
+      if (routes) routes.push(points);
+      else occupiedByNode.set(node, [points]);
+    };
+    // A manually edited conductor has priority even when it appears later in SCM.
+    const obstacles = elements.map(element => componentObstacle(element)).filter((box): box is NonNullable<typeof box> => box !== null);
+    const wireOrder = new Map(wires.map((wire, index) => [wire.id, index]));
+    const unchanged = (wire: CircuitWire) => {
+      const stored = wire.autoRoute;
+      const p1 = pinPositions.get(`${wire.fromCompId}_${wire.fromPinId}`), p2 = pinPositions.get(`${wire.toCompId}_${wire.toPinId}`);
+      if (stored?.length && p1 && p2 && samePoint(stored[0], p1) && samePoint(stored.at(-1)!, p2) && isOrthogonalAutomaticRoute(stored) && routeIsClear(stored, obstacles, [])) cache.set(wire.id, stored);
+      const old = cache.get(wire.id);
+      return !!old?.length && !!p1 && !!p2 && samePoint(old[0], p1) && samePoint(old.at(-1)!, p2) && routeIsClear(old, obstacles, []);
+    };
+    const routingOrder = [...wires].sort((a, b) => Number(unchanged(b)) - Number(unchanged(a)));
+    for (const wire of routingOrder) {
+      if (!wire.manual && !wire.waypoints?.length && wire.routeMode !== 'direct') continue;
+      const p1 = pinPositions.get(`${wire.fromCompId}_${wire.fromPinId}`);
+      const p2 = pinPositions.get(`${wire.toCompId}_${wire.toPinId}`);
+      if (!p1 || !p2) continue;
+      const points = wire.routeMode === 'direct'
+        ? simplifyPoints([p1, ...(wire.waypoints ?? []), p2])
+        : buildStoredWireRoute(p1, p2, wire.waypoints ?? [],
+          { x: p1.relX, y: p1.relY }, { x: p2.relX, y: p2.relY }, p1.elType, p2.elType, gridUnits);
+      fixedRoutes.set(wire.id, points);
+      if (!wire.disabled) remember(wire, points);
+    }
+    const geometries: Array<{
+      wire: CircuitWire;
+      p1: NonNullable<ReturnType<typeof pinPositions.get>>;
+      p2: NonNullable<ReturnType<typeof pinPositions.get>>;
+      points: Point[];
+      pathD: string;
+      unrouted: boolean;
+    }> = [];
+    for (const wire of routingOrder) {
+      const p1 = pinPositions.get(`${wire.fromCompId}_${wire.fromPinId}`);
+      const p2 = pinPositions.get(`${wire.toCompId}_${wire.toPinId}`);
+      if (!p1 || !p2) continue;
+      const node = nodeFor(wire);
+      const foreignRoutes = Array.from(occupiedByNode.entries())
+        .filter(([occupiedNode]) => occupiedNode !== node)
+        .flatMap(([, routes]) => routes);
+      for (const [key, pin] of pinPositions) if (circuitGraph.pinToNode.get(key) !== node) foreignRoutes.push([{ x: pin.x, y: pin.y }, { x: pin.x, y: pin.y }]);
+
+      let pts: Point[];
+      let unrouted = false;
+      if (fixedRoutes.has(wire.id)) {
+        pts = fixedRoutes.get(wire.id)!;
+        unrouted = !wire.disabled && !routeIsClear(pts, obstacles, []);
+      } else {
+        if (!cache.has(wire.id) && wire.autoRoute) cache.set(wire.id, wire.autoRoute);
+        const old = cache.get(wire.id);
+        const previous = old ? reanchorAutomaticRoute(old, p1, p2) : [];
+        const safeRoute = unchanged(wire) ? old!
+          : automaticWireRoute(p1, p2, { x: p1.relX, y: p1.relY }, { x: p2.relX, y: p2.relY },
+            p1.elType, p2.elType, gridUnits, elements, foreignRoutes, previous, occupiedByNode.get(node) ?? []);
+        unrouted = !safeRoute;
+        pts = safeRoute ?? computeOrthogonalWirePoints(p1, p2, { x: p1.relX, y: p1.relY },
+          { x: p2.relX, y: p2.relY }, p1.elType, p2.elType, 0, gridUnits);
+        if (safeRoute) cache.set(wire.id, safeRoute);
+      }
+      if (!fixedRoutes.has(wire.id) && !wire.disabled && !unrouted) remember(wire, pts);
+      geometries.push({ wire, p1, p2, points: pts, pathD: pointsToSvgPath(pts), unrouted });
+    }
+    for (const id of cache.keys()) if (!wires.some(wire => wire.id === id)) cache.delete(id);
+    return geometries.sort((a, b) => wireOrder.get(a.wire.id)! - wireOrder.get(b.wire.id)!);
+}
+
 /** Move terminal-adjacent bends once, using the original geometry for both ends of a group edit. */
 export function reanchorManualWiresForChanges(
   wires: CircuitWire[], changes: ReadonlyArray<{ before: CircuitElement; after: CircuitElement }>,
@@ -1053,10 +1173,11 @@ export function moveSelectedElements(
   const moved = elements.map(element => selectedIds.has(element.id)
     ? { ...element, x: element.x + dx, y: element.y + dy } : element);
   const movedWires = wires.map(wire => {
-    if (!wire.waypoints?.length) return wire;
     const fromMoved = selectedIds.has(wire.fromCompId);
     const toMoved = selectedIds.has(wire.toCompId);
     if (!fromMoved && !toMoved) return wire;
+    if (wire.autoRoute && fromMoved && toMoved) wire = { ...wire, autoRoute: wire.autoRoute.map(point => ({ x: point.x + dx, y: point.y + dy })) };
+    if (!wire.waypoints?.length) return wire;
     const waypoints = wire.waypoints.map(point => ({ ...point }));
     if (fromMoved && toMoved) {
       for (const point of waypoints) { point.x += dx; point.y += dy; }
@@ -1226,6 +1347,8 @@ export function SchematicEditor({
   const finishGeometryDrag = useRef<() => void>(() => {});
   const geometryActionPending = useRef<Set<string> | null>(null);
   const currentUnroutedWires = useRef<Set<string>>(new Set());
+  const automaticRouteCache = useRef<Map<string, Point[]>>(new Map());
+  const routedSceneRef = useRef<RoutedWire[]>([]);
   const beginGeometryAction = useCallback(() => {
     geometryActionPending.current = new Set(currentUnroutedWires.current);
     onBeginContinuousEdit?.();
@@ -1405,11 +1528,15 @@ export function SchematicEditor({
   const snapToGrid = (val: number) => Math.round(val / gridUnits) * gridUnits;
   const changeElementGeometry = useCallback((before: CircuitElement, after: CircuitElement) => {
     beginGeometryAction();
-    onElementsChange(elements.map(element => element.id === before.id ? after : element));
-    if (wires.some(wire => wire.waypoints?.length && (wire.fromCompId === before.id || wire.toCompId === before.id))) {
-      onWiresChange(reanchorManualWires(wires, before, after));
+    const rotating = before.rotation !== after.rotation || before.flipH !== after.flipH || before.flipV !== after.flipV;
+    const base = rotating ? { elements, wires: prepareCrossingRotation(wires, routedSceneRef.current) }
+      : crossingMode === 'connect' && before.type !== 'JUNCTION' ? collapseAutomaticCrossings(elements, wires, routedSceneRef.current) : { elements, wires };
+    if ('routes' in base) for (const route of base.routes) if (!route.wire.manual && route.wire.routeMode !== 'direct') automaticRouteCache.current.set(route.wire.id, route.points);
+    onElementsChange(base.elements.map(element => element.id === before.id ? after : element));
+    if (base.wires !== wires || base.wires.some(wire => wire.waypoints?.length && (wire.fromCompId === before.id || wire.toCompId === before.id))) {
+      onWiresChange(reanchorManualWires(base.wires, before, after));
     }
-  }, [elements, wires, beginGeometryAction, onElementsChange, onWiresChange]);
+  }, [elements, wires, crossingMode, beginGeometryAction, onElementsChange, onWiresChange]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const removeWireIds = (ids: ReadonlySet<string>) => {
     const next = removeWiresPreservingTopology(elements, wires, ids);
@@ -1417,6 +1544,7 @@ export function SchematicEditor({
     onWiresChange(next.wires);
   };
   const toggleWireConnection = (id: string) => {
+    beginGeometryAction();
     const frozen = freezeCrossingProvenance(elements, wires, new Set([id]));
     if (frozen.elements !== elements) onElementsChange(frozen.elements);
     onWiresChange(frozen.wires.map(wire => wire.id === id ? { ...wire, disabled: !wire.disabled } : wire));
@@ -1424,10 +1552,11 @@ export function SchematicEditor({
   const transformSelection = (transform: (element: CircuitElement) => CircuitElement) => {
     if (!selectedSet.size) return;
     beginGeometryAction();
-    const changed = elements.map(element => selectedSet.has(element.id) ? transform(element) : element);
-    const changes = changed.flatMap((after, index) => after !== elements[index]
-      ? [{ before: elements[index], after }] : []);
-    const routes = reanchorManualWiresForChanges(wires, changes);
+    const base = { elements, wires: prepareCrossingRotation(wires, routedSceneRef.current) };
+    const changed = base.elements.map(element => selectedSet.has(element.id) ? transform(element) : element);
+    const changes = changed.flatMap((after, index) => after !== base.elements[index]
+      ? [{ before: base.elements[index], after }] : []);
+    const routes = reanchorManualWiresForChanges(base.wires, changes);
     onElementsChange(changed);
     if (routes !== wires) onWiresChange(routes);
   };
@@ -1503,9 +1632,16 @@ export function SchematicEditor({
       }
       if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === 'KeyV' && copiedGroup) {
         e.preventDefault();
+        const automatic = new Set(copiedGroup.elements.filter(element => element.autoCrossing).map(element => element.id));
+        const origins = new Set(copiedGroup.wires.flatMap(wire => wire.originWireId ? [wire.originWireId] : []));
+        const incomplete = new Set([...origins].filter(origin => copiedGroup.wires.filter(wire => wire.originWireId === origin)
+          .flatMap(wire => [wire.fromCompId, wire.toCompId]).filter(id => !automatic.has(id)).length !== 2));
+        const copySource = freezeCrossingProvenance(copiedGroup.elements, copiedGroup.wires,
+          new Set(copiedGroup.wires.filter(wire => wire.originWireId && incomplete.has(wire.originWireId)).map(wire => wire.id)));
         const ids = new Map<string, string>();
+        const originIds = new Map([...origins].map(id => [id, `copy_origin_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`]));
         const usedNames = new Set(elements.map(element => element.name.toLocaleUpperCase()));
-        const copies = copiedGroup.elements.map(element => {
+        const copies = copySource.elements.map(element => {
           const id = `elem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
           ids.set(element.id, id);
           const base = `${element.name}_копия`;
@@ -1524,10 +1660,13 @@ export function SchematicEditor({
             copy.controlSource = copies.find(item => item.id === copy.controlSourceId)!.name;
           }
         }
-        const copiedWires = copiedGroup.wires.map(wire => ({ ...wire,
+        const copiedWires = copySource.wires.map(wire => ({ ...wire,
           id: `wire_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           fromCompId: ids.get(wire.fromCompId)!, toCompId: ids.get(wire.toCompId)!,
           waypoints: wire.waypoints?.map(point => ({ x: point.x + 40, y: point.y + 40 })),
+          autoRoute: wire.autoRoute?.map(point => ({ x: point.x + 40, y: point.y + 40 })),
+          originWireId: wire.originWireId ? originIds.get(wire.originWireId) : undefined,
+          originRoute: wire.originRoute ? { ...wire.originRoute, waypoints: wire.originRoute.waypoints.map(point => ({ x: point.x + 40, y: point.y + 40 })) } : undefined,
         }));
         onElementsChange([...elements, ...copies]);
         onWiresChange([...wires, ...copiedWires]);
@@ -1613,7 +1752,9 @@ export function SchematicEditor({
         const dy = e.key === 'ArrowUp' ? -gridUnits : e.key === 'ArrowDown' ? gridUnits : 0;
         if (selectedSet.size > 1) {
           beginGeometryAction();
-          const moved = moveSelectedElements(elements, wires, selectedSet, dx, dy);
+          const base = crossingMode === 'connect' ? collapseAutomaticCrossings(elements, wires, routedSceneRef.current) : { elements, wires };
+          if ('routes' in base) for (const route of base.routes) if (!route.wire.manual && route.wire.routeMode !== 'direct') automaticRouteCache.current.set(route.wire.id, route.points);
+          const moved = moveSelectedElements(base.elements, base.wires, selectedSet, dx, dy);
           onElementsChange(moved.elements); onWiresChange(moved.wires);
         } else transformSelection(element => ({ ...element, x: element.x + dx, y: element.y + dy }));
       } else if ((e.key === 'f' || e.key === 'а' || e.key === 'F') && selectedId) {
@@ -1879,82 +2020,21 @@ export function SchematicEditor({
   const pinSpatialIndex = useMemo(() => new SpatialIndex(Array.from(pinPositions.values()).map(pin => ({
     minX: pin.x, maxX: pin.x, minY: pin.y, maxY: pin.y, value: pin,
   }))), [pinPositions]);
-  const automaticRouteCache = useRef<Map<string, Point[]>>(new Map());
-  const automaticRouteRevision = useRef(fitRevision);
+  const automaticRouteRevision = useRef(viewRevision);
 
   // Геометрия всех проводов с ортогональной трассировкой (под прямым углом)
   const wireGeometries = useMemo(() => {
-    if (automaticRouteRevision.current !== fitRevision) {
+    if (automaticRouteRevision.current !== viewRevision) {
       automaticRouteCache.current.clear();
-      automaticRouteRevision.current = fitRevision;
+      automaticRouteRevision.current = viewRevision;
     }
-    const occupiedByNode = new Map<number | undefined, Point[][]>();
-    const fixedRoutes = new Map<string, Point[]>();
-    const nodeFor = (wire: CircuitWire) => circuitGraph.pinToNode.get(`${wire.fromCompId}_${wire.fromPinId}`);
-    const remember = (wire: CircuitWire, points: Point[]) => {
-      const node = nodeFor(wire), routes = occupiedByNode.get(node);
-      if (routes) routes.push(points);
-      else occupiedByNode.set(node, [points]);
-    };
-    // A manually edited conductor has priority even when it appears later in SCM.
-    for (const wire of wires) {
-      if (!wire.manual && !wire.waypoints?.length && wire.routeMode !== 'direct') continue;
-      const p1 = pinPositions.get(`${wire.fromCompId}_${wire.fromPinId}`);
-      const p2 = pinPositions.get(`${wire.toCompId}_${wire.toPinId}`);
-      if (!p1 || !p2) continue;
-      const points = wire.routeMode === 'direct'
-        ? simplifyPoints([p1, ...(wire.waypoints ?? []), p2])
-        : buildStoredWireRoute(p1, p2, wire.waypoints ?? [],
-          { x: p1.relX, y: p1.relY }, { x: p2.relX, y: p2.relY }, p1.elType, p2.elType, gridUnits);
-      fixedRoutes.set(wire.id, points);
-      if (!wire.disabled) remember(wire, points);
-    }
-    const geometries: Array<{
-      wire: CircuitWire;
-      p1: NonNullable<ReturnType<typeof pinPositions.get>>;
-      p2: NonNullable<ReturnType<typeof pinPositions.get>>;
-      points: Point[];
-      pathD: string;
-      unrouted: boolean;
-    }> = [];
-    const obstacles = elements.map(element => componentObstacle(element)).filter((box): box is NonNullable<typeof box> => box !== null);
-
-    for (const wire of wires) {
-      const p1 = pinPositions.get(`${wire.fromCompId}_${wire.fromPinId}`);
-      const p2 = pinPositions.get(`${wire.toCompId}_${wire.toPinId}`);
-      if (!p1 || !p2) continue;
-      const node = nodeFor(wire);
-      const foreignRoutes = Array.from(occupiedByNode.entries())
-        .filter(([occupiedNode]) => occupiedNode !== node)
-        .flatMap(([, routes]) => routes);
-
-      let pts: Point[];
-      let unrouted = false;
-      if (fixedRoutes.has(wire.id)) {
-        pts = fixedRoutes.get(wire.id)!;
-        unrouted = !wire.disabled && !routeIsClear(pts, obstacles, []);
-      } else {
-        const old = automaticRouteCache.current.get(wire.id);
-        const previous = old && buildStoredWireRoute(p1, p2, old.slice(1, -1),
-          { x: p1.relX, y: p1.relY }, { x: p2.relX, y: p2.relY }, p1.elType, p2.elType, gridUnits);
-        const safeRoute = previous && routeIsClear(previous, obstacles, foreignRoutes) ? previous
-          : automaticWireRoute(p1, p2, { x: p1.relX, y: p1.relY }, { x: p2.relX, y: p2.relY },
-            p1.elType, p2.elType, gridUnits, elements, foreignRoutes);
-        unrouted = !safeRoute;
-        pts = safeRoute ?? computeOrthogonalWirePoints(p1, p2, { x: p1.relX, y: p1.relY },
-          { x: p2.relX, y: p2.relY }, p1.elType, p2.elType, 0, gridUnits);
-        if (safeRoute) automaticRouteCache.current.set(wire.id, safeRoute);
-      }
-      if (!fixedRoutes.has(wire.id) && !wire.disabled) remember(wire, pts);
-      geometries.push({ wire, p1, p2, points: pts, pathD: pointsToSvgPath(pts), unrouted });
-    }
-    for (const id of automaticRouteCache.current.keys()) if (!wires.some(wire => wire.id === id)) automaticRouteCache.current.delete(id);
-    return geometries;
-  }, [wires, pinPositions, circuitGraph, gridUnits, elements, fitRevision]);
+    return routeCircuitWires(elements, wires, gridUnits, automaticRouteCache.current);
+  }, [wires, pinPositions, circuitGraph, gridUnits, elements, viewRevision]);
   const wireInk = useMemo(() => uniqueWireInk(wireGeometries.filter(item => !item.wire.disabled && !item.unrouted)
     .map(item => ({ id: item.wire.id, points: item.points,
       net: String(circuitGraph.pinToNode.get(`${item.wire.fromCompId}_${item.wire.fromPinId}`) ?? item.wire.id) }))),
   [wireGeometries, circuitGraph]);
+  routedSceneRef.current = wireGeometries;
   currentUnroutedWires.current = new Set(wireGeometries.filter(item => item.unrouted).map(item => item.wire.id));
   useEffect(() => {
     const previousUnrouted = geometryActionPending.current;
@@ -1964,7 +2044,7 @@ export function SchematicEditor({
       if (wireGeometries.some(item => item.unrouted && !previousUnrouted.has(item.wire.id))) {
         throw new Error('Изменение отменено: для подключённого провода нет безопасного маршрута. Освободите место или измените трассу вручную.');
       }
-      const normalized = normalizeCrossingTopology(elements, wires, wireGeometries, crossingMode);
+      const normalized = finishWireGeometry(elements, wires, wireGeometries, crossingMode);
       if (normalized.elements !== elements) onElementsChange(normalized.elements);
       if (normalized.wires !== wires) onWiresChange(normalized.wires);
       onEndContinuousEdit?.();
@@ -1974,11 +2054,11 @@ export function SchematicEditor({
     }
   }, [elements, wires, wireGeometries, crossingMode, onElementsChange, onWiresChange, onEndContinuousEdit, onCancelContinuousEdit]);
   normalizeReleasedDrag.current = () => {
-    if (normalizedThisDrag.current || crossingMode !== 'connect' ||
+    if (normalizedThisDrag.current ||
         !(geometryDragChanged.current || wireSegmentDrag.current?.started)) return true;
     normalizedThisDrag.current = true;
     try {
-      const normalized = normalizeCrossingTopology(elements, wires, wireGeometries, crossingMode);
+      const normalized = finishWireGeometry(elements, wires, wireGeometries, crossingMode);
       if (normalized.elements !== elements) onElementsChange(normalized.elements);
       if (normalized.wires !== wires) onWiresChange(normalized.wires);
       return true;
@@ -2475,9 +2555,13 @@ export function SchematicEditor({
         }
         if (!geometryDragChanged.current) onBeginContinuousEdit?.();
         geometryDragChanged.current = true;
-        const base = crossingMode === 'connect' && dragged.type !== 'JUNCTION'
-          ? collapseAutomaticCrossings(elements, wires, wireGeometries)
-          : { elements, wires };
+        const base = crossingMode !== 'connect' ? { elements, wires }
+          : dragged.type === 'JUNCTION'
+            ? freezeCrossingProvenance(elements, wires, new Set(wires.filter(wire => wire.fromCompId === dragged.id || wire.toCompId === dragged.id).map(wire => wire.id)))
+            : collapseAutomaticCrossings(elements, wires, wireGeometries);
+        if ('routes' in base) for (const route of base.routes as RoutedWire[]) {
+          if (!route.wire.manual && route.wire.routeMode !== 'direct' && !route.wire.waypoints?.length) automaticRouteCache.current.set(route.wire.id, route.points);
+        }
         const moving = base.elements.find(element => element.id === draggingElemId) ?? dragged;
         const group = groupDragIds.current;
         if (group && group.size > 1) {
@@ -2662,7 +2746,7 @@ export function SchematicEditor({
             if (!route || !routeIsClear(route, bodies, [])) {
               window.alert('Не удалось проложить провод без пересечения элемента или другой сети. Освободите место или задайте точки изгиба вручную.');
             } else try {
-              const connected = normalizeCrossingTopology(elements, [...wires, newWire],
+              const connected = finishWireGeometry(elements, [...wires, newWire],
                 [...wireGeometries, { wire: newWire, points: route }], crossingMode);
               if (connected.elements !== elements) onElementsChange(connected.elements);
               onWiresChange(connected.wires);
@@ -2818,6 +2902,7 @@ export function SchematicEditor({
   const handleElementDoubleClick = (e: React.MouseEvent, el: CircuitElement) => {
     e.stopPropagation();
     if (wiringFrom || pendingComponentType) return;
+    setSelectedId(el.id); setSelectedIds([el.id]); setSelectedWireId(null);
     onOpenProperties(el);
   };
 

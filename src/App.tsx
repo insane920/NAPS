@@ -1,6 +1,6 @@
 import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { FolderOpen, Save, FileCode2, CircleHelp, X, LoaderCircle, Undo2, Redo2, Activity, SlidersHorizontal, FileText } from 'lucide-react';
-import { SchematicEditor } from './components/SchematicEditor';
+import { SchematicEditor, routeCircuitWires, hasUnmaterializedCrossings, normalizeCrossingTopology, validateCircuitGeometry } from './components/SchematicEditor';
 import { ElementPropertiesModal } from './components/ElementPropertiesModal';
 import { TransientSetupModal } from './components/TransientSetupModal';
 import { ACSetupModal } from './components/ACSetupModal';
@@ -11,7 +11,7 @@ import { useModalFocus } from './hooks/useModalFocus';
 import { NapsLogo } from './components/NapsLogo';
 import { bindCurrentControls, replaceElementPreservingControls } from './math/controlledSources';
 import { version as appVersion } from '../package.json';
-import { DEFAULT_PRINT_LAYOUT, type PrintLayout } from './utils/printLayout';
+import { DEFAULT_PRINT_LAYOUT, SCHEMATIC_UNITS_PER_MM, type PrintLayout } from './utils/printLayout';
 import { readRecovery, writeRecovery, discardRecovery, type RecoveryCopy } from './utils/projectRecovery';
 
 const GraphWindow = lazy(() => import('./components/GraphWindow').then(m => ({ default: m.GraphWindow })));
@@ -189,6 +189,8 @@ export default function App() {
 
   const runSimulation = useCallback(() => {
     if (!elements.length) { setError('Добавьте элементы на схему перед расчётом.'); return; }
+    try { validateCircuitGeometry(elements, wires, printLayout.gridMm * SCHEMATIC_UNITS_PER_MM, crossingMode); }
+    catch (error) { setError(error instanceof Error ? error.message : 'Ошибка проводки.'); return; }
     let calculationSettings = settings;
     if (!settings.signals.some(signal => signal.enabled)) {
       const first = elements.find(element => !['GND', 'PORT', 'JUNCTION', 'TEXT'].includes(element.type) && !element.isolation);
@@ -218,10 +220,12 @@ export default function App() {
     } catch (cause) {
       stopCalculation(); setError(cause instanceof Error ? cause.message : 'Ошибка запуска расчёта.'); setStatus('Ошибка расчёта');
     }
-  }, [elements, wires, settings, stopCalculation]);
+  }, [elements, wires, settings, stopCalculation, printLayout.gridMm, crossingMode]);
 
   const runAC = useCallback(() => {
     if (!elements.length) { setError('Добавьте элементы на схему перед расчётом.'); return; }
+    try { validateCircuitGeometry(elements, wires, printLayout.gridMm * SCHEMATIC_UNITS_PER_MM, crossingMode); }
+    catch (error) { setError(error instanceof Error ? error.message : 'Ошибка проводки.'); return; }
     let calculationSettings = ac;
     if (!ac.signals.some(s => s.enabled)) {
       const output = elements.find(e => e.type === 'PORT' && /out/i.test(e.portName || e.name))
@@ -250,9 +254,16 @@ export default function App() {
       task.onerror = () => { if (worker.current === task) { stopCalculation(); setError('Не удалось запустить частотный анализ.'); } };
       task.postMessage({ mode: 'ac', elements, wires, settings: calculationSettings });
     } catch (cause) { stopCalculation(); setError(cause instanceof Error ? cause.message : 'Ошибка запуска частотного анализа.'); }
-  }, [ac, elements, wires, stopCalculation, openAnalysisPanel]);
+  }, [ac, elements, wires, stopCalculation, openAnalysisPanel, printLayout.gridMm, crossingMode]);
 
   const replaceProject = (data: { elements: CircuitElement[]; wires: CircuitWire[]; transient: TransientSettings; ac?: ACSettings; printLayout?: PrintLayout; description?: CircuitDescription; crossingMode?: WireCrossingMode }, title: string, edited = false) => {
+    if (data.crossingMode === 'connect') {
+      const routes = routeCircuitWires(data.elements, data.wires, (data.printLayout ?? DEFAULT_PRINT_LAYOUT).gridMm * SCHEMATIC_UNITS_PER_MM);
+      if (routes.every(route => !route.unrouted) && hasUnmaterializedCrossings(data.elements, data.wires, routes)) {
+        data = { ...data, ...normalizeCrossingTopology(data.elements, data.wires, routes, 'connect') };
+        edited = true;
+      }
+    }
     setHoverStatus(null);
     data = { ...data, elements: bindCurrentControls(data.elements) };
     closeHistoryGroup(); undoStack.current = []; redoStack.current = [];

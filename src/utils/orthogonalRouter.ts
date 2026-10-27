@@ -242,15 +242,9 @@ export function routeAroundObstacles(start: RoutePoint, end: RoutePoint, startDi
   bestSimple = choose(simple);
   if (bestSimple && automaticRouteCost(bestSimple).bends <= 2) return bestSimple;
   if (xValues.length * yValues.length > 30000) {
-    // Dense, irregular layouts can exceed the visibility-grid budget even
-    // when a simple outside corridor exists. Try four bounded detours first.
-    const left = Math.min(...xValues) - step, right = Math.max(...xValues) + step;
-    const top = Math.min(...yValues) - step, bottom = Math.max(...yValues) + step;
-    const detours = [
-      ...[top, bottom].flatMap(y => [from.x - step, from.x + step].flatMap(x1 => [to.x - step, to.x + step].map(x2 => [start, { x: x1, y: start.y }, { x: x1, y }, { x: x2, y }, { x: x2, y: end.y }, end]))),
-      ...[left, right].flatMap(x => [from.y - step, from.y + step].flatMap(y1 => [to.y - step, to.y + step].map(y2 => [start, { x: start.x, y: y1 }, { x, y: y1 }, { x, y: y2 }, { x: end.x, y: y2 }, end]))),
-    ];
-    return choose(detours);
+    // A convenient exterior detour is not necessarily the fewest-bend route.
+    // Reject this edit rather than silently replacing it with unproven geometry.
+    return null;
   }
   const width = xValues.length, height = yValues.length;
   const startX = xValues.findIndex(x => Math.abs(x - from.x) <= EPS);

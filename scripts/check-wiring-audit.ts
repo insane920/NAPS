@@ -30,6 +30,49 @@ import type { CircuitElement, CircuitWire } from '../src/types';
 
 const freeCorner = routeAroundObstacles({ x: 0, y: 0 }, { x: 120, y: 80 }, { x: 0, y: 0 }, { x: 0, y: 0 }, 20, [], [], [])!;
 assert.deepEqual(freeCorner, [{ x: 0, y: 0 }, { x: 120, y: 0 }, { x: 120, y: 80 }], 'free contacts use one deterministic L, not a midpoint Z');
+const outOfOrderNodes: CircuitElement[] = [0, 100, 300, 400].map((x, index) => ({
+  id: `order_${index}`, name: `N${index}`, type: 'JUNCTION', x, y: 0,
+  rotation: 0, value: 0, valueStr: '', unit: '',
+}));
+const orderWire = (id: string, from: number, to: number): CircuitWire => ({
+  id, fromCompId: `order_${from}`, fromPinId: '1', toCompId: `order_${to}`, toPinId: '1',
+  routeMode: 'orthogonal',
+});
+const outOfOrderWires = [orderWire('ab', 0, 1), orderWire('cd', 2, 3), orderWire('bc', 1, 2), orderWire('ac', 0, 2)];
+const orderedNet = routeCircuitWires(outOfOrderNodes, outOfOrderWires, 20);
+assert(orderedNet.every(route => !route.unrouted), 'file order does not block the bridge between two pieces of one electrical net');
+assert.deepEqual(orderedNet.find(route => route.wire.id === 'bc')?.points.map(({ x, y }) => ({ x, y })),
+  [{ x: 100, y: 0 }, { x: 300, y: 0 }], 'the bridge remains a straight visible conductor');
+assert.equal(uniqueWireInk(orderedNet.map(route => ({ id: route.wire.id, net: 'same', points: route.points }))).get('ac')?.length ?? 0, 0,
+  'a redundant same-net chord follows the tree without painting a geometric loop');
+const mixedOrderWires = outOfOrderWires.map(wire => wire.id === 'ab' || wire.id === 'cd'
+  ? { ...wire, routeMode: 'direct' as const, manual: true } : wire);
+assert(routeCircuitWires(outOfOrderNodes, mixedOrderWires, 20).every(route => !route.unrouted),
+  'two disjoint manual stretches of one net do not reserve each other before the automatic bridge');
+const otherNetNodes: CircuitElement[] = [-60, 60].map((y, index) => ({
+  id: `foreign_${index}`, name: `F${index}`, type: 'JUNCTION', x: 200, y,
+  rotation: 0, value: 0, valueStr: '', unit: '',
+}));
+const crossingOtherNet: CircuitWire = { id: 'foreign', fromCompId: 'foreign_0', fromPinId: '1',
+  toCompId: 'foreign_1', toPinId: '1', routeMode: 'direct', manual: true };
+const reservedForeign = routeCircuitWires([...outOfOrderNodes, ...otherNetNodes],
+  [...mixedOrderWires, crossingOtherNet], 20);
+const detouredBridge = reservedForeign.find(route => route.wire.id === 'bc');
+assert(detouredBridge && !detouredBridge.unrouted && detouredBridge.points.length >= 4,
+  'a future manual conductor of another net is reserved before routing the bridge');
+assert(routeIsClear(detouredBridge.points, [],
+  [reservedForeign.find(route => route.wire.id === 'foreign')!.points]),
+  'the automatic bridge never creates a false crossing with the other network');
+for (const crossingMode of ['explicit', 'connect'] as const) {
+  for (const savedWires of [outOfOrderWires, mixedOrderWires]) {
+    const saved = parseYamlScm(exportToYamlScm(outOfOrderNodes, savedWires, SAMPLE_CIRCUITS[0].transient,
+      undefined, undefined, 'current', crossingMode));
+    assert(routeCircuitWires(saved.elements, saved.wires, 20).every(route => !route.unrouted),
+      `${crossingMode}: shuffled electrical network remains routable after SCM reload`);
+    const pins = buildCircuitGraph(saved.elements, saved.wires).pinToNode;
+    assert.equal(pins.get('order_0_1'), pins.get('order_3_1'), `${crossingMode}: one electrical network is preserved`);
+  }
+}
 const visibleTree = [
   { id: 'left', net: 'n1', points: [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }] },
   { id: 'right', net: 'n1', points: [{ x: 40, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }] },
@@ -179,13 +222,13 @@ const irregularBlocks = Array.from({ length: 130 }, (_, index) => ({
 const budgetStart = Date.now();
 const budgetRoute = routeAroundObstacles({ x: 0, y: 0 }, { x: 500, y: 0 }, { x: 1, y: 0 },
   { x: -1, y: 0 }, 20, [{ x: 0, y: 0 }, { x: 500, y: 0 }], irregularBlocks, []);
-assert(budgetRoute && routeIsClear(budgetRoute, irregularBlocks, []),
-  'a dense irregular layout beyond the visibility-grid budget uses a safe exterior corridor');
-assert(Date.now() - budgetStart < 1000, 'budget fallback is bounded independently of the Cartesian grid');
+assert.equal(budgetRoute, null,
+  'a dense irregular layout beyond the visibility-grid budget refuses an unproven exterior detour');
+assert(Date.now() - budgetStart < 1000, 'budget refusal is bounded independently of the Cartesian grid');
 const enclosedRoute = [[{ x: 10, y: -200 }, { x: 10, y: 200 }]];
 assert.equal(routeAroundObstacles({ x: 0, y: 0 }, { x: 500, y: 0 }, { x: 1, y: 0 },
   { x: -1, y: 0 }, 20, [{ x: 0, y: 0 }, { x: 500, y: 0 }], irregularBlocks, enclosedRoute), null,
-  'budget fallback never bypasses a foreign network blocking the terminal lead');
+  'budget refusal never bypasses a foreign network blocking the terminal lead');
 assert.equal(routeAroundObstacles({ x: 0, y: 0 }, { x: 200, y: 0 }, { x: 1, y: 0 },
   { x: -1, y: 0 }, 20, [{ x: 0, y: 0 }, { x: 200, y: 0 }],
   [{ left: 0, right: 15, top: -5, bottom: 5 }], []), null,

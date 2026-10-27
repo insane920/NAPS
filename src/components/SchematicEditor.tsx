@@ -1076,7 +1076,27 @@ export function routeCircuitWires(elements: CircuitElement[], wires: CircuitWire
       const old = cache.get(wire.id);
       return !!old?.length && !!p1 && !!p2 && samePoint(old[0], p1) && samePoint(old.at(-1)!, p2) && routeIsClear(old, obstacles, []);
     };
-    const routingOrder = [...wires].sort((a, b) => Number(unchanged(b)) - Number(unchanged(a)));
+    const pendingRoutes = [...wires].sort((a, b) => Number(unchanged(b)) - Number(unchanged(a)));
+    const routingOrder: CircuitWire[] = [];
+    // Route each electrical net from an already reached terminal. Otherwise
+    // a file order such as A-B, C-D, B-C first paints two disconnected pieces
+    // of the same net and treats its necessary bridge as a forbidden loop.
+    while (pendingRoutes.length) {
+      const first = pendingRoutes.shift()!;
+      routingOrder.push(first);
+      if (first.disabled) continue;
+      const node = nodeFor(first);
+      const reached = new Set([`${first.fromCompId}_${first.fromPinId}`, `${first.toCompId}_${first.toPinId}`]);
+      for (;;) {
+        const index = pendingRoutes.findIndex(wire => !wire.disabled && nodeFor(wire) === node &&
+          (reached.has(`${wire.fromCompId}_${wire.fromPinId}`) || reached.has(`${wire.toCompId}_${wire.toPinId}`)));
+        if (index < 0) break;
+        const next = pendingRoutes.splice(index, 1)[0];
+        routingOrder.push(next);
+        reached.add(`${next.fromCompId}_${next.fromPinId}`);
+        reached.add(`${next.toCompId}_${next.toPinId}`);
+      }
+    }
     for (const wire of routingOrder) {
       if (!wire.manual && !wire.waypoints?.length && wire.routeMode !== 'direct') continue;
       const p1 = pinPositions.get(`${wire.fromCompId}_${wire.fromPinId}`);
@@ -1087,7 +1107,6 @@ export function routeCircuitWires(elements: CircuitElement[], wires: CircuitWire
         : buildStoredWireRoute(p1, p2, wire.waypoints ?? [],
           { x: p1.relX, y: p1.relY }, { x: p2.relX, y: p2.relY }, p1.elType, p2.elType, gridUnits);
       fixedRoutes.set(wire.id, points);
-      if (!wire.disabled) remember(wire, points);
     }
     const geometries: Array<{
       wire: CircuitWire;
@@ -1105,6 +1124,14 @@ export function routeCircuitWires(elements: CircuitElement[], wires: CircuitWire
       const foreignRoutes = Array.from(occupiedByNode.entries())
         .filter(([occupiedNode]) => occupiedNode !== node)
         .flatMap(([, routes]) => routes);
+      // Reserve manual routes of other nets from the start. Within this net,
+      // only routes already reached in routingOrder are shared conductors;
+      // disjoint future manual pieces must not block their connecting bridge.
+      for (const fixed of wires) {
+        const points = fixedRoutes.get(fixed.id);
+        if (points && !fixed.disabled && nodeFor(fixed) !== node &&
+            !occupiedByNode.get(nodeFor(fixed))?.includes(points)) foreignRoutes.push(points);
+      }
       for (const [key, pin] of pinPositions) if (circuitGraph.pinToNode.get(key) !== node) foreignRoutes.push([{ x: pin.x, y: pin.y }, { x: pin.x, y: pin.y }]);
 
       let pts: Point[];
@@ -1124,7 +1151,7 @@ export function routeCircuitWires(elements: CircuitElement[], wires: CircuitWire
           { x: p2.relX, y: p2.relY }, p1.elType, p2.elType, 0, gridUnits);
         if (safeRoute) cache.set(wire.id, safeRoute);
       }
-      if (!fixedRoutes.has(wire.id) && !wire.disabled && !unrouted) remember(wire, pts);
+      if (!wire.disabled && !unrouted) remember(wire, pts);
       geometries.push({ wire, p1, p2, points: pts, pathD: pointsToSvgPath(pts), unrouted });
     }
     for (const id of cache.keys()) if (!wires.some(wire => wire.id === id)) cache.delete(id);

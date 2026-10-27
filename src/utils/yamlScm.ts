@@ -214,6 +214,7 @@ export function exportToYamlScm(
     ? `scm:\n  MajorVersion: ${crossingMode === 'connect' ? 8 : 7}\n  MinorVersion: 0\n\nGeometry:\n  Version: 1\n  Unit: mm\n${crossingMode === 'connect' ? '\nTopology:\n  Crossings: connect\n' : ''}`
     : 'scm:\n  MajorVersion: 6\n  MinorVersion: 0\n';
   yaml += `\nPage:\n  Format: ${printLayout.format}\n  Orientation: ${printLayout.orientation}\n  GridMm: ${printLayout.gridMm}\n`;
+  if (printLayout.presentation) yaml += `  Presentation: ${printLayout.presentation}\n`;
   if (format === 'current' && Object.values(description).some(value => value?.trim())) {
     yaml += `\nDocument:\n  Title: ${JSON.stringify(description.title)}\n  Purpose: ${JSON.stringify(description.purpose)}\n  Comment: ${JSON.stringify(description.comment)}\n`;
     for (const [key, field] of [['Designation', 'designation'], ['Organization', 'organization'], ['Author', 'author'],
@@ -380,6 +381,7 @@ export function parseYamlScm(yamlText: string): {
   let geometryUnit: string | undefined;
   let pageFormat: string | undefined;
   let pageOrientation: string | undefined;
+  let presentation: string | undefined;
   let gridMm: number | undefined;
   const description: CircuitDescription = { ...EMPTY_CIRCUIT_DESCRIPTION };
   let currentObj: Partial<YamlScmObject> | null = null;
@@ -442,6 +444,7 @@ export function parseYamlScm(yamlText: string): {
     } else if (currentSection === 'page') {
       if (trimmed.startsWith('Format:')) pageFormat = readScalar(trimmed.slice(7));
       else if (trimmed.startsWith('Orientation:')) pageOrientation = readScalar(trimmed.slice(12));
+      else if (trimmed.startsWith('Presentation:')) presentation = readScalar(trimmed.slice(13));
       else if (trimmed.startsWith('GridMm:')) gridMm = finiteScmNumber(trimmed.slice(7), 'GridMm');
     } else if (currentSection === 'document') {
       for (const [key, field] of [['Title', 'title'], ['Purpose', 'purpose'], ['Comment', 'comment'],
@@ -658,7 +661,7 @@ export function parseYamlScm(yamlText: string): {
     elements: bindCurrentControls(junctions.elements),
     wires: junctions.wires,
     crossingMode,
-    printLayout: parsePrintLayout(pageFormat, pageOrientation, gridMm),
+    printLayout: parsePrintLayout(pageFormat, pageOrientation, gridMm, presentation),
     description,
     ac: hasAc ? { fMin, fMax, fMinStr, fMaxStr, points: acPoints, scaleType: acScale,
       signals: acExpressions.map((s, i) => ({ id: `ac_${i}`, plotIndex: s.Plot === 2 ? 2 : 1, exprX: s.X, exprY: s.Y, color: s.Color || '#2563eb', enabled: s.Enabled ?? true })) } : undefined,

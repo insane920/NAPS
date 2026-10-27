@@ -55,6 +55,10 @@ export default function App() {
   const [graphOpen, setGraphOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [acSettingsOpen, setAcSettingsOpen] = useState(false);
+  const openAnalysisPanel = useCallback((mode: 'transient' | 'ac') => {
+    setSettingsOpen(mode === 'transient');
+    setAcSettingsOpen(mode === 'ac');
+  }, []);
   const [yamlOpen, setYamlOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
@@ -113,6 +117,7 @@ export default function App() {
     continuousHistoryGroup.current = false; closeHistoryGroup();
   }, [closeHistoryGroup]);
   const changeElements = useCallback((value: CircuitElement[]) => {
+    setHoverStatus(null);
     value = bindCurrentControls(value);
     beginHistoryChange(); currentSnapshot.current = { ...currentSnapshot.current, elements: value, dirty: true };
     setElements(value); markChanged();
@@ -223,7 +228,7 @@ export default function App() {
         ?? elements.find(e => e.type === 'PORT');
       const input = elements.find(e => e.type === 'PORT' && /in/i.test(e.portName || e.name));
       const expr = output ? `U(${output.portName || output.name})` : elements.find(e => e.type === 'R') ? `U(${elements.find(e => e.type === 'R')!.name})` : '';
-      if (!expr) { setAcSettingsOpen(true); return; }
+      if (!expr) { openAnalysisPanel('ac'); return; }
       const argument = input ? `${expr}/U(${input.portName || input.name})` : expr;
       calculationSettings = { ...ac, signals: [
         { id: 'ac_db', plotIndex: 1, exprX: 'f', exprY: `db(${argument})`, color: '#2563eb', enabled: true },
@@ -245,12 +250,14 @@ export default function App() {
       task.onerror = () => { if (worker.current === task) { stopCalculation(); setError('Не удалось запустить частотный анализ.'); } };
       task.postMessage({ mode: 'ac', elements, wires, settings: calculationSettings });
     } catch (cause) { stopCalculation(); setError(cause instanceof Error ? cause.message : 'Ошибка запуска частотного анализа.'); }
-  }, [ac, elements, wires, stopCalculation]);
+  }, [ac, elements, wires, stopCalculation, openAnalysisPanel]);
 
   const replaceProject = (data: { elements: CircuitElement[]; wires: CircuitWire[]; transient: TransientSettings; ac?: ACSettings; printLayout?: PrintLayout; description?: CircuitDescription; crossingMode?: WireCrossingMode }, title: string, edited = false) => {
+    setHoverStatus(null);
     data = { ...data, elements: bindCurrentControls(data.elements) };
     closeHistoryGroup(); undoStack.current = []; redoStack.current = [];
     setSelected(null);
+    setSettingsOpen(false); setAcSettingsOpen(false);
     currentSnapshot.current = cloneSnapshot({ elements: data.elements, wires: data.wires, settings: data.transient, ac: data.ac ?? newACSettings, printLayout: data.printLayout ?? DEFAULT_PRINT_LAYOUT, description: data.description ?? EMPTY_CIRCUIT_DESCRIPTION, crossingMode: data.crossingMode ?? 'explicit', name: title, dirty: edited });
     setHistoryVersion(value => value + 1);
     setViewRevision(value => value + 1);
@@ -259,6 +266,8 @@ export default function App() {
     setName(title); setDirty(edited); setError(null); setGraphOpen(false); setStatus('Схема готова к расчёту');
   };
   const clearProject = () => {
+    setHoverStatus(null);
+    setSettingsOpen(false); setAcSettingsOpen(false);
     closeHistoryGroup(); beginHistoryChange();
     const emptySettings = { ...newProjectSettings, signals: [] };
     currentSnapshot.current = { elements: [], wires: [], settings: emptySettings, ac: newACSettings, printLayout: DEFAULT_PRINT_LAYOUT, description: EMPTY_CIRCUIT_DESCRIPTION, crossingMode: 'connect', name: 'Новая схема', dirty: true };
@@ -330,7 +339,7 @@ export default function App() {
           <button onClick={() => void saveCircuit()} title={`Сохранить SCM ${crossingMode === 'connect' ? '8' : '7'} с координатами в мм (Ctrl+S). Для старой версии используйте копию 0.6.0.`}><Save size={16} /><span>Сохранить</span></button>
           <button onClick={() => void saveCircuit('legacy')} title="Сохранить отдельную копию для NAPS 0.6.0. Произвольные углы и сетка 0,5 мм несовместимы."><span>Копия 0.6.0</span></button>
           <button onClick={runAC} title="Рассчитать АЧХ и ФЧХ"><Activity size={16} /><span>Частотные характеристики</span></button>
-          <button onClick={() => setAcSettingsOpen(true)} title="Параметры частотного анализа" aria-label="Параметры частотного анализа"><SlidersHorizontal size={16} /></button>
+          <button onClick={() => openAnalysisPanel('ac')} title="Параметры частотного анализа" aria-label="Параметры частотного анализа"><SlidersHorizontal size={16} /></button>
           <button onClick={() => setYamlOpen(true)} title="Редактор файла схемы" aria-label="Редактор файла схемы"><FileCode2 size={17} /></button>
           <button onClick={() => { setDescriptionDraft({ ...description }); setDescriptionOpen(true); }} title="Название, назначение и комментарий схемы"><FileText size={16} /><span>Описание</span></button>
           <button onClick={() => setHelpOpen(true)} title="Помощь" aria-label="Помощь"><CircleHelp size={17} /></button>
@@ -361,16 +370,16 @@ export default function App() {
         <SchematicEditor elements={elements} wires={wires} printLayout={printLayout} description={description} onPrintLayoutChange={value => { beginHistoryChange(); currentSnapshot.current = { ...currentSnapshot.current, printLayout: value, dirty: true }; setPrintLayout(value); markChanged(); }} onElementsChange={changeElements} onWiresChange={changeWires}
           onBeginContinuousEdit={beginContinuousHistory} onEndContinuousEdit={endContinuousHistory} onCancelContinuousEdit={cancelContinuousHistory}
           onSelectElement={() => {}} onOpenProperties={setSelected} onRunSimulation={runSimulation}
-          onOpenTransientSettings={() => setSettingsOpen(true)} onLoadSample={loadSample} onClearProject={clearProject} crossingMode={crossingMode}
+          onOpenTransientSettings={() => openAnalysisPanel('transient')} onLoadSample={loadSample} onClearProject={clearProject} crossingMode={crossingMode}
           onBuildPlot={runSimulation} isGraphOpen={graphOpen} isSimulating={busy} shortcutsEnabled={!modalOpen} viewRevision={viewRevision} fitRevision={fitRevision} onHoverStatus={setHoverStatus} />
       </main>
       <footer className="status-bar">
-        <span className="status-message" role="status">{busy ? <LoaderCircle size={13} className="animate-spin" /> : <span className="status-dot" />}{hoverStatus || status}</span>
+        <span className="status-message" role="status">{busy ? <LoaderCircle size={13} className="animate-spin" /> : <span className="status-dot" />}<span className="status-text" title={hoverStatus || status}>{hoverStatus || status}</span></span>
         {busy && <button onClick={() => { stopCalculation(); setStatus('Расчёт отменён'); }}>Отменить</button>}
         <span className="status-count">Элементы: {elements.length}<span>Соединения: {wires.length}</span></span>
         <span className="status-hint">Двойной щелчок — свойства · F9 — расчёт</span>
       </footer>
-      {graphOpen && <div ref={graphDialogRef} className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Результаты расчёта"><div className="graph-dialog"><Suspense fallback={<div className="loading-panel">Загрузка графиков…</div>}><GraphWindow results={results} settings={settings} acSettings={ac} elements={elements} wires={wires} onOpenTransientSettings={() => results?.isAC ? setAcSettingsOpen(true) : setSettingsOpen(true)} onClose={() => setGraphOpen(false)} /></Suspense></div></div>}
+      {graphOpen && <div ref={graphDialogRef} className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Результаты расчёта"><div className="graph-dialog"><Suspense fallback={<div className="loading-panel">Загрузка графиков…</div>}><GraphWindow results={results} settings={settings} acSettings={ac} elements={elements} wires={wires} onOpenTransientSettings={() => openAnalysisPanel(results?.isAC ? 'ac' : 'transient')} onClose={() => setGraphOpen(false)} /></Suspense></div></div>}
       <ElementPropertiesModal circuitElements={elements} circuitWires={wires} element={selected} existingNames={elements.filter(element => element.id !== selected?.id).map(element => element.name)} controlSources={elements.filter(element => ['V_DC', 'V_AC', 'V_PULSE'].includes(element.type) && !element.isolation)} isOpen={!!selected} onClose={() => setSelected(null)} onSave={value => {
         beginContinuousHistory();
         changeElements(replaceElementPreservingControls(elements, value));

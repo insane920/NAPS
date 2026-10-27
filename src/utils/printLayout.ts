@@ -1,7 +1,7 @@
 export type PaperFormat = 'A0' | 'A1' | 'A2' | 'A3' | 'A4';
 export type PaperOrientation = 'landscape' | 'portrait';
 export type GridStepMm = 0.5 | 1 | 2 | 2.5 | 5 | 10;
-export interface PrintLayout { format: PaperFormat; orientation: PaperOrientation; gridMm: GridStepMm }
+export interface PrintLayout { format: PaperFormat; orientation: PaperOrientation; gridMm: GridStepMm; presentation?: 'teacher' | 'eskd' }
 export interface SchemeBounds { x: number; y: number; width: number; height: number }
 export interface PrintPlacement {
   widthMm: number; heightMm: number; width: number; height: number;
@@ -52,13 +52,14 @@ export function printScaleLabel(scale: number): string {
   return scale >= 1 ? `${Number(scale.toFixed(2))}:1` : `1:${Number((1 / scale).toFixed(2))}`;
 }
 
-export function parsePrintLayout(format?: string, orientation?: string, gridMm?: number): PrintLayout {
-  if (format === undefined && orientation === undefined && gridMm === undefined) return { ...DEFAULT_PRINT_LAYOUT };
+export function parsePrintLayout(format?: string, orientation?: string, gridMm?: number, presentation?: string): PrintLayout {
+  if (presentation !== undefined && presentation !== 'teacher' && presentation !== 'eskd') throw new Error('Оформление: выберите режим преподавателя или базовый режим ЕСКД.');
+  if (format === undefined && orientation === undefined && gridMm === undefined) return { ...DEFAULT_PRINT_LAYOUT, ...(presentation ? { presentation } as Pick<PrintLayout, 'presentation'> : {}) };
   if ((format !== 'A0' && format !== 'A1' && format !== 'A2' && format !== 'A3' && format !== 'A4') ||
       (orientation !== 'landscape' && orientation !== 'portrait')) {
     throw new Error('Формат листа: выберите A0–A4 и книжную/альбомную ориентацию.');
   }
   const step = gridMm ?? 5;
   if (step !== 0.5 && step !== 1 && step !== 2 && step !== 2.5 && step !== 5 && step !== 10) throw new Error('Шаг сетки: допустимы 0,5, 1, 2, 2,5, 5 или 10 мм.');
-  return { format, orientation, gridMm: step };
+  return { format, orientation, gridMm: step, ...(presentation ? { presentation } as Pick<PrintLayout, 'presentation'> : {}) };
 }

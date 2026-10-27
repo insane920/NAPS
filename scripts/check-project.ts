@@ -6,7 +6,7 @@ import { solveCircuitTransient, solveCircuitAC, getCircuitPinIds, formatEngValue
 import { topologyTypes } from '../src/math/topologyTransient';
 import { COMPONENT_CATALOG, PLACEMENT_CATALOG, terminalGroupForType } from '../src/components/ComponentPalette';
 import { renderComponentSymbol } from '../src/components/ComponentSymbol';
-import { getComponentLabelLayout, getComponentValueLabel } from '../src/utils/componentLabels';
+import { getComponentLabelLayout, getComponentValueLabel, arrangeNodeLabels } from '../src/utils/componentLabels';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { buildStoredWireRoute, canRouteReconnectedEnd, computeOrthogonalWirePoints, getComponentPins, isAllowedWireSegment, moveWireSegment, projectPointToWire, reanchorManualWires, snapManualWirePoint, splitWireRoute, wireGapDashArray } from '../src/components/SchematicEditor';
 import { buildCircuitGraph } from '../src/math/circuitSolver';
@@ -16,6 +16,63 @@ import { titleBlockBounds, TITLE_BLOCK_HEIGHT_MM, TITLE_BLOCK_WIDTH_MM } from '.
 import { rasterPagePdf } from '../src/utils/rasterPdf';
 import { DEFAULT_CHIP_PINS } from '../src/utils/chipPins';
 import { hitTestEditorScene, pickEditorHit } from '../src/utils/editorHitTest';
+import { parseEngValue, normalizeEngNotation } from '../src/math/circuitSolver';
+import { DEFAULT_SHORTCUTS, canonicalShortcut, shortcutBindingsConflict, loadEditorShortcuts, isReservedEditorShortcut } from '../src/components/SchematicEditor';
+import { swapElementTerminals } from '../src/utils/terminalSwap';
+
+for (const type of ['R', 'C', 'L', 'V_DC', 'I_DC', 'V_AC', 'I_AC', 'V_PULSE', 'I_PULSE'] as const) for (let angle = 0; angle < 360; angle += 45) {
+  const selected = { id: 'swap', type, name: 'SWAP', x: 200, y: 200, value: 1, valueStr: '1', unit: '', rotation: angle, initialCondition: .125 };
+  const sensor = { id: 'sensor', type: 'VCVS' as const, name: 'SENSOR', x: 600, y: 400, value: 1, valueStr: '1', unit: '', rotation: 0, controlVoltage: { positive: { elementId: 'swap', pinId: '1' }, negative: { elementId: 'swap', pinId: '2' } } };
+  const wire = { id: 'route', fromCompId: 'swap', fromPinId: '1', toCompId: 'swap', toPinId: '2', waypoints: [{ x: 100, y: 100 }, { x: 300, y: 100 }], manual: true };
+  const swapped = swapElementTerminals([selected, sensor], [wire], selected.id);
+  const pins = getComponentPins(selected), nextPins = getComponentPins(swapped.elements[0]);
+  for (const [oldId, nextId] of [['1', swapped.wires[0].fromPinId], ['2', swapped.wires[0].toPinId]]) {
+    const a = pins.find(pin => pin.id === oldId)!, b = nextPins.find(pin => pin.id === nextId)!;
+    assert.ok(Math.hypot(a.x - b.x, a.y - b.y) < 1e-9, `${type} ${angle}: swap keeps physical wire endpoint`);
+  }
+  assert.equal(swapped.elements[1].controlVoltage!.positive.pinId, '2', 'voltage probe follows physical terminal');
+  assert.deepEqual(swapped.wires[0].waypoints, wire.waypoints);
+  if (type === 'C' || type === 'L') assert.equal(swapped.elements[0].initialCondition, -.125, 'IC changes its reference direction');
+}
+
+for (const [action, shortcut] of Object.entries(DEFAULT_SHORTCUTS)) for (const [other, assigned] of Object.entries(DEFAULT_SHORTCUTS)) {
+  if (action !== other) assert.equal(shortcutBindingsConflict(action, shortcut, other, assigned), false, `${action}/${other}: default conflict`);
+}
+assert.equal(canonicalShortcut('Shift+Alt+KeyN'), 'Alt+Shift+KeyN');
+assert.equal(canonicalShortcut('Ctrl+Ctrl+KeyA'), '');
+assert.equal(shortcutBindingsConflict('rotate', 'Alt+KeyR', 'component:R', 'Shift+Alt+KeyR'), true, '45° rotation extension is reserved');
+for (const combo of ['Ctrl+KeyS', 'Ctrl+KeyW', 'Meta+KeyQ', 'Alt+F4', 'Ctrl+Shift+KeyR', 'Shift+ArrowUp']) assert.ok(isReservedEditorShortcut(combo), combo);
+assert.equal(isReservedEditorShortcut('Ctrl+Alt+Digit1'), false);
+const brokenShortcuts = { ...DEFAULT_SHORTCUTS, 'component:NPN': 'Shift+Digit0', 'component:PNP': 'Shift+Digit0', 'component:NMOS': 'Shift+Digit0', 'component:PMOS': 'Shift+Digit0' };
+const fixedShortcuts = loadEditorShortcuts({ getItem: () => JSON.stringify(brokenShortcuts) });
+assert.deepEqual(fixedShortcuts, DEFAULT_SHORTCUTS, 'repair old duplicate transistor/GND bindings without changing valid defaults');
+assert.equal(loadEditorShortcuts({ getItem: () => JSON.stringify({ 'component:R': 'Ctrl+KeyW' }) })['component:R'], DEFAULT_SHORTCUTS['component:R']);
+
+assert.equal(new Set(COMPONENT_CATALOG.map(item => item.type)).size, COMPONENT_CATALOG.length, 'catalog IDs must be unique');
+assert.deepEqual(new Set(PLACEMENT_CATALOG.map(item => item.type)), new Set(['V_DC', 'I_DC', 'R', 'C', 'L']));
+for (const type of [...COMPONENT_CATALOG.map(item => item.type), 'PORT' as const]) {
+  for (const mode of ['explicit', 'connect'] as const) {
+    const original = { id: 'archive', type, name: 'ARCHIVE', x: -143, y: 287, rotation: 45, flipH: true, value: 1, valueStr: '1', unit: '' };
+    const loaded = parseYamlScm(exportToYamlScm([original], [], SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', mode)).elements[0];
+    for (const key of ['type', 'name', 'x', 'y', 'rotation', 'flipH', 'value', 'valueStr'] as const) assert.equal(loaded[key], original[key], `${type}: hidden model ${key} survives SCM ${mode}`);
+  }
+}
+for (const [prefixes, factor] of [
+  [['p', 'п'], 1e-12], [['n', 'н'], 1e-9], [['u', 'µ', 'μ', 'мк', 'mk'], 1e-6],
+  [['m', 'м'], 1e-3], [['k', 'к'], 1e3], [['M', 'М', 'meg'], 1e6], [['G', 'g', 'Г', 'г'], 1e9],
+] as Array<[string[], number]>) for (const prefix of prefixes) for (const unit of ['', 'Ом', 'Ф', 'Гн', 'В', 'А', 'Гц']) {
+  const raw = `2,5 ${prefix}${unit}`;
+  assert.equal(parseEngValue(raw), 2.5 * factor, raw);
+  assert.equal(parseEngValue(normalizeEngNotation(raw)), 2.5 * factor, `normalized ${raw}`);
+}
+for (const invalid of ['1кк', '2mm', '3watts', '1e', 'NaN', 'Infinity', '2foo', '1;alert(1)']) assert.ok(Number.isNaN(parseEngValue(invalid)), invalid);
+const nodeLabels = arrangeNodeLabels([
+  { node: 1, anchors: [{ x: 0, y: 0 }, { x: 100, y: 0 }] },
+  { node: 2, anchors: [{ x: 0, y: 0 }, { x: 100, y: 100 }] },
+], [{ x: -12, y: -12, width: 24, height: 24 }], [{ points: [{ x: -100, y: 0 }, { x: 100, y: 0 }] }]);
+assert.equal(nodeLabels.length, 2, 'one annotation per network, not per contact');
+assert.ok(nodeLabels.every(label => !label.collision), 'free annotation positions avoid bodies and conductor');
+assert.deepEqual(arrangeNodeLabels([{ node: 1, anchors: [{ x: 0, y: 0 }] }], [], []), arrangeNodeLabels([{ node: 1, anchors: [{ x: 0, y: 0 }] }], [], []), 'label placement is deterministic');
 
 const overlappingHits = [
   { kind: 'wire' as const, id: 'wire-b', distancePx: 0 },

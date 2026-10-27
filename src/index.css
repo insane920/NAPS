@@ -73,7 +73,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .schematic-toolbar button { min-height: 30px; border-radius: 5px; }
 .schematic-toolbar button:disabled { opacity: .4; }
 .status-bar { display: flex; align-items: center; gap: 16px; min-height: 36px; padding: 7px 20px; color: #64748b; font-size: 11px; flex-shrink: 0; }
-.status-message { display: flex; align-items: center; gap: 7px; }
+.status-message { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; }
+.status-message > svg, .status-dot { flex-shrink: 0; }
+.status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-dot { width: 6px; height: 6px; background: #16a34a; border-radius: 50%; }
 .status-count { margin-left: auto; display: flex; gap: 16px; }
 .status-hint { border-left: 1px solid #dbe3ee; padding-left: 16px; color: #8492a6; }

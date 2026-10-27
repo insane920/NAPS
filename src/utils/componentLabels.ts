@@ -64,6 +64,34 @@ function crosses(box: LabelBox, a: { x: number; y: number }, b: { x: number; y: 
   return true;
 }
 
+/** One annotation per electrical network. Annotation offsets never change model coordinates. */
+export function arrangeNodeLabels(
+  networks: Array<{ node: number; anchors: Array<{ x: number; y: number }> }>,
+  obstacles: LabelBox[], routes: Array<{ points: Array<{ x: number; y: number }> }>,
+): Array<{ node: number; x: number; y: number; radius: number; collision: boolean }> {
+  const bodyIndex = new SpatialIndex(obstacles.map(box => ({ minX: box.x, minY: box.y, maxX: box.x + box.width, maxY: box.y + box.height, value: box })));
+  const segments = routes.flatMap(route => route.points.slice(1).map((b, i) => ({ a: route.points[i], b })));
+  const segmentIndex = new SpatialIndex(segments.map(segment => ({ minX: Math.min(segment.a.x, segment.b.x), minY: Math.min(segment.a.y, segment.b.y), maxX: Math.max(segment.a.x, segment.b.x), maxY: Math.max(segment.a.y, segment.b.y), value: segment })));
+  const occupied: LabelBox[] = [];
+  return networks.map(({ node, anchors }) => {
+    const radius = Math.max(8, String(node).length * 3.3 + 3);
+    let best = { x: anchors[0].x + 16, y: anchors[0].y - 16, score: Infinity };
+    search: for (const distance of [20, 32, 48, 64, 88]) for (const anchor of anchors.slice(0, 32)) {
+      for (const [dx, dy] of [[-1, -1], [1, -1], [-1, 1], [1, 1], [0, -1], [0, 1], [-1, 0], [1, 0]]) {
+        const x = anchor.x + dx * distance, y = anchor.y + dy * distance;
+        const box = { x: x - radius - 2, y: y - radius - 2, width: 2 * radius + 4, height: 2 * radius + 4 };
+        const score = bodyIndex.query(x, y, radius + 2).filter(body => overlaps(box, body)).length * 4
+          + segmentIndex.query(x, y, radius + 2).filter(segment => crosses(box, segment.a, segment.b)).length * 2
+          + occupied.filter(other => overlaps(box, other)).length * 4;
+        if (score < best.score) best = { x, y, score };
+        if (!score) break search;
+      }
+    }
+    occupied.push({ x: best.x - radius - 2, y: best.y - radius - 2, width: 2 * radius + 4, height: 2 * radius + 4 });
+    return { node, x: best.x, y: best.y, radius, collision: best.score > 0 };
+  });
+}
+
 /** Move only labels, leaving model coordinates and electrical connections untouched. */
 export function arrangeComponentLabels(
   elements: CircuitElement[], routes: Array<{ points: Array<{ x: number; y: number }> }>,

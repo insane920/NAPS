@@ -32,7 +32,8 @@ import { SAMPLE_CIRCUITS, SampleCircuit } from '../data/sampleCircuits';
 import { buildCircuitGraph } from '../math/circuitSolver';
 import { topologyTypes } from '../math/topologyTransient';
 import { nextComponentName } from '../utils/componentNames';
-import { getComponentLabelLayout, getComponentValueLabel, arrangeComponentLabels, labelBounds } from '../utils/componentLabels';
+import { getComponentLabelLayout, getComponentValueLabel, arrangeComponentLabels, arrangeNodeLabels, labelBounds } from '../utils/componentLabels';
+import { readEditorView } from '../utils/editorView';
 import { useModalFocus } from '../hooks/useModalFocus';
 import { ComponentPalette, COMPONENT_CATALOG, PLACEMENT_CATALOG, TERMINAL_GROUPS, terminalGroupForType, TerminalGroup } from './ComponentPalette';
 import { SYMBOL_METRICS } from './symbolMetrics';
@@ -46,6 +47,7 @@ import { chipPins, DEFAULT_CHIP_PINS } from '../utils/chipPins';
 import { textBlockBounds } from '../utils/textBlock';
 import { mergeCoincidentAutomaticCrossings, mergeCoincidentJunctions, promoteAnchoredCrossings } from '../utils/junctionTopology';
 import { uniqueWireInk } from '../utils/wireInk';
+import { swapElementTerminals } from '../utils/terminalSwap';
 
 interface SchematicEditorProps {
   elements: CircuitElement[];
@@ -107,6 +109,7 @@ const COMPONENT_SHORTCUT_CODES: Partial<Record<ComponentType, string>> = {
   V_PULSE: 'KeyP', I_DC: 'Digit4', I_AC: 'KeyI', I_PULSE: 'KeyH', NOT: 'KeyN', AND: 'KeyA', OR: 'KeyU', XOR: 'KeyX',
   VCVS: 'KeyE', VCCS: 'KeyB', CCVS: 'KeyV', CCCS: 'KeyM',
   CHIP: 'KeyK',
+  NPN: 'Alt+KeyN', PNP: 'Alt+KeyP', NMOS: 'Alt+KeyM', PMOS: 'Alt+KeyO',
   RS_FF: 'KeyQ', D_FF: 'KeyF', JK_FF: 'KeyJ', GND: 'Digit0',
   JUNCTION: 'Digit5', TEXT: 'Digit6', PORT: 'Digit7',
 };
@@ -115,11 +118,11 @@ const SHORTCUT_ACTIONS: EditorShortcut[] = [
   ...COMPONENT_CATALOG.map(item => `component:${item.type}`),
   'component:PORT',
 ];
-const DEFAULT_SHORTCUTS: Record<EditorShortcut, string> = Object.fromEntries([
+export const DEFAULT_SHORTCUTS: Record<EditorShortcut, string> = Object.fromEntries([
   ['rotate', 'KeyR'], ['add', 'KeyA'],
   ...SHORTCUT_ACTIONS.filter(action => action.startsWith('component:')).map(action => {
     const type = action.slice('component:'.length) as ComponentType;
-    return [action, `Shift+${COMPONENT_SHORTCUT_CODES[type] ?? 'Digit0'}`];
+    return [action, canonicalShortcut(`Shift+${COMPONENT_SHORTCUT_CODES[type] ?? 'Digit0'}`)];
   }),
 ]) as Record<EditorShortcut, string>;
 
@@ -148,10 +151,27 @@ function shortcutWithShift(shortcut: string): string | null {
   return [...['Ctrl', 'Alt', 'Shift', 'Meta'].filter(modifier => parts.includes(modifier) || modifier === 'Shift'), code].join('+');
 }
 
-function shortcutBindingsConflict(actionA: string, shortcutA: string, actionB: string, shortcutB: string): boolean {
+export function shortcutBindingsConflict(actionA: string, shortcutA: string, actionB: string, shortcutB: string): boolean {
+  if (!shortcutA || !shortcutB) return false;
+  shortcutA = canonicalShortcut(shortcutA); shortcutB = canonicalShortcut(shortcutB);
   if (shortcutA === shortcutB) return true;
   return (actionA === 'rotate' && shortcutWithShift(shortcutA) === shortcutB) ||
     (actionB === 'rotate' && shortcutWithShift(shortcutB) === shortcutA);
+}
+
+export function canonicalShortcut(value: string): string {
+  if (!value) return '';
+  const parts = value.split('+'), code = parts.pop()!;
+  if (!/^[A-Za-z][A-Za-z0-9]*$/.test(code) || parts.some(part => !['Ctrl', 'Alt', 'Shift', 'Meta'].includes(part)) || new Set(parts).size !== parts.length) return '';
+  return [...['Ctrl', 'Alt', 'Shift', 'Meta'].filter(part => parts.includes(part)), code].join('+');
+}
+
+export function isReservedEditorShortcut(combo: string): boolean {
+  combo = canonicalShortcut(combo);
+  const code = combo.split('+').at(-1);
+  return !combo || ['Delete', 'Backspace', 'F9', 'Tab', 'Enter', 'Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(code!)
+    || ['Ctrl', 'Meta'].some(modifier => ['KeyZ', 'Shift+KeyZ', 'KeyY', 'KeyS', 'KeyO', 'KeyC', 'KeyV', 'KeyW', 'Shift+KeyW', 'KeyN', 'Shift+KeyN', 'KeyT', 'KeyL', 'KeyR', 'Shift+KeyR', 'KeyP'].some(key => combo === `${modifier}+${key}`))
+    || ['Alt+F4', 'Meta+KeyQ', 'Ctrl+Alt+Delete'].includes(combo);
 }
 
 function shortcutLabel(shortcut: string): string {
@@ -167,13 +187,23 @@ function shortcutActionLabel(action: EditorShortcut): string {
   return type === 'PORT' ? 'Порт (совместимость SCM)' : `${item?.name ?? type} (${item?.code ?? type})`;
 }
 
-function loadEditorShortcuts(): Record<EditorShortcut, string> {
+export function loadEditorShortcuts(storage?: Pick<Storage, 'getItem'>): Record<EditorShortcut, string> {
   try {
-    const saved = JSON.parse(localStorage.getItem('naps_editor_shortcuts') || '{}') as Record<string, unknown>;
-    return Object.fromEntries(SHORTCUT_ACTIONS.map(action => [
-      action,
-      typeof saved[action] === 'string' ? saved[action] as string : DEFAULT_SHORTCUTS[action],
-    ]));
+    const saved = JSON.parse((storage ?? localStorage).getItem('naps_editor_shortcuts') || '{}') as Record<string, unknown>;
+    const bindings = Object.fromEntries(SHORTCUT_ACTIONS.map(action => {
+      const raw = typeof saved?.[action] === 'string' ? saved[action] as string : DEFAULT_SHORTCUTS[action];
+      const combo = canonicalShortcut(raw);
+      return [action, raw === '' ? '' : combo && !isReservedEditorShortcut(combo) ? combo : DEFAULT_SHORTCUTS[action]];
+    }));
+    // Older releases assigned Shift+0 to four transistors and GND. Repair only conflicts.
+    const conflicts = new Set(SHORTCUT_ACTIONS.filter(action => SHORTCUT_ACTIONS.some(other => action !== other && shortcutBindingsConflict(action, bindings[action], other, bindings[other]))));
+    conflicts.forEach(action => { bindings[action] = DEFAULT_SHORTCUTS[action]; });
+    const accepted: string[] = [];
+    for (const action of SHORTCUT_ACTIONS) {
+      if (accepted.some(other => shortcutBindingsConflict(action, bindings[action], other, bindings[other]))) bindings[action] = '';
+      accepted.push(action);
+    }
+    return bindings;
   } catch {
     return { ...DEFAULT_SHORTCUTS };
   }
@@ -1099,10 +1129,17 @@ export function SchematicEditor({
   const [exportPlan, setExportPlan] = useState<{ xml: string; html: string; placement: PrintPlacement } | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const printPreviewRef = useRef<HTMLIFrameElement>(null);
-  const [showNodeNumbers, setShowNodeNumbers] = useState<boolean>(false);
-  const [showElementNames, setShowElementNames] = useState<boolean>(true);
-  const [showElementValues, setShowElementValues] = useState<boolean>(true);
-  const [showGrid, setShowGrid] = useState<boolean>(true);
+  const [initialView] = useState(readEditorView);
+  const [showNodeNumbers, setShowNodeNumbers] = useState(initialView.nodes);
+  const [showElementNames, setShowElementNames] = useState(initialView.names);
+  const [showElementValues, setShowElementValues] = useState(initialView.values);
+  const [showGrid, setShowGrid] = useState(initialView.grid);
+  const [showPolarity, setShowPolarity] = useState(initialView.polarity);
+  const teacherPresentation = printLayout.presentation !== 'eskd';
+  useEffect(() => {
+    try { localStorage.setItem('naps_editor_view', JSON.stringify({ nodes: showNodeNumbers, names: showElementNames, values: showElementValues, grid: showGrid, polarity: showPolarity })); }
+    catch { /* View preferences are optional; the project remains editable without browser storage. */ }
+  }, [showNodeNumbers, showElementNames, showElementValues, showGrid, showPolarity]);
   const gridUnits = printLayout.gridMm * SCHEMATIC_UNITS_PER_MM;
   const [zoom, setZoom] = useState<number>(1);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 50, y: 30 });
@@ -1113,6 +1150,7 @@ export function SchematicEditor({
   const [isPaletteOpen, setIsPaletteOpen] = useState<boolean>(false);
   const [examplesOpen, setExamplesOpen] = useState(false);
   const shortcutDialogRef = useModalFocus<HTMLDivElement>(shortcutSettingsOpen);
+  const appearanceDialogRef = useModalFocus<HTMLElement>(appearanceOpen);
   const libraryDialogRef = useModalFocus<HTMLDivElement>(isPaletteOpen, '[aria-label="Поиск компонентов"]');
   const [hoveredPin, setHoveredPin] = useState<{
     compId: string;
@@ -1130,6 +1168,8 @@ export function SchematicEditor({
 
   // Режим размещения нового элемента
   const [pendingComponentType, setPendingComponentType] = useState<ComponentType | null>(null);
+  const [placementRotation, setPlacementRotation] = useState(0);
+  useEffect(() => { if (!pendingComponentType) setPlacementRotation(0); }, [pendingComponentType]);
   const [placementPassiveModels, setPlacementPassiveModels] = useState<Record<'R' | 'C' | 'L', 'linear' | 'nonlinear'>>({ R: 'linear', C: 'linear', L: 'linear' });
   const [quickTypes, setQuickTypes] = useState<Partial<Record<TerminalGroup, ComponentType>>>({ two: 'R', three: 'THYRISTOR', four: 'TR3' });
   const [paletteDragGroup, setPaletteDragGroup] = useState<TerminalGroup | null>(null);
@@ -1391,6 +1431,10 @@ export function SchematicEditor({
     onElementsChange(changed);
     if (routes !== wires) onWiresChange(routes);
   };
+  const rotateActiveElement = (degrees: number) => {
+    if (pendingComponentType) setPlacementRotation(value => (value + degrees) % 360);
+    else transformSelection(element => ({ ...element, rotation: ((element.rotation || 0) + degrees) % 360 }));
+  };
   const deleteSelection = () => {
     if (!selectedSet.size) return;
     const removed = new Set(wires.filter(wire => selectedSet.has(wire.fromCompId) || selectedSet.has(wire.toCompId)).map(wire => wire.id));
@@ -1513,7 +1557,7 @@ export function SchematicEditor({
           return;
         }
         if (matchedAction === 'rotate') {
-          transformSelection(element => ({ ...element, rotation: ((element.rotation || 0) + (e.shiftKey ? 45 : 90)) % 360 }));
+          rotateActiveElement(e.shiftKey ? 45 : 90);
           return;
         }
         const type = matchedAction.slice('component:'.length) as ComponentType;
@@ -1600,7 +1644,7 @@ export function SchematicEditor({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedId, selectedIds, selectedSet, selectedWireId, copiedElement, copiedGroup, elements, wires, onElementsChange, onWiresChange, changeElementGeometry, onOpenProperties, onSelectElement, onRunSimulation, shortcutsEnabled, isPaletteOpen, shortcutSettingsOpen, appearanceOpen, editorShortcuts, onCancelContinuousEdit]);
+    }, [selectedId, selectedIds, selectedSet, selectedWireId, copiedElement, copiedGroup, elements, wires, onElementsChange, onWiresChange, changeElementGeometry, onOpenProperties, onSelectElement, onRunSimulation, shortcutsEnabled, isPaletteOpen, shortcutSettingsOpen, appearanceOpen, editorShortcuts, pendingComponentType, onCancelContinuousEdit]);
 
   // Добавление нового компонента на схему
   const handlePlaceNewComponent = (type: ComponentType, worldX: number, worldY: number, replaceId = replacingId) => {
@@ -1766,13 +1810,14 @@ export function SchematicEditor({
       name: defaultName,
       x: worldX,
       y: worldY,
-      rotation: 0,
+      rotation: placementRotation,
       value: defaultValue,
       valueStr: defaultValueStr,
       unit: defaultUnit,
       secondaryValue: type === 'V_AC' || type === 'I_AC' ? 50 : type === 'V_PULSE' || type === 'I_PULSE' ? 1000 : undefined,
       secondaryStr: type === 'V_AC' || type === 'I_AC' ? '50' : type === 'V_PULSE' || type === 'I_PULSE' ? '1к' : undefined,
       initialCondition: type === 'V_PULSE' || type === 'I_PULSE' ? 0.5 : undefined,
+      controlVoltage: type === 'VCVS' || type === 'VCCS' ? { positive: { elementId: '', pinId: '1' }, negative: { elementId: '', pinId: '1' } } : undefined,
       chipPins: type === 'CHIP' ? DEFAULT_CHIP_PINS.map(pin => ({ ...pin })) : undefined,
       transistorModel: ['NPN', 'PNP', 'NMOS', 'PMOS'].includes(type) ? 'nonlinear' : undefined,
       passiveModel: ['R', 'C', 'L'].includes(type) ? placementPassiveModels[type as 'R' | 'C' | 'L'] : undefined,
@@ -1971,6 +2016,31 @@ export function SchematicEditor({
     return [{ x: element.x - radius, y: element.y - radius, width: radius * 2, height: radius * 2 },
       ...pins.map(pin => ({ x: element.x + pin.x - 9, y: element.y + pin.y - 12, width: 26, height: 22 }))];
   }), showElementNames, showElementValues), [elements, wireGeometries, showElementNames, showElementValues]);
+  const nodeAnnotations = useMemo(() => {
+    if (!showNodeNumbers) return [];
+    const anchors = new Map<number, Point[]>();
+    const obstacles: Array<{ x: number; y: number; width: number; height: number }> = [];
+    for (const element of elements) {
+      const body = componentObstacle(element, 3);
+      if (body) obstacles.push({ x: body.left, y: body.top, width: body.right - body.left, height: body.bottom - body.top });
+      if (element.type === 'TEXT') {
+        const box = textBlockBounds(element.textDirective || '');
+        obstacles.push({ x: element.x + box.left, y: element.y + box.top, width: box.width, height: box.height });
+      }
+      const layout = sceneLabels.get(element.id);
+      if (layout && element.type !== 'JUNCTION' && element.type !== 'TEXT') {
+        if (showElementNames) obstacles.push(labelBounds(layout.name, element.name, element.x, element.y));
+        if (showElementValues) obstacles.push(labelBounds(layout.value, getComponentValueLabel(element), element.x, element.y));
+      }
+      for (const pin of getComponentPins(element)) {
+        const node = circuitGraph.pinToNode.get(`${element.id}_${pin.id}`);
+        if (node === undefined) continue;
+        if (!anchors.has(node)) anchors.set(node, []);
+        anchors.get(node)!.push({ x: element.x + pin.x, y: element.y + pin.y });
+      }
+    }
+    return arrangeNodeLabels([...anchors].sort(([a], [b]) => a - b).map(([node, points]) => ({ node, anchors: points })), obstacles, wireGeometries);
+  }, [elements, circuitGraph, wireGeometries, sceneLabels, showElementNames, showElementValues, showNodeNumbers]);
   const wireSpatialIndex = useMemo(() => new SpatialIndex(wireGeometries.flatMap(geometry =>
     geometry.wire.disabled ? [] : geometry.points.slice(1).map((b, index) => {
       const a = geometry.points[index];
@@ -2779,11 +2849,11 @@ export function SchematicEditor({
       const delta = action === 'cw' ? 90 : action === 'ccw' ? 270 : action === 'cw45' ? 45 : 315;
       changeElementGeometry(el, { ...el, rotation: ((el.rotation || 0) + delta) % 360 });
     }
-    if (action === 'swap' && twoPins.length === 2) onWiresChange(wires.map(w => ({
-      ...w,
-      fromPinId: w.fromCompId === id ? (w.fromPinId === twoPins[0] ? twoPins[1] : w.fromPinId === twoPins[1] ? twoPins[0] : w.fromPinId) : w.fromPinId,
-      toPinId: w.toCompId === id ? (w.toPinId === twoPins[0] ? twoPins[1] : w.toPinId === twoPins[1] ? twoPins[0] : w.toPinId) : w.toPinId,
-    })));
+    if (action === 'swap' && twoPins.length === 2) {
+      beginGeometryAction();
+      const swapped = swapElementTerminals(elements, wires, id);
+      onElementsChange(swapped.elements); onWiresChange(swapped.wires);
+    }
     if (action === 'normal' || action === 'open' || action === 'short') onElementsChange(elements.map(item => item.id === id ? { ...item, isolation: action === 'normal' ? undefined : action as 'open' | 'short' } : item));
     if (action === 'properties') onOpenProperties(el);
     if (action === 'replace') { setReplacingId(id); setIsPaletteOpen(true); }
@@ -2800,6 +2870,18 @@ export function SchematicEditor({
       if (!source) return;
       const clone = source.cloneNode(true) as SVGSVGElement;
       clone.querySelectorAll('[data-export-hide="true"]').forEach(node => node.remove());
+      clone.querySelectorAll<SVGElement>('[data-document-stroke]').forEach(node => {
+        node.setAttribute('stroke', node.getAttribute('data-document-stroke')!);
+        node.setAttribute('stroke-width', '2');
+      });
+      clone.querySelectorAll<SVGElement>('[data-document-fill]').forEach(node => node.setAttribute('fill', node.getAttribute('data-document-fill')!));
+      // Selection is an editor interaction, not document content, including in colour exports.
+      clone.querySelectorAll<SVGGElement>('[data-component-symbol]').forEach(symbol => {
+        const normal = symbol.getAttribute('data-component-symbol') === 'JUNCTION' ? appearance.wire : appearance.element;
+        symbol.querySelectorAll<SVGElement>('[stroke="#dc2626"], [fill="#dc2626"]').forEach(node => {
+          for (const attribute of ['stroke', 'fill']) if (node.getAttribute(attribute) === '#dc2626') node.setAttribute(attribute, normal);
+        });
+      });
       clone.querySelector('#schematic-screen-background')?.remove();
       const world = clone.querySelector('#schematic-world') as SVGGElement | null;
       if (!world) return;
@@ -2861,7 +2943,7 @@ export function SchematicEditor({
     }
     })();
     return () => { cancelled = true; };
-  }, [exportTarget, printLayout, printMarginMm, printMode, requestedPrintScale, centerPrint, printMonochrome, printFrame, description, elements, wires, zoom, pan, showElementNames, showElementValues, showNodeNumbers]);
+  }, [exportTarget, printLayout, printMarginMm, printMode, requestedPrintScale, centerPrint, printMonochrome, printFrame, description, elements, wires, zoom, pan, showElementNames, showElementValues, showNodeNumbers, showPolarity, appearance]);
 
   const downloadSchematic = (format: 'png' | 'svg' | 'pdf' | 'print') => {
     if (!exportPlan || !exportPlan.placement.fits) return;
@@ -2983,19 +3065,14 @@ export function SchematicEditor({
           {/* Повернуть (R) */}
           <button
             type="button"
-            disabled={!selectedId}
-            onClick={() => {
-              if (selectedId) {
-                const selected = elements.find(element => element.id === selectedId);
-                if (selected) transformSelection(element => ({ ...element, rotation: ((element.rotation || 0) + 90) % 360 }));
-              }
-            }}
+            disabled={!selectedId && !pendingComponentType}
+            onClick={() => rotateActiveElement(90)}
             className="p-1 bg-white hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-white text-slate-700 border border-slate-300 rounded text-xs shadow-2xs cursor-pointer"
             title="Повернуть выбранный элемент (R)"
           >
             <RotateCw className="w-3.5 h-3.5" />
           </button>
-          <button type="button" disabled={!selectedId} onClick={() => transformSelection(element => ({ ...element, rotation: ((element.rotation || 0) + 45) % 360 }))} className="px-2 py-1 bg-white hover:bg-slate-100 disabled:opacity-40 text-blue-700 border border-blue-300 rounded text-xs font-bold shadow-2xs" title="Повернуть выбранный элемент на 45° (Shift+R)">45°</button>
+          <button type="button" disabled={!selectedId && !pendingComponentType} onClick={() => rotateActiveElement(45)} className="px-2 py-1 bg-white hover:bg-slate-100 disabled:opacity-40 text-blue-700 border border-blue-300 rounded text-xs font-bold shadow-2xs" title="Повернуть выбранный элемент на 45° (Shift+R)">45°</button>
 
           <label className="flex items-center gap-1 text-xs text-slate-600" title="Временно исключить двухвыводный элемент из расчёта">
             <span>В расчёте</span>
@@ -3042,8 +3119,9 @@ export function SchematicEditor({
                 { label: 'Обозначения', value: showElementNames, toggle: () => setShowElementNames(value => !value) },
                 { label: 'Номиналы', value: showElementValues, toggle: () => setShowElementValues(value => !value) },
                 { label: 'Номера узлов', value: showNodeNumbers, toggle: () => setShowNodeNumbers(value => !value) },
+                { label: 'Полярность выводов', value: showPolarity, toggle: () => setShowPolarity(value => !value) },
                 { label: 'Сетка', value: showGrid, toggle: () => setShowGrid(value => !value) },
-              ].map(item => <button key={item.label} type="button" role="menuitemcheckbox" aria-checked={item.value} onClick={item.toggle} className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-blue-50">{item.value ? '✓ ' : '　'}{item.label}</button>)}
+              ].map(item => <button key={item.label} type="button" role="menuitemcheckbox" aria-label={item.label} aria-checked={item.value} onClick={item.toggle} className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-blue-50">{item.value ? '✓ ' : '　'}{item.label}</button>)}
             </div>}
           </div>
 
@@ -3171,7 +3249,7 @@ export function SchematicEditor({
         )}
 
         {shortcutSettingsOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50" onClick={e => { if (e.target === e.currentTarget) { setShortcutSettingsOpen(false); setRecordingShortcut(null); } }}>
-          <div ref={shortcutDialogRef} role="dialog" aria-modal="true" aria-label="Горячие клавиши" className="flex max-h-[85vh] w-[min(46rem,calc(100vw-2rem))] flex-col rounded-xl bg-white p-5 shadow-2xl">
+          <div ref={shortcutDialogRef} role="dialog" aria-modal="true" aria-label="Горячие клавиши" onKeyDown={event => { if (event.key === 'Escape' && !recordingShortcut) { event.preventDefault(); setShortcutSettingsOpen(false); } }} className="flex max-h-[85vh] w-[min(46rem,calc(100vw-2rem))] flex-col rounded-xl bg-white p-5 shadow-2xl">
             <div className="mb-2 flex items-center justify-between"><strong className="text-lg">Горячие клавиши</strong><button type="button" onClick={() => { setShortcutSettingsOpen(false); setRecordingShortcut(null); }} aria-label="Закрыть">×</button></div>
             <p className="mb-3 text-xs text-slate-600">Для размещения нажмите сочетание, затем укажите точку на схеме. Можно использовать Ctrl, Alt и Shift. Настройки сохраняются на этом компьютере.</p>
             <div className="min-h-0 flex-1 overflow-y-auto rounded border border-slate-200 px-3">
@@ -3184,7 +3262,7 @@ export function SchematicEditor({
                     if (e.code === 'Escape') { setRecordingShortcut(null); setShortcutMessage('Назначение отменено.'); return; }
                     if (['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(e.code)) return;
                     const combo = shortcutFromEvent(e);
-                    const reserved = ['Delete', 'Backspace', 'F9', 'Tab', 'Enter', 'Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.code) || ['Ctrl+KeyZ', 'Ctrl+Shift+KeyZ', 'Ctrl+KeyY', 'Ctrl+KeyS', 'Ctrl+KeyO', 'Ctrl+KeyC', 'Ctrl+KeyV', 'Meta+KeyZ', 'Meta+Shift+KeyZ', 'Meta+KeyY', 'Meta+KeyS', 'Meta+KeyO', 'Meta+KeyC', 'Meta+KeyV'].includes(combo);
+                    const reserved = isReservedEditorShortcut(combo);
                     if (reserved) { setShortcutMessage('Это сочетание уже используется командой редактора или окна. Выберите другое.'); return; }
                     const conflict = SHORTCUT_ACTIONS.find(key => key !== action && shortcutBindingsConflict(action, combo, key, editorShortcuts[key]));
                     if (conflict) { setShortcutMessage(`Уже назначено: ${shortcutActionLabel(conflict)}. Снимите старое назначение или выберите другую клавишу.`); return; }
@@ -3199,12 +3277,20 @@ export function SchematicEditor({
               </div>)}
             </div>
             <div role="status" className="mt-2 min-h-5 text-xs text-slate-600">{shortcutMessage}</div>
-            <div className="mt-3 flex items-center justify-between border-t border-slate-200 pt-3"><button type="button" onClick={() => { setEditorShortcuts({ ...DEFAULT_SHORTCUTS }); setRecordingShortcut(null); setShortcutMessage('Восстановлены назначения по умолчанию.'); }} className="text-xs font-semibold text-blue-700">Сбросить всё</button><span className="text-xs text-slate-500">R — поворот 90° · Shift + R — 45°</span></div>
+            <div className="mt-3 flex items-center justify-between border-t border-slate-200 pt-3"><button type="button" onClick={() => { setEditorShortcuts({ ...DEFAULT_SHORTCUTS }); setRecordingShortcut(null); setShortcutMessage('Восстановлены назначения по умолчанию.'); }} className="text-xs font-semibold text-blue-700">Сбросить всё</button><span className="text-xs text-slate-500">{shortcutLabel(editorShortcuts.rotate)} — 90° · {shortcutWithShift(editorShortcuts.rotate) ? shortcutLabel(shortcutWithShift(editorShortcuts.rotate)!) : 'с Shift'} — 45°</span></div>
           </div>
         </div>}
         {appearanceOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50" onClick={event => { if (event.target === event.currentTarget) setAppearanceOpen(false); }}>
-          <section role="dialog" aria-modal="true" aria-label="Общие настройки редактора" className="w-[min(26rem,calc(100vw-2rem))] rounded-xl bg-white p-5 shadow-2xl">
+          <section ref={appearanceDialogRef} role="dialog" aria-modal="true" aria-label="Общие настройки редактора" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setAppearanceOpen(false); } }} className="max-h-[90vh] overflow-y-auto w-[min(26rem,calc(100vw-2rem))] rounded-xl bg-white p-5 shadow-2xl">
             <div className="mb-4 flex items-center justify-between"><strong>Оформление редактора</strong><button type="button" onClick={() => setAppearanceOpen(false)} aria-label="Закрыть общие настройки">×</button></div>
+            <label className="mb-3 grid gap-1 text-sm">Режим оформления документа
+              <select aria-label="Режим оформления документа" value={printLayout.presentation ?? 'teacher'} onChange={event => onPrintLayoutChange({ ...printLayout, presentation: event.target.value as 'teacher' | 'eskd' })} className="rounded border p-1">
+                <option value="teacher">По требованиям преподавателя</option>
+                <option value="eskd">Базовое оформление ЕСКД</option>
+              </select>
+            </label>
+            <p className="mb-3 text-xs text-slate-600">Режим преподавателя: круглые номера сетей, квадрат первого вывода, подчёркнутый зависимый ток. Базовый режим убирает эти учебные обозначения. Нормоконтроль УГО и основной надписи ещё не завершён.</p>
+            <button type="button" className="mb-3 text-sm text-blue-700 underline" onClick={() => { setAppearanceOpen(false); setShortcutSettingsOpen(true); }}>Настроить горячие клавиши</button>
             {([
               ['element', 'Элементы'], ['wire', 'Провода'], ['designation', 'Обозначения элементов'],
               ['node', 'Обозначения узлов'], ['grid', 'Сетка'],
@@ -3371,6 +3457,7 @@ export function SchematicEditor({
                   {/* Видимый провод схемы под прямыми углами */}
                   <path
                     data-wire-ink="true"
+                    data-document-stroke={wg.unrouted ? '#dc2626' : wire.disabled ? '#94a3b8' : appearance.wire}
                     d={visiblePath}
                     fill="none"
                     stroke={wg.unrouted ? '#dc2626' : wire.disabled ? '#94a3b8' : isSelected ? '#2563eb' : appearance.wire}
@@ -3384,6 +3471,7 @@ export function SchematicEditor({
                   {/* Keep an explicit connection between coincident pins visible, even without a line segment. */}
                   {coincidentEndpoint && (
                     <circle
+                      data-document-fill={wire.disabled ? '#ffffff' : appearance.wire}
                       cx={coincidentEndpoint.x}
                       cy={coincidentEndpoint.y}
                       r={6}
@@ -3529,7 +3617,7 @@ export function SchematicEditor({
                   {el.type !== 'JUNCTION' && el.type !== 'TEXT' && <rect x={-22} y={-20} width={44} height={40} fill="transparent" data-export-hide="true" />}
 
                   {/* Отрисовка символа компонента */}
-                  <g
+                  <g data-component-symbol={el.type}
                     transform={`rotate(${el.rotation || 0}) scale(${el.flipH ? -1 : 1}, ${
                       el.flipV ? -1 : 1
                     })`}
@@ -3551,7 +3639,7 @@ export function SchematicEditor({
 
                   {/* Подписи следуют ориентации элемента, но остаются горизонтальными и читаемыми. */}
                   {el.type !== 'TEXT' && el.type !== 'JUNCTION' && (showElementNames || showElementValues || el.isolation === 'short') && <g data-element-labels={el.id} className="select-none" pointerEvents={wiringFrom ? 'none' : 'visiblePainted'} style={{ fontFamily: 'NAPS Drafting, Arial Narrow, sans-serif', paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 3.5, strokeLinejoin: 'round' }}>
-                    {showElementNames && <text data-label-kind="name" x={labelLayout.name.x} y={labelLayout.name.y} textAnchor={labelLayout.name.anchor} fontSize={11} fontWeight="bold" textDecoration={el.type === 'VCCS' || el.type === 'CCCS' ? 'underline' : undefined} fill={el.isolation === 'open' ? '#94a3b8' : appearance.designation}>{el.name}</text>}
+                    {showElementNames && <text data-label-kind="name" x={labelLayout.name.x} y={labelLayout.name.y} textAnchor={labelLayout.name.anchor} fontSize={11} fontWeight="bold" textDecoration={teacherPresentation && (el.type === 'VCCS' || el.type === 'CCCS') ? 'underline' : undefined} fill={el.isolation === 'open' ? '#94a3b8' : appearance.designation}>{el.name}</text>}
                     {showElementValues && valueLabel && <text data-label-kind="value" x={labelLayout.value.x} y={labelLayout.value.y} textAnchor={labelLayout.value.anchor} fontSize={11} fill={el.isolation === 'open' ? '#94a3b8' : '#3730a3'}>{valueLabel}</text>}
                     {el.isolation === 'short' && <text data-label-kind="isolation" x={labelLayout.isolation.x} y={labelLayout.isolation.y} textAnchor={labelLayout.isolation.anchor} fontSize={9} fill="#b91c1c" fontWeight="bold">КЗ</text>}
                   </g>}
@@ -3562,7 +3650,7 @@ export function SchematicEditor({
                       const absPx = el.x + pin.x;
                       const absPy = el.y + pin.y;
                       const pinKey = `${el.id}_${pin.id}`;
-                      const nodeNum = circuitGraph.pinToNode.get(pinKey);
+                      const positiveMarker = teacherPresentation && pins.length === 2 && pin.id === pins[0].id;
                       const isWiringSource = wiringFrom?.compId === el.id && wiringFrom?.pinId === pin.id;
                       const isHovered = hoveredPin?.compId === el.id && hoveredPin?.pinId === pin.id;
                       const isConnected = connectedPinKeys.has(pinKey);
@@ -3583,9 +3671,9 @@ export function SchematicEditor({
                           )}
 
                           {/* Постоянный маркер вывода в редакторе; на экспортной схеме он скрыт. */}
-                          {pin.label === '+' ? <rect data-export-hide="true" x={pin.x - 3} y={pin.y - 3} width={6} height={6}
+                          {showPolarity && positiveMarker ? <rect data-pin-marker="positive" data-export-hide="true" x={pin.x - 3} y={pin.y - 3} width={6} height={6}
                             fill={isConnected ? '#334155' : '#ffffff'} stroke={isConnected ? '#334155' : '#64748b'} strokeWidth={1.25} pointerEvents="none" />
-                            : <circle data-export-hide="true" cx={pin.x} cy={pin.y} r={3}
+                            : <circle data-pin-marker={pins.length === 2 && pin.id === pins[1].id ? 'negative' : 'contact'} data-export-hide="true" cx={pin.x} cy={pin.y} r={3}
                               fill={isConnected ? '#334155' : '#ffffff'} stroke={isConnected ? '#334155' : '#64748b'} strokeWidth={1.25} pointerEvents="none" />}
 
                           {/* Широкая невидимая область клика (радиус 18px) для безошибочного захвата мышью */}
@@ -3600,7 +3688,7 @@ export function SchematicEditor({
                           />
 
                           {/* Терминал для клика проводки */}
-                          {(isHovered || isWiringSource) && (pin.label === '+' ? <rect
+                          {(isHovered || isWiringSource) && (showPolarity && positiveMarker ? <rect
                             data-export-hide="true" x={pin.x - (isHovered ? 6 : 4)} y={pin.y - (isHovered ? 6 : 4)} width={(isHovered ? 6 : 4) * 2} height={(isHovered ? 6 : 4) * 2}
                             fill={isWiringSource ? '#2563eb' : '#10b981'} stroke="#ffffff" strokeWidth={1.5} className="cursor-pointer"
                             onMouseDown={(e) => handlePinClick(e, el.id, pin.id, absPx, absPy)} onMouseUp={(e) => handlePinMouseUp(e, el.id, pin.id, absPx, absPy)}
@@ -3627,8 +3715,8 @@ export function SchematicEditor({
                           )}
 
                           {/* Название вывода */}
-                          {pin.label && (
-                            <text
+                          {pin.label && (showPolarity || !['+', '−', '-'].includes(pin.label)) && (
+                            <text data-pin-label={pin.id}
                               x={pin.x + (Math.abs(pin.y) > Math.abs(pin.x) ? 8 : pin.x > 0 ? 7 : -7)}
                               y={pin.y + (Math.abs(pin.y) > Math.abs(pin.x) ? 3 : -7)}
                               textAnchor={pin.x > 0 ? 'start' : pin.x < 0 ? 'end' : 'middle'}
@@ -3639,25 +3727,19 @@ export function SchematicEditor({
                             </text>
                           )}
 
-                          {/* Номер узла схемы (стр. 4: "Номера узлов") */}
-                          {showNodeNumbers && nodeNum !== undefined && (
-                            <text
-                              x={pin.x + 8}
-                              y={pin.y - 6}
-                              className="font-mono text-3xs font-semibold select-none pointer-events-none"
-                              fill={appearance.node}
-                              style={{ fontSize: '9px' }}
-                            >
-                              [{nodeNum === 0 ? '0' : nodeNum}]
-                            </text>
-                          )}
                         </g>
                       );
                     })}
 
                 </g>
               );
-            }), [sceneLabels, elements, wires, selectedId, selectedIds, selectedWireId, wiringFrom, pendingComponentType, zoom, showElementNames, showElementValues, showNodeNumbers, circuitGraph, connectedPinKeys, copiedElement, gridUnits, wireMode, pan, draggingElemId, dragOffset, wiringWaypoints, appearance, onHoverStatus, onWiresChange, onElementsChange, onOpenProperties, onBeginContinuousEdit, onEndContinuousEdit])}
+            }), [sceneLabels, elements, wires, selectedId, selectedIds, selectedWireId, wiringFrom, pendingComponentType, zoom, showElementNames, showElementValues, showPolarity, teacherPresentation, circuitGraph, connectedPinKeys, copiedElement, gridUnits, wireMode, pan, draggingElemId, dragOffset, wiringWaypoints, appearance, onHoverStatus, onWiresChange, onElementsChange, onOpenProperties, onBeginContinuousEdit, onEndContinuousEdit])}
+            <g data-network-annotations="true" pointerEvents="none">
+              {nodeAnnotations.map(label => <g key={label.node} data-network-node={label.node} data-label-collision={label.collision || undefined} transform={`translate(${label.x} ${label.y})`}>
+                {teacherPresentation && <circle data-node-number-ring="true" r={label.radius} fill="white" stroke={appearance.node} strokeWidth={1} />}
+                <text textAnchor="middle" dominantBaseline="central" fontSize={9} fill={appearance.node} style={{ paintOrder: 'stroke', stroke: '#fff', strokeWidth: 2 }}>{label.node}</text>
+              </g>)}
+            </g>
             {hoveredPin && (wiringFrom?.compId !== hoveredPin.compId || wiringFrom.pinId !== hoveredPin.pinId) && (() => {
               const pin = pinPositions.get(`${hoveredPin.compId}_${hoveredPin.pinId}`);
               return pin && <g data-export-hide="true" transform={`translate(${pin.x}, ${pin.y})`} pointerEvents="none">
@@ -3697,8 +3779,9 @@ export function SchematicEditor({
           {/* Ghost-превью компонента при перемещении мыши */}
           {pendingComponentType && mouseWorldPos && (
             <g
+              data-placement-preview="true"
               data-export-hide="true"
-              transform={`translate(${mouseWorldPos.x * zoom + pan.x}, ${mouseWorldPos.y * zoom + pan.y}) scale(${zoom})`}
+              transform={`translate(${mouseWorldPos.x * zoom + pan.x}, ${mouseWorldPos.y * zoom + pan.y}) scale(${zoom}) rotate(${placementRotation})`}
               opacity={0.65}
               pointerEvents="none"
             >
@@ -3708,10 +3791,11 @@ export function SchematicEditor({
                 name: '',
                 x: 0,
                 y: 0,
-                rotation: 0,
+                rotation: placementRotation,
                 value: 0,
                 valueStr: '',
                 unit: '',
+                controlVoltage: pendingComponentType === 'VCVS' || pendingComponentType === 'VCCS' ? { positive: { elementId: '', pinId: '1' }, negative: { elementId: '', pinId: '1' } } : undefined,
               })}
               <circle cx={0} cy={0} r={4} fill="#2563eb" />
             </g>

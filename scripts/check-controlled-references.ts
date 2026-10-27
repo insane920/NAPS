@@ -4,6 +4,7 @@ import { solveDCOperatingPoint } from '../src/math/dcOperatingPoint';
 import { bindCurrentControls, replaceElementPreservingControls, validateControlledSources } from '../src/math/controlledSources';
 import { exportToYamlScm, parseYamlScm } from '../src/utils/yamlScm';
 import type { CircuitElement, CircuitWire, TransientSettings, ACSettings } from '../src/types';
+import { swapElementTerminals } from '../src/utils/terminalSwap';
 
 const e = (id: string, type: CircuitElement['type'], value = 0): CircuitElement => ({ id, name: id, type, value, valueStr: String(value), unit: '', x: 0, y: 0, rotation: 0 });
 const w = (a: string, ap: string, b: string, bp: string): CircuitWire => ({ id: `${a}${ap}${b}${bp}`, fromCompId: a, fromPinId: ap, toCompId: b, toPinId: bp });
@@ -36,6 +37,13 @@ for (const [type, gain, expected] of [['VCVS', 3, 6], ['VCCS', .5, -100], ['CCVS
     const result = solveCircuitAC(sineElements, saved.wires, ac);
     near(result.signals['mag(U(LOAD))'][0], Math.abs(expected));
     near(Math.cos(result.signals['phs(U(LOAD))'][0] * Math.PI / 180), Math.sign(expected * sign));
+    const dependentId = saved.elements.find(item => item.name === 'DEP')!.id;
+    const reversed = swapElementTerminals(saved.elements, saved.wires, dependentId);
+    near(solveCircuitTransient(reversed.elements, reversed.wires, saved.transient).signals['U(LOAD)'][1], -expected * sign);
+    const reversedAc = swapElementTerminals(sineElements, saved.wires, dependentId);
+    const reverseResult = solveCircuitAC(reversedAc.elements, reversedAc.wires, ac);
+    near(reverseResult.signals['mag(U(LOAD))'][0], Math.abs(expected));
+    near(Math.cos(reverseResult.signals['phs(U(LOAD))'][0] * Math.PI / 180), -Math.sign(expected * sign));
     // Removal followed by name reuse must not silently rebind either type of probe.
     const removed = saved.elements.filter(item => item.name !== 'RENAMED');
     removed.push(e('replacement', 'V_DC', 99)); removed.at(-1)!.name = 'RENAMED';

@@ -57,7 +57,10 @@ const fs = require('node:fs/promises');
     const text = await fs.readFile(await download.path(), 'utf8');
     const types = await page.evaluate(async content => {
       const { parseYamlScm } = await import('/src/utils/yamlScm.ts');
-      return parseYamlScm(content).elements.map(element => element.type);
+      const { getCircuitPinIds } = await import('/src/math/circuitSolver.ts');
+      const elements = parseYamlScm(content).elements;
+      if (!elements.every(element => getCircuitPinIds(element.type, element).length === 2)) throw new Error('New source variants must remain two-terminal symbols');
+      return elements.map(element => element.type);
     }, text);
     assert.deepEqual(types, ['V_AC', 'V_PULSE', 'I_AC', 'I_PULSE', 'V_AC', 'VCVS', 'CCVS', 'VCCS', 'CCCS']);
     console.log('PASS: five-family library, independent and controlled source variants and SCM persistence.');

@@ -59,6 +59,26 @@ const fs = require('node:fs/promises');
       await page.keyboard.press('Control+z');
       assert.equal(await main.getAttribute('d'), initial, 'undo preserves the route');
     }
+    const damagedScm = await page.evaluate(async () => {
+      const { exportToYamlScm } = await import('/src/utils/yamlScm.ts');
+      const { SAMPLE_CIRCUITS } = await import('/src/data/sampleCircuits.ts');
+      const resistor = (id, x) => ({ id, name: id, type: 'R', x, y: 200, rotation: 0,
+        value: 1000, valueStr: '1к', unit: 'Ом' });
+      return exportToYamlScm([resistor('A', 100), resistor('B', 500), resistor('BLOCK', 300)],
+        [{ id: 'damaged-wire', fromCompId: 'A', fromPinId: '2', toCompId: 'B', toPinId: '1', routeMode: 'direct' }],
+        SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect');
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: 'damaged.scm', mimeType: 'text/plain', buffer: Buffer.from(damagedScm) });
+    assert.match(await page.getByRole('alert').innerText(), /провод A\.2 → B\.1 \(ID [^)]+\)/,
+      'opening an obstructed SCM 8 warns immediately and identifies the connection');
+    assert.equal(await page.locator('[data-wire-id]').count(), 1, 'the warning leaves the conductor available for repair');
+    const [damagedDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
+    const damagedSaved = await fs.readFile(await damagedDownload.path(), 'utf8');
+    assert.equal(await page.evaluate(async scm => {
+      const { parseYamlScm } = await import('/src/utils/yamlScm.ts');
+      const data = parseYamlScm(scm);
+      return data.crossingMode === 'connect' && data.wires.length === 1 && data.wires[0].routeMode === 'direct';
+    }, damagedSaved), true, 'saving the damaged document retains SCM 8 semantics and wire data');
     const blockedScm = await page.evaluate(async () => {
       const { exportToYamlScm } = await import('/src/utils/yamlScm.ts');
       const { SAMPLE_CIRCUITS } = await import('/src/data/sampleCircuits.ts');

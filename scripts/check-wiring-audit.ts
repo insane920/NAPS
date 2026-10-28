@@ -18,6 +18,7 @@ import {
   reanchorManualWiresForChanges,
   simplifyPoints,
   snapManualWirePoint,
+  validateCircuitGeometry,
   type Point,
 } from '../src/components/SchematicEditor';
 import { buildCircuitGraph, getCircuitPinIds } from '../src/math/circuitSolver';
@@ -31,6 +32,18 @@ import type { CircuitElement, CircuitWire } from '../src/types';
 
 const freeCorner = routeAroundObstacles({ x: 0, y: 0 }, { x: 120, y: 80 }, { x: 0, y: 0 }, { x: 0, y: 0 }, 20, [], [], [])!;
 assert.deepEqual(freeCorner, [{ x: 0, y: 0 }, { x: 120, y: 0 }, { x: 120, y: 80 }], 'free contacts use one deterministic L, not a midpoint Z');
+const obstructedElements: CircuitElement[] = ['A', 'B', 'BLOCK'].map((id, index) => ({
+  id, name: id, type: 'R', x: [100, 500, 300][index], y: 200, rotation: 0,
+  value: 1000, valueStr: '1к', unit: 'Ом',
+}));
+const obstructedWire: CircuitWire = { id: 'damaged-wire', fromCompId: 'A', fromPinId: '2',
+  toCompId: 'B', toPinId: '1', routeMode: 'direct' };
+const obstructedScm = parseYamlScm(exportToYamlScm(obstructedElements, [obstructedWire],
+  SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect'));
+assert.equal(obstructedScm.wires.length, 1, 'opening an obstructed SCM 8 preserves the original wire');
+assert.throws(() => validateCircuitGeometry(obstructedScm.elements, obstructedScm.wires, 20, 'connect'),
+  /провод A\.2 → B\.1 \(ID [^)]+\) не имеет корректной видимой трассы/,
+  'an obstructed legacy route is diagnosed by endpoint and ID before calculation');
 const referencePair: CircuitElement[] = [[200, 300], [600, 500]].map(([x, y], index) => ({
   id: `pair_${index}`, name: `R${index + 1}`, type: 'R', x, y, rotation: 0,
   value: 1000, valueStr: '1к', unit: 'Ом',

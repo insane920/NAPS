@@ -393,8 +393,11 @@ export function hasUnmaterializedCrossings(elements: CircuitElement[], wires: Ci
 
 export function validateCircuitGeometry(elements: CircuitElement[], wires: CircuitWire[], grid: number, mode: WireCrossingMode) {
   const routes = routeCircuitWires(elements, wires, grid);
-  if (routes.some(route => !route.wire.disabled && route.unrouted) || routes.filter(route => !route.wire.disabled).length !== wires.filter(wire => !wire.disabled).length) {
-    throw new Error('Расчёт остановлен: для активного провода нет корректной видимой трассы. Исправьте выделенные красным соединения.');
+  const invalid = routes.find(route => !route.wire.disabled && route.unrouted)?.wire
+    ?? wires.find(wire => !wire.disabled && !routes.some(route => route.wire.id === wire.id));
+  if (invalid) {
+    const name = (id: string) => elements.find(element => element.id === id)?.name ?? id;
+    throw new Error(`Расчёт остановлен: провод ${name(invalid.fromCompId)}.${invalid.fromPinId} → ${name(invalid.toCompId)}.${invalid.toPinId} (ID ${invalid.id}) не имеет корректной видимой трассы. Исправьте соединение.`);
   }
   if (mode === 'connect' && hasUnmaterializedCrossings(elements, wires, routes)) {
     throw new Error('Расчёт остановлен: пересечения проводов ещё не согласованы с электрическими узлами. Завершите редактирование соединений.');

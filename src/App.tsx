@@ -274,7 +274,12 @@ export default function App() {
     setViewRevision(value => value + 1);
     setFitRevision(value => value + 1);
     markChanged(); setElements(data.elements); setWires(data.wires); setSettings(data.transient); setAc(data.ac ?? newACSettings); setPrintLayout(data.printLayout ?? DEFAULT_PRINT_LAYOUT); setDescription(data.description ?? EMPTY_CIRCUIT_DESCRIPTION); setCrossingMode(data.crossingMode ?? 'explicit');
-    setName(title); setDirty(edited); setError(null); setGraphOpen(false); setStatus('Схема готова к расчёту');
+    let geometryWarning: string | null = null;
+    try { validateCircuitGeometry(data.elements, data.wires,
+      (data.printLayout ?? DEFAULT_PRINT_LAYOUT).gridMm * SCHEMATIC_UNITS_PER_MM, data.crossingMode ?? 'explicit'); }
+    catch (cause) { geometryWarning = cause instanceof Error ? cause.message : 'Ошибка геометрии проводов.'; }
+    setName(title); setDirty(edited); setError(geometryWarning); setGraphOpen(false);
+    setStatus(geometryWarning ? 'Схема открыта: требуется исправить проводку' : 'Схема готова к расчёту');
   };
   const clearProject = () => {
     setHoverStatus(null);

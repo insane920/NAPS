@@ -11,7 +11,7 @@ import { useModalFocus } from './hooks/useModalFocus';
 import { NapsLogo } from './components/NapsLogo';
 import { bindCurrentControls, replaceElementPreservingControls } from './math/controlledSources';
 import { version as appVersion } from '../package.json';
-import { DEFAULT_PRINT_LAYOUT, SCHEMATIC_UNITS_PER_MM, type PrintLayout } from './utils/printLayout';
+import { DEFAULT_PRINT_LAYOUT, readDefaultPrintLayout, SCHEMATIC_UNITS_PER_MM, type PrintLayout } from './utils/printLayout';
 import { readRecovery, writeRecovery, discardRecovery, type RecoveryCopy } from './utils/projectRecovery';
 
 const GraphWindow = lazy(() => import('./components/GraphWindow').then(m => ({ default: m.GraphWindow })));
@@ -34,11 +34,12 @@ const newProjectSettings: TransientSettings = { ...SAMPLE_CIRCUITS[0].transient,
 const newACSettings: ACSettings = { fMin: 10, fMinStr: '10', fMax: 100000, fMaxStr: '100k', points: 101, scaleType: 'log', signals: [] };
 
 export default function App() {
+  const [initialPrintLayout] = useState(readDefaultPrintLayout);
   const [elements, setElements] = useState<CircuitElement[]>([]);
   const [wires, setWires] = useState<CircuitWire[]>([]);
   const [settings, setSettings] = useState(newProjectSettings);
   const [ac, setAc] = useState(newACSettings);
-  const [printLayout, setPrintLayout] = useState<PrintLayout>(DEFAULT_PRINT_LAYOUT);
+  const [printLayout, setPrintLayout] = useState<PrintLayout>(initialPrintLayout);
   const [description, setDescription] = useState<CircuitDescription>(EMPTY_CIRCUIT_DESCRIPTION);
   const [crossingMode, setCrossingMode] = useState<WireCrossingMode>('connect');
   const [name, setName] = useState('Новая схема');
@@ -72,7 +73,7 @@ export default function App() {
   const worker = useRef<Worker | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const revision = useRef(0);
-  const currentSnapshot = useRef<HistorySnapshot>({ elements: [], wires: [], settings: newProjectSettings, ac: newACSettings, printLayout: DEFAULT_PRINT_LAYOUT, description: EMPTY_CIRCUIT_DESCRIPTION, crossingMode: 'connect', name: 'Новая схема', dirty: false });
+  const currentSnapshot = useRef<HistorySnapshot>({ elements: [], wires: [], settings: newProjectSettings, ac: newACSettings, printLayout: initialPrintLayout, description: EMPTY_CIRCUIT_DESCRIPTION, crossingMode: 'connect', name: 'Новая схема', dirty: false });
   const undoStack = useRef<HistorySnapshot[]>([]);
   const redoStack = useRef<HistorySnapshot[]>([]);
   const historyGroupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -286,8 +287,9 @@ export default function App() {
     setSettingsOpen(false); setAcSettingsOpen(false);
     closeHistoryGroup(); beginHistoryChange();
     const emptySettings = { ...newProjectSettings, signals: [] };
-    currentSnapshot.current = { elements: [], wires: [], settings: emptySettings, ac: newACSettings, printLayout: DEFAULT_PRINT_LAYOUT, description: EMPTY_CIRCUIT_DESCRIPTION, crossingMode: 'connect', name: 'Новая схема', dirty: true };
-    markChanged(); setElements([]); setWires([]); setSettings(emptySettings); setAc(newACSettings); setPrintLayout(DEFAULT_PRINT_LAYOUT); setDescription(EMPTY_CIRCUIT_DESCRIPTION); setCrossingMode('connect'); setName('Новая схема');
+    const newLayout = readDefaultPrintLayout();
+    currentSnapshot.current = { elements: [], wires: [], settings: emptySettings, ac: newACSettings, printLayout: newLayout, description: EMPTY_CIRCUIT_DESCRIPTION, crossingMode: 'connect', name: 'Новая схема', dirty: true };
+    markChanged(); setElements([]); setWires([]); setSettings(emptySettings); setAc(newACSettings); setPrintLayout(newLayout); setDescription(EMPTY_CIRCUIT_DESCRIPTION); setCrossingMode('connect'); setName('Новая схема');
     setSelected(null); setError(null); setGraphOpen(false); setViewRevision(value => value + 1);
   };
   const confirmReplace = () => !dirty || window.confirm('В схеме есть несохранённые изменения. Заменить её?');

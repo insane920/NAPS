@@ -63,3 +63,20 @@ export function parsePrintLayout(format?: string, orientation?: string, gridMm?:
   if (step !== 0.5 && step !== 1 && step !== 2 && step !== 2.5 && step !== 5 && step !== 10) throw new Error('Шаг сетки: допустимы 0,5, 1, 2, 2,5, 5 или 10 мм.');
   return { format, orientation, gridMm: step, ...(presentation ? { presentation } as Pick<PrintLayout, 'presentation'> : {}) };
 }
+
+export const DEFAULT_LAYOUT_STORAGE_KEY = 'naps_default_print_layout';
+
+/** User preference for new documents; an opened SCM always supplies its own layout. */
+export function readDefaultPrintLayout(storage?: Pick<Storage, 'getItem'>): PrintLayout {
+  try {
+    const text = (storage ?? localStorage).getItem(DEFAULT_LAYOUT_STORAGE_KEY);
+    if (!text) return { ...DEFAULT_PRINT_LAYOUT };
+    const value = JSON.parse(text) as Partial<PrintLayout>;
+    return parsePrintLayout(value.format, value.orientation, value.gridMm, value.presentation);
+  } catch { return { ...DEFAULT_PRINT_LAYOUT }; }
+}
+
+export function saveDefaultPrintLayout(layout: PrintLayout, storage?: Pick<Storage, 'setItem'>): void {
+  const valid = parsePrintLayout(layout.format, layout.orientation, layout.gridMm, layout.presentation);
+  (storage ?? localStorage).setItem(DEFAULT_LAYOUT_STORAGE_KEY, JSON.stringify(valid));
+}

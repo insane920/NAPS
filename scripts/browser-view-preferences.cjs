@@ -71,6 +71,15 @@ const fs = require('node:fs/promises');
         assert.match(text, new RegExp(`Presentation: ${mode}`));
         await load(text);
         assert.deepEqual(await state(text), before, 'presentation round-trip leaves circuit unchanged');
+        await page.getByRole('button', { name: 'Экспорт ▾', exact: true }).click();
+        await page.getByRole('menuitem', { name: 'SVG', exact: true }).click();
+        const ringCount = await page.getByTitle('Предварительный просмотр листа').evaluate(frame => {
+          const doc = new DOMParser().parseFromString(frame.getAttribute('srcdoc'), 'text/html');
+          return doc.querySelectorAll('[data-node-number-ring]').length;
+        });
+        assert.equal(ringCount, mode === 'teacher' ? 9 : 0,
+          'teacher-only circular network numbers follow the selected document mode into export');
+        await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
       }
       // Selection colour is never part of a colour SVG/PDF/PNG document.
       for (const type of ['V_DC', 'I_DC', 'R', 'C', 'L']) {

@@ -12,7 +12,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { buildStoredWireRoute, canRouteReconnectedEnd, computeOrthogonalWirePoints, getComponentPins, isAllowedWireSegment, moveWireSegment, projectPointToWire, reanchorManualWires, snapManualWirePoint, splitWireRoute, wireGapDashArray } from '../src/components/SchematicEditor';
 import { buildCircuitGraph } from '../src/math/circuitSolver';
 import { nextComponentName } from '../src/utils/componentNames';
-import { paperSize, parsePrintLayout, computePrintPlacement, SCHEMATIC_UNITS_PER_MM } from '../src/utils/printLayout';
+import { paperSize, parsePrintLayout, computePrintPlacement, SCHEMATIC_UNITS_PER_MM,
+  readDefaultPrintLayout, saveDefaultPrintLayout, DEFAULT_LAYOUT_STORAGE_KEY, DEFAULT_PRINT_LAYOUT } from '../src/utils/printLayout';
 import { titleBlockBounds, TITLE_BLOCK_HEIGHT_MM, TITLE_BLOCK_WIDTH_MM } from '../src/utils/eskdTitleBlock';
 import { rasterPagePdf } from '../src/utils/rasterPdf';
 import { DEFAULT_CHIP_PINS } from '../src/utils/chipPins';
@@ -72,6 +73,14 @@ for (const type of ['R', 'C', 'L'] as const) {
   assert.equal(placementFamilyForType(type), type);
 }
 assert.equal(placementFamilyForType('PORT'), null, 'a hidden legacy port has no placement family');
+const layoutStorage = new Map<string, string>();
+const layoutStore = { getItem: (key: string) => layoutStorage.get(key) ?? null,
+  setItem: (key: string, value: string) => { layoutStorage.set(key, value); } };
+assert.deepEqual(readDefaultPrintLayout(layoutStore), DEFAULT_PRINT_LAYOUT);
+saveDefaultPrintLayout({ format: 'A3', orientation: 'portrait', gridMm: 2.5, presentation: 'eskd' }, layoutStore);
+assert.deepEqual(readDefaultPrintLayout(layoutStore), { format: 'A3', orientation: 'portrait', gridMm: 2.5, presentation: 'eskd' });
+layoutStorage.set(DEFAULT_LAYOUT_STORAGE_KEY, '{broken');
+assert.deepEqual(readDefaultPrintLayout(layoutStore), DEFAULT_PRINT_LAYOUT, 'bad user preferences cannot break a new project');
 for (const type of [...COMPONENT_CATALOG.map(item => item.type), 'PORT' as const]) {
   for (const mode of ['explicit', 'connect'] as const) {
     const original = { id: 'archive', type, name: 'ARCHIVE', x: -143, y: 287, rotation: 45, flipH: true, value: 1, valueStr: '1', unit: '' };

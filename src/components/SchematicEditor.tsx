@@ -37,7 +37,7 @@ import { readEditorView } from '../utils/editorView';
 import { useModalFocus } from '../hooks/useModalFocus';
 import { ComponentPalette, COMPONENT_CATALOG, PLACEMENT_CATALOG, TERMINAL_GROUPS, terminalGroupForType, sourceVariantsForType, placementFamilyForType, TerminalGroup } from './ComponentPalette';
 import { SYMBOL_METRICS } from './symbolMetrics';
-import { SCHEMATIC_UNITS_PER_MM, computePrintPlacement, paperSize, printScaleLabel, type PrintLayout, type PrintPlacement } from '../utils/printLayout';
+import { SCHEMATIC_UNITS_PER_MM, computePrintPlacement, paperSize, printScaleLabel, saveDefaultPrintLayout, type PrintLayout, type PrintPlacement } from '../utils/printLayout';
 import { componentObstacle, routeAroundObstacles, routeIsClear, reanchorAutomaticRoute, isOrthogonalAutomaticRoute } from '../utils/orthogonalRouter';
 import type { CircuitDescription } from '../utils/yamlScm';
 import { createTitleBlock } from '../utils/eskdTitleBlock';
@@ -1388,6 +1388,8 @@ export function SchematicEditor({
   }, [editorShortcuts]);
   const [appearance, setAppearance] = useState<EditorAppearance>(loadAppearance);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'appearance' | 'editor' | 'shortcuts' | 'document'>('appearance');
+  const [defaultLayoutStatus, setDefaultLayoutStatus] = useState('');
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
   useEffect(() => { localStorage.setItem('naps_editor_appearance', JSON.stringify(appearance)); }, [appearance]);
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
@@ -3534,8 +3536,14 @@ export function SchematicEditor({
           </div>
         </div>}
         {appearanceOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50" onClick={event => { if (event.target === event.currentTarget) setAppearanceOpen(false); }}>
-          <section ref={appearanceDialogRef} role="dialog" aria-modal="true" aria-label="Общие настройки редактора" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setAppearanceOpen(false); } }} className="max-h-[90vh] overflow-y-auto w-[min(26rem,calc(100vw-2rem))] rounded-xl bg-white p-5 shadow-2xl">
-            <div className="mb-4 flex items-center justify-between"><strong>Оформление редактора</strong><button type="button" onClick={() => setAppearanceOpen(false)} aria-label="Закрыть общие настройки">×</button></div>
+          <section ref={appearanceDialogRef} role="dialog" aria-modal="true" aria-label="Общие настройки редактора" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setAppearanceOpen(false); } }} className="max-h-[90vh] overflow-y-auto w-[min(30rem,calc(100vw-2rem))] rounded-xl bg-white p-5 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between"><strong>Общие настройки редактора</strong><button type="button" onClick={() => setAppearanceOpen(false)} aria-label="Закрыть общие настройки">×</button></div>
+            <div role="tablist" aria-label="Разделы настроек" className="mb-4 flex flex-wrap gap-1 border-b border-slate-200 pb-2">
+              {([['appearance', 'Оформление'], ['editor', 'Редактор'], ['shortcuts', 'Горячие клавиши'], ['document', 'Документ']] as const).map(([id, label]) =>
+                <button key={id} type="button" role="tab" aria-selected={settingsTab === id} onClick={() => setSettingsTab(id)}
+                  className={`rounded px-2 py-1 text-xs ${settingsTab === id ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-700'}`}>{label}</button>)}
+            </div>
+            {settingsTab === 'appearance' && <div role="tabpanel" aria-label="Оформление">
             <label className="mb-3 grid gap-1 text-sm">Режим оформления документа
               <select aria-label="Режим оформления документа" value={printLayout.presentation ?? 'teacher'} onChange={event => onPrintLayoutChange({ ...printLayout, presentation: event.target.value as 'teacher' | 'eskd' })} className="rounded border p-1">
                 <option value="teacher">По требованиям преподавателя</option>
@@ -3548,7 +3556,45 @@ export function SchematicEditor({
               ['element', 'Элементы'], ['wire', 'Провода'], ['designation', 'Обозначения элементов'],
               ['node', 'Обозначения узлов'], ['grid', 'Сетка'],
             ] as const).map(([key, label]) => <label key={key} className="mb-2 flex items-center justify-between text-sm">{label}<input type="color" aria-label={`Цвет: ${label}`} value={appearance[key]} onChange={event => setAppearance(current => ({ ...current, [key]: event.target.value }))} /></label>)}
-            <div className="mt-4 flex justify-between"><button type="button" onClick={() => setAppearance({ ...DEFAULT_APPEARANCE })} className="text-sm text-blue-700">Цвета по умолчанию</button><button type="button" onClick={() => setAppearanceOpen(false)} className="rounded bg-blue-600 px-3 py-1 text-sm text-white">Готово</button></div>
+            <button type="button" onClick={() => setAppearance({ ...DEFAULT_APPEARANCE })} className="mt-3 text-sm text-blue-700">Цвета по умолчанию</button>
+            </div>}
+            {settingsTab === 'editor' && <div role="tabpanel" aria-label="Редактор" className="grid gap-3 text-sm">
+              <label className="grid gap-1">Шаг сетки
+                <select aria-label="Шаг сетки в настройках" value={printLayout.gridMm} onChange={event => onPrintLayoutChange({ ...printLayout, gridMm: Number(event.target.value) as PrintLayout['gridMm'] })} className="rounded border p-1">
+                  {[0.5, 1, 2, 2.5, 5, 10].map(step => <option key={step} value={step}>{step} мм</option>)}
+                </select>
+              </label>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={showGrid} onChange={event => setShowGrid(event.target.checked)} />Показывать сетку</label>
+              <label className="grid gap-1">Прокладка новых проводов
+                <select aria-label="Прокладка новых проводов" value={wireMode} onChange={event => { setWireMode(event.target.value as 'orthogonal' | 'direct'); setWiringWaypoints([]); }} className="rounded border p-1">
+                  <option value="orthogonal">Ортогональная</option><option value="direct">Прямая</option>
+                </select>
+              </label>
+              <p className="text-xs text-slate-600">Размещение элементов и ортогональных точек привязано к выбранной сетке.</p>
+            </div>}
+            {settingsTab === 'shortcuts' && <div role="tabpanel" aria-label="Горячие клавиши" className="grid gap-3 text-sm">
+              <p>Назначения для доступных компонентов и действий редактора сохраняются на этом компьютере. Конфликты проверяются при назначении.</p>
+              <button type="button" className="justify-self-start text-blue-700 underline" onClick={() => { setAppearanceOpen(false); setShortcutSettingsOpen(true); }}>Открыть назначения клавиш</button>
+            </div>}
+            {settingsTab === 'document' && <div role="tabpanel" aria-label="Документ" className="grid gap-3 text-sm">
+              <label className="grid gap-1">Формат документа
+                <select aria-label="Формат в настройках" value={printLayout.format} onChange={event => onPrintLayoutChange({ ...printLayout, format: event.target.value as PrintLayout['format'] })} className="rounded border p-1">
+                  {(['A0', 'A1', 'A2', 'A3', 'A4'] as const).map(format => <option key={format}>{format}</option>)}
+                </select>
+              </label>
+              <label className="grid gap-1">Ориентация документа
+                <select aria-label="Ориентация в настройках" value={printLayout.orientation} onChange={event => onPrintLayoutChange({ ...printLayout, orientation: event.target.value as PrintLayout['orientation'] })} className="rounded border p-1">
+                  <option value="portrait">Книжная</option><option value="landscape">Альбомная</option>
+                </select>
+              </label>
+              <button type="button" className="justify-self-start text-blue-700 underline" onClick={() => {
+                try { saveDefaultPrintLayout(printLayout); setDefaultLayoutStatus('Формат, ориентация, сетка и режим оформления сохранены для новых документов.'); }
+                catch { setDefaultLayoutStatus('Не удалось сохранить настройки новых документов.'); }
+              }}>Сделать настройками новых документов</button>
+              <span role="status" className="text-xs text-slate-600">{defaultLayoutStatus}</span>
+              <p className="text-xs text-slate-600">Формат и ориентация сохраняются в SCM; размеры схемы при переключении не меняются.</p>
+            </div>}
+            <div className="mt-4 flex justify-end border-t border-slate-200 pt-3"><button type="button" onClick={() => setAppearanceOpen(false)} className="rounded bg-blue-600 px-3 py-1 text-sm text-white">Готово</button></div>
           </section>
         </div>}
         {/* МОДАЛЬНОЕ ОКНО ПОЛНОЙ БИБЛИОТЕКИ ЭЛЕМЕНТОВ (НЕ СЖИМАЕТ И НЕ ПЕРЕКРЫВАЕТ СХЕМУ) */}

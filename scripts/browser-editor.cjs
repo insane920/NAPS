@@ -110,10 +110,11 @@ const fs = require('node:fs/promises');
   await page.getByRole('button', { name: 'Клавиши' }).click();
   const shortcutsDialog = page.getByRole('dialog', { name: 'Горячие клавиши' });
   const selectableCount = await page.evaluate(async () => {
-    const { COMPONENT_CATALOG, terminalGroupForType } = await import('/src/components/ComponentPalette.tsx');
-    return COMPONENT_CATALOG.length + 1;
+    const { DEFAULT_SHORTCUTS } = await import('/src/components/SchematicEditor.tsx');
+    return Object.keys(DEFAULT_SHORTCUTS).length;
   });
-  assert.equal(await shortcutsDialog.locator('button[aria-label^="Назначить:"]').count(), selectableCount + 2, 'keyboard settings include every component and editor action');
+  assert.equal(await shortcutsDialog.locator('button[aria-label^="Назначить:"]').count(), selectableCount,
+    'keyboard settings include every active two-terminal variant and editor action');
   const resistorShortcut = shortcutsDialog.getByRole('button', { name: 'Назначить: Резистор (R)' });
   await resistorShortcut.click();
   await page.keyboard.press('Control+Alt+k');

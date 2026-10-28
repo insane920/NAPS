@@ -83,6 +83,41 @@ const fs = require('node:fs/promises');
       await page.locator('input[type="file"]').setInputFiles({ name: 'swapped.scm', mimeType: 'text/plain', buffer: Buffer.from(redone) });
       assert.deepEqual(await evaluate(await save()), changed, 'reopening keeps the terminal role and model result');
     }
+    const rotatingSource = await page.evaluate(async () => {
+      const { exportToYamlScm } = await import('/src/utils/yamlScm.ts');
+      const { SAMPLE_CIRCUITS } = await import('/src/data/sampleCircuits.ts');
+      return exportToYamlScm([{ id: 'SRC', name: 'SRC', type: 'V_DC', value: 5, valueStr: '5', unit: 'В',
+        x: 300, y: 240, rotation: 0 }], [], SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect');
+    });
+    await page.locator('input[type="file"]').setInputFiles({ name: 'polarity-rotation.scm', mimeType: 'text/plain', buffer: Buffer.from(rotatingSource) });
+    const source = page.locator('[data-component-id]').first();
+    const position = await source.evaluate(group => {
+      const point = group.ownerSVGElement.createSVGPoint();
+      const screen = point.matrixTransform(group.getScreenCTM());
+      return { x: screen.x, y: screen.y };
+    });
+    await page.mouse.click(position.x, position.y);
+    for (const [keys, expectedAngle] of [['Shift+r', 45], ['r', 135], ['r', 225]]) {
+      await page.keyboard.press(keys);
+      const marks = await source.evaluate(group => {
+        const positive = group.querySelector('rect[data-pin-marker="positive"]');
+        const negative = group.querySelector('circle[data-pin-marker="negative"]');
+        return { positive: positive && { x: Number(positive.getAttribute('x')) + 3, y: Number(positive.getAttribute('y')) + 3 },
+          negative: negative && { x: Number(negative.getAttribute('cx')), y: Number(negative.getAttribute('cy')) } };
+      });
+      const stored = await save();
+      const pins = await page.evaluate(async scm => {
+        const { parseYamlScm } = await import('/src/utils/yamlScm.ts');
+        const { getComponentPins } = await import('/src/components/SchematicEditor.tsx');
+        const element = parseYamlScm(scm).elements[0];
+        return { angle: element.rotation, pins: getComponentPins(element).map(({ x, y }) => ({ x, y })) };
+      }, stored);
+      assert.equal(pins.angle, expectedAngle);
+      for (const [marker, pin] of [[marks.positive, pins.pins[0]], [marks.negative, pins.pins[1]]]) {
+        assert.ok(marker && Math.hypot(marker.x - pin.x, marker.y - pin.y) < 1e-6,
+          `${expectedAngle}°: square and round markers follow the electrical terminal positions`);
+      }
+    }
     assert.deepEqual(dialogs, []); assert.deepEqual(errors, []);
     console.log('PASS: source terminal swaps keep physical conductors, reverse signed DC/transient/AC and round-trip atomically through SCM 7/8.');
   } finally { await browser.close(); }

@@ -5,7 +5,7 @@ const fs = require('node:fs/promises');
 (async () => {
   const browser = await chromium.launch({ ...(process.env.NAPS_CHROME_PATH ? { executablePath: process.env.NAPS_CHROME_PATH } : { channel: 'chrome' }), headless: true });
   try {
-    for (const width of [800, 1440]) {
+    for (const width of [800, 1440, 1920]) {
       const page = await browser.newPage({ viewport: { width, height: 1000 }, acceptDownloads: true });
       const errors = [];
       page.on('pageerror', error => errors.push(error.message));
@@ -119,6 +119,6 @@ const fs = require('node:fs/promises');
       assert.deepEqual(errors, []);
       await page.close();
     }
-    console.log('PASS: view switches, one annotation per network, presentation SCM, accessible settings, clean selection export, exclusive analysis panels and long hover text at 800/1440 px.');
+    console.log('PASS: view switches, one annotation per network, presentation SCM, accessible settings, clean selection export, exclusive analysis panels and long hover text at 800/1440/1920 px.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

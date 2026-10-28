@@ -377,6 +377,48 @@ assert.ok(fewestBends && isOrthogonalAutomaticRoute(fewestBends));
 assert.equal(automaticRouteCost(fewestBends).bends, 4, 'four-turn outside path beats a shorter path with more turns');
 assert.equal(automaticRouteCost(fewestBends).length, 2600, 'minimum length within the four-turn class');
 assert.deepEqual(routeAroundObstacles({ x: 0, y: 0 }, { x: 600, y: 0 }, { x: 1, y: 0 }, { x: -1, y: 0 }, 20, [], [...mazeBoxes].reverse(), []), fewestBends, 'obstacle iteration order does not change routing');
+const referenceRouteCost = (boxes: Array<{ left: number; right: number; top: number; bottom: number }>) => {
+  type State = { x: number; y: number; direction: number; bends: number; length: number };
+  const queue: State[] = [{ x: 0, y: 0, direction: -1, bends: 0, length: 0 }];
+  const seen = new Set<string>();
+  const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  while (queue.length) {
+    queue.sort((a, b) => a.bends - b.bends || a.length - b.length);
+    const current = queue.shift()!;
+    const key = `${current.x},${current.y},${current.direction}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (current.x === 120 && current.y === 80) return { bends: current.bends, length: current.length };
+    for (let index = 0; index < directions.length; index++) {
+      if (current.direction >= 0 && index === (current.direction ^ 1)) continue;
+      const [dx, dy] = directions[index], x = current.x + dx * 20, y = current.y + dy * 20;
+      if (x < -60 || x > 180 || y < -60 || y > 140) continue;
+      const blocked = boxes.some(box => dx
+        ? current.y > box.top && current.y < box.bottom &&
+          Math.max(current.x, x) > box.left && Math.min(current.x, x) < box.right
+        : current.x > box.left && current.x < box.right &&
+          Math.max(current.y, y) > box.top && Math.min(current.y, y) < box.bottom);
+      if (blocked) continue;
+      queue.push({ x, y, direction: index,
+        bends: current.bends + (current.direction >= 0 && Math.floor(current.direction / 2) !== Math.floor(index / 2) ? 1 : 0),
+        length: current.length + 20 });
+    }
+  }
+  return null;
+};
+for (let seed = 0; seed < 24; seed++) {
+  const firstX = 20 + seed % 4 * 20, firstY = seed % 3 * 20 - 20;
+  const secondX = 40 + seed * 3 % 4 * 20, secondY = 20 + seed * 5 % 3 * 20;
+  const boxes = [
+    { left: firstX, right: firstX + 20, top: firstY, bottom: firstY + 40 },
+    { left: secondX, right: secondX + 20, top: secondY, bottom: secondY + 40 },
+  ];
+  const expected = referenceRouteCost(boxes);
+  const actual = routeAroundObstacles({ x: 0, y: 0 }, { x: 120, y: 80 },
+    { x: 0, y: 0 }, { x: 0, y: 0 }, 20, [], boxes, []);
+  assert.deepEqual(actual && automaticRouteCost(actual), expected,
+    `bounded router must match an independent exhaustive grid for obstacle layout ${seed}`);
+}
 let movingAutomatic = [{ x: 230, y: 300 }, { x: 400, y: 300 }, { x: 400, y: 500 }, { x: 570, y: 500 }];
 for (let repeat = 0; repeat < 30; repeat++) for (const end of [{ x: 570, y: 340 }, { x: 650, y: 340 }, { x: 490, y: 340 }, { x: 570, y: 500 }]) {
   movingAutomatic = routeAroundObstacles(movingAutomatic[0], end, { x: 1, y: 0 }, { x: -1, y: 0 }, 20, reanchorAutomaticRoute(movingAutomatic, movingAutomatic[0], end), [], [])!;

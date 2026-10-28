@@ -342,7 +342,9 @@ export function promoteVisibleBranch(
     ];
     return parts.flatMap(part => {
       if (part.points.length < 2) return [];
-      const key = `${part.fromCompId}:${part.fromPinId}|${part.toCompId}:${part.toPinId}|${part.points.map(p => `${p.x},${p.y}`).join(';')}`;
+      const from = `${part.fromCompId}:${part.fromPinId}`, to = `${part.toCompId}:${part.toPinId}`;
+      const canonicalPoints = from <= to ? part.points : [...part.points].reverse();
+      const key = `${from <= to ? from : to}|${from <= to ? to : from}|${canonicalPoints.map(p => `${p.x},${p.y}`).join(';')}`;
       if (seenParts.has(key)) return [];
       seenParts.add(key);
       return [{ ...wire, id: part.id, fromCompId: part.fromCompId, fromPinId: part.fromPinId,
@@ -1118,10 +1120,22 @@ export function routeCircuitWires(elements: CircuitElement[], wires: CircuitWire
     const occupiedByNode = new Map<number | undefined, Point[][]>();
     const fixedRoutes = new Map<string, Point[]>();
     const nodeFor = (wire: CircuitWire) => circuitGraph.pinToNode.get(`${wire.fromCompId}_${wire.fromPinId}`);
+    const routedParent = new Map<string, string>();
+    const routedRoot = (key: string): string => {
+      if (!routedParent.has(key)) routedParent.set(key, key);
+      const parent = routedParent.get(key)!;
+      if (parent !== key) routedParent.set(key, routedRoot(parent));
+      return routedParent.get(key)!;
+    };
+    const routedEndpoints = (wire: CircuitWire) => [
+      `${wire.fromCompId}_${wire.fromPinId}`, `${wire.toCompId}_${wire.toPinId}`,
+    ] as const;
     const remember = (wire: CircuitWire, points: Point[]) => {
       const node = nodeFor(wire), routes = occupiedByNode.get(node);
       if (routes) routes.push(points);
       else occupiedByNode.set(node, [points]);
+      const [from, to] = routedEndpoints(wire);
+      routedParent.set(routedRoot(from), routedRoot(to));
     };
     // A manually edited conductor has priority even when it appears later in SCM.
     const obstacles = elements.map(element => componentObstacle(element)).filter((box): box is NonNullable<typeof box> => box !== null);
@@ -1216,6 +1230,11 @@ export function routeCircuitWires(elements: CircuitElement[], wires: CircuitWire
       const p2 = pinPositions.get(`${wire.toCompId}_${wire.toPinId}`);
       if (!p1 || !p2) continue;
       const node = nodeFor(wire);
+      const [fromEndpoint, toEndpoint] = routedEndpoints(wire);
+      // A closing edge may be a deliberate loop. Let it take the shortest
+      // clear route; shared ink is still painted once by uniqueWireInk.
+      const closesCycle = routedParent.has(fromEndpoint) && routedParent.has(toEndpoint) &&
+        routedRoot(fromEndpoint) === routedRoot(toEndpoint);
       const foreignRoutes = Array.from(occupiedByNode.entries())
         .filter(([occupiedNode]) => occupiedNode !== node)
         .flatMap(([, routes]) => routes);
@@ -1259,7 +1278,7 @@ export function routeCircuitWires(elements: CircuitElement[], wires: CircuitWire
           p1.elType, p2.elType, gridUnits, elements, foreignRoutes,
           unchanged(wire) && correctAnchorLead && routeIsClear(old!, [], foreignRoutes) &&
             routeIsClear(old!, [], protectedShared, anchorContacts) ? old! : previous,
-          anchorContacts.length ? [] : sharedRoutes, protectedShared, anchorContacts);
+          anchorContacts.length || closesCycle ? [] : sharedRoutes, protectedShared, anchorContacts);
         unrouted = !safeRoute;
         pts = safeRoute ?? computeOrthogonalWirePoints(p1, p2, { x: p1.relX, y: p1.relY },
           { x: p2.relX, y: p2.relY }, p1.elType, p2.elType, 0, gridUnits);

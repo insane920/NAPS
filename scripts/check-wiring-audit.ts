@@ -79,6 +79,38 @@ assert(promotedSaved.elements.some(element => element.type === 'JUNCTION' && ele
   'SCM 8 retains the user-controlled branch identity');
 assert(routeCircuitWires(promotedSaved.elements, promotedSaved.wires, 20).every(route => !route.unrouted),
   'SCM 8 reload keeps every promoted branch routable');
+const reversedBranchWires = branchWires.map(wire => wire.id === 'b' ? {
+  ...wire, fromCompId: wire.toCompId, fromPinId: wire.toPinId,
+  toCompId: wire.fromCompId, toPinId: wire.fromPinId,
+} : wire);
+const reversedBranch = promoteVisibleBranch(branchElements, reversedBranchWires,
+  routeCircuitWires(branchElements, reversedBranchWires, 20), { x: 420, y: 300 });
+assert.equal(reversedBranch?.wires.length, 4,
+  'promoting a T branch removes the shared trunk even when its routes have opposite orientations');
+assert.equal(new Set(['A_2', 'B_1', 'C_2', 'J_1'].map(key =>
+  buildCircuitGraph(reversedBranch!.elements, reversedBranch!.wires).pinToNode.get(key))).size, 1,
+  'deduplicating the reversed shared trunk keeps the electrical network intact');
+assert(routeCircuitWires(reversedBranch!.elements, reversedBranch!.wires, 20)
+  .every(route => !route.unrouted && isOrthogonalAutomaticRoute(route.points)),
+  'reversed T branches remain visibly routable after promotion');
+const reversedBranchSaved = parseYamlScm(exportToYamlScm(reversedBranch!.elements, reversedBranch!.wires,
+  SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect'));
+assert.equal(reversedBranchSaved.wires.length, 4,
+  'SCM 8 reload does not restore a duplicate trunk from oppositely directed T branches');
+assert.equal(new Set(['A_2', 'B_1', 'C_2', 'J_1'].map(key =>
+  buildCircuitGraph(reversedBranchSaved.elements, reversedBranchSaved.wires).pinToNode.get(key))).size, 1,
+  'SCM 8 reload preserves the reversed T branch network');
+for (let repetition = 0; repetition < 50; repetition++) {
+  const [x, y] = [[440, 280], [460, 260], [420, 300]][repetition % 3];
+  const moved = reversedBranchSaved.elements.map(element => element.id === reversedBranch!.junction.id
+    ? { ...element, x, y } : element);
+  const routes = routeCircuitWires(moved, reversedBranchSaved.wires, 20);
+  assert(routes.every(route => !route.unrouted && isOrthogonalAutomaticRoute(route.points)),
+    'reversed T branches remain routable through repeated junction moves');
+  assert.equal(new Set(['A_2', 'B_1', 'C_2', 'J_1'].map(key =>
+    buildCircuitGraph(moved, reversedBranchSaved.wires).pinToNode.get(key))).size, 1,
+    'reversed T branch remains one electrical network through repeated junction moves');
+}
 const outOfOrderNodes: CircuitElement[] = [0, 100, 300, 400].map((x, index) => ({
   id: `order_${index}`, name: `N${index}`, type: 'JUNCTION', x, y: 0,
   rotation: 0, value: 0, valueStr: '', unit: '',
@@ -136,6 +168,196 @@ for (const crossingMode of ['explicit', 'connect'] as const) {
     assert.equal(pins.get('order_0_1'), pins.get('order_3_1'), `${crossingMode}: one electrical network is preserved`);
   }
 }
+const wireTopology = (network: CircuitWire[]) => {
+  const parent = new Map<string, string>();
+  const root = (key: string): string => {
+    if (!parent.has(key)) parent.set(key, key);
+    const current = parent.get(key)!;
+    if (current !== key) parent.set(key, root(current));
+    return parent.get(key)!;
+  };
+  for (const wire of network.filter(wire => !wire.disabled)) {
+    const from = `${wire.fromCompId}_${wire.fromPinId}`;
+    const to = `${wire.toCompId}_${wire.toPinId}`;
+    parent.set(root(from), root(to));
+  }
+  const edges = network.filter(wire => !wire.disabled).length;
+  const vertices = parent.size;
+  const components = new Set([...parent.keys()].map(root)).size;
+  return { vertices, components, cycles: edges - vertices + components };
+};
+const rectangleElements: CircuitElement[] = [
+  ['NW', 0, 0], ['NE', 200, 0], ['SE', 200, 160], ['SW', 0, 160],
+].map(([id, x, y]) => ({ id: String(id), name: String(id), type: 'JUNCTION',
+  x: Number(x), y: Number(y), rotation: 0, value: 0, valueStr: '', unit: '' }));
+const rectangleWires: CircuitWire[] = [
+  ['top', 'NW', 'NE'], ['right', 'NE', 'SE'], ['bottom', 'SE', 'SW'], ['left', 'SW', 'NW'],
+].map(([id, fromCompId, toCompId]) => ({ id, fromCompId, fromPinId: '1', toCompId, toPinId: '1' }));
+assert.deepEqual(wireTopology(rectangleWires), { vertices: 4, components: 1, cycles: 1 },
+  'a closed rectangle contains one independent conductor cycle');
+const rectangleRoutes = routeCircuitWires(rectangleElements, rectangleWires, 20);
+assert(rectangleRoutes.every(route => !route.unrouted && isOrthogonalAutomaticRoute(route.points)),
+  'all sides of a closed rectangle remain routed and orthogonal');
+assert.equal(new Set(rectangleElements.map(element =>
+  buildCircuitGraph(rectangleElements, rectangleWires).pinToNode.get(`${element.id}_1`))).size, 1,
+  'the closed rectangle remains one electrical node');
+const reversedTop: CircuitWire = { ...rectangleWires[0], id: 'top-reverse',
+  fromCompId: 'NE', toCompId: 'NW' };
+const duplicateRoutes = routeCircuitWires(rectangleElements, [...rectangleWires, reversedTop], 20);
+const duplicateInk = uniqueWireInk(duplicateRoutes.map(route => ({
+  id: route.wire.id, net: 'rectangle', points: route.points,
+})));
+assert.equal(duplicateInk.get('top-reverse')?.length ?? 0, 0,
+  'a same-net segment traversed in reverse is painted only once');
+assert.deepEqual(wireTopology([...rectangleWires, reversedTop]),
+  { vertices: 4, components: 1, cycles: 2 },
+  'paint deduplication preserves the parallel conductor in the editable topology');
+for (const [x, y] of [[40, 40], [0, 0]]) {
+  const moved = rectangleElements.map(element => element.id === 'NW' ? { ...element, x, y } : element);
+  const routes = routeCircuitWires(moved, rectangleWires, 20);
+  assert(routes.every(route => !route.unrouted && isOrthogonalAutomaticRoute(route.points)),
+    'moving a junction on a closed contour keeps its conductors routable');
+  assert.deepEqual(wireTopology(rectangleWires), { vertices: 4, components: 1, cycles: 1 },
+    'moving a junction cannot change the contour cycle rank');
+  assert.equal(new Set(moved.map(element =>
+    buildCircuitGraph(moved, rectangleWires).pinToNode.get(`${element.id}_1`))).size, 1,
+    'moving a junction cannot split the electrical node');
+}
+const rectangleSaved = parseYamlScm(exportToYamlScm(rectangleElements, rectangleWires,
+  SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect'));
+assert.deepEqual(wireTopology(rectangleSaved.wires), { vertices: 4, components: 1, cycles: 1 },
+  'SCM 8 reload preserves the independent rectangle cycle');
+const twoLoopElements: CircuitElement[] = [
+  ['TL', 0, 0], ['TM', 200, 0], ['TR', 400, 0],
+  ['BL', 0, 160], ['BM', 200, 160], ['BR', 400, 160],
+].map(([id, x, y]) => ({ id: String(id), name: String(id), type: 'JUNCTION',
+  x: Number(x), y: Number(y), rotation: 0, value: 0, valueStr: '', unit: '' }));
+const twoLoopWires: CircuitWire[] = [
+  ['tl-tm', 'TL', 'TM'], ['tm-tr', 'TM', 'TR'], ['tr-br', 'TR', 'BR'],
+  ['br-bm', 'BR', 'BM'], ['bm-bl', 'BM', 'BL'], ['bl-tl', 'BL', 'TL'],
+  ['shared', 'TM', 'BM'],
+].map(([id, fromCompId, toCompId]) => ({ id, fromCompId, fromPinId: '1', toCompId, toPinId: '1' }));
+const twoLoopMetrics = { vertices: 6, components: 1, cycles: 2 };
+assert.deepEqual(wireTopology(twoLoopWires), twoLoopMetrics,
+  'two closed contours sharing one branch retain two independent cycles');
+const assertUniqueVisibleInk = (routes: ReturnType<typeof routeCircuitWires>, description: string) => {
+  const overrides = uniqueWireInk(routes.map(route => ({ id: route.wire.id, net: 'same', points: route.points })));
+  const segments = routes.flatMap(route => overrides.has(route.wire.id) ? overrides.get(route.wire.id)! :
+    route.points.slice(1).map((point, index) => [route.points[index], point] as [Point, Point]));
+  for (let i = 0; i < segments.length; i++) for (let j = 0; j < i; j++) {
+    const [a, b] = segments[i], [c, d] = segments[j];
+    if (Math.abs(a.y - b.y) < 1e-6 && Math.abs(c.y - d.y) < 1e-6 && Math.abs(a.y - c.y) < 1e-6) {
+      const overlap = Math.min(Math.max(a.x, b.x), Math.max(c.x, d.x)) -
+        Math.max(Math.min(a.x, b.x), Math.min(c.x, d.x));
+      assert(overlap <= 1e-6, `${description}: horizontal ink has no duplicated stretch`);
+    }
+    if (Math.abs(a.x - b.x) < 1e-6 && Math.abs(c.x - d.x) < 1e-6 && Math.abs(a.x - c.x) < 1e-6) {
+      const overlap = Math.min(Math.max(a.y, b.y), Math.max(c.y, d.y)) -
+        Math.max(Math.min(a.y, b.y), Math.min(c.y, d.y));
+      assert(overlap <= 1e-6, `${description}: vertical ink has no duplicated stretch`);
+    }
+  }
+  return segments.reduce((length, [from, to]) => length + Math.hypot(to.x - from.x, to.y - from.y), 0);
+};
+const twoLoopRoutes = routeCircuitWires(twoLoopElements, twoLoopWires, 20);
+assert(twoLoopRoutes.every(route => !route.unrouted && isOrthogonalAutomaticRoute(route.points)));
+assert.equal(assertUniqueVisibleInk(twoLoopRoutes, 'two-loop shared-branch network'), 1280,
+  'both rectangular contours and their shared branch remain visible');
+for (const order of [[...twoLoopWires].reverse(), [twoLoopWires[6], ...twoLoopWires.slice(0, 6)]]) {
+  const routes = routeCircuitWires(twoLoopElements, order, 20);
+  assert(routes.every(route => !route.unrouted && isOrthogonalAutomaticRoute(route.points)));
+  assert.equal(assertUniqueVisibleInk(routes, 'shuffled two-loop network'), 1280,
+    'changing SCM wire order cannot erase a valid closed contour');
+  assert.deepEqual(wireTopology(order), twoLoopMetrics);
+}
+const openedLoop = removeWiresPreservingTopology(twoLoopElements, twoLoopWires, new Set(['shared']));
+assert.deepEqual(wireTopology(openedLoop.wires), { vertices: 6, components: 1, cycles: 1 },
+  'deleting the shared branch leaves one outer contour rather than disconnecting the network');
+assert.equal(assertUniqueVisibleInk(routeCircuitWires(openedLoop.elements, openedLoop.wires, 20),
+  'shared branch removed'), 1120,
+  'deleting the shared branch removes exactly that visible conductor');
+assert.deepEqual(wireTopology(twoLoopWires), twoLoopMetrics,
+  'deletion does not mutate the original snapshot used by undo');
+assertUniqueVisibleInk(branchBefore, 'three T branches using one common segment');
+assertUniqueVisibleInk(routeCircuitWires(branchElements, reversedBranchWires, 20),
+  'oppositely directed T branches using one common segment');
+const resistorOnLoop: CircuitElement = { id: 'loop-R', name: 'Rloop', type: 'R',
+  x: 500, y: 80, rotation: 0, value: 1000, valueStr: '1к', unit: 'Ом' };
+const loopResistorWire: CircuitWire = { id: 'loop-load', fromCompId: 'BR', fromPinId: '1',
+  toCompId: resistorOnLoop.id, toPinId: '1' };
+const componentLoopWires = [...twoLoopWires, loopResistorWire];
+assert.deepEqual(wireTopology(componentLoopWires), { vertices: 7, components: 1, cycles: 2 });
+for (const [x, y] of [[540, 120], [500, 80]]) {
+  const moved = moveSelectedElements([...twoLoopElements, resistorOnLoop], componentLoopWires,
+    new Set([resistorOnLoop.id]), x - resistorOnLoop.x, y - resistorOnLoop.y);
+  const routes = routeCircuitWires(moved.elements, moved.wires, 20);
+  assert(routes.every(route => !route.unrouted && isOrthogonalAutomaticRoute(route.points)),
+    'moving a component connected to a cycle preserves routed branches');
+  assertUniqueVisibleInk(routes, 'moved component on two-loop network');
+  assert.deepEqual(wireTopology(moved.wires), { vertices: 7, components: 1, cycles: 2 });
+}
+const movedLoop = moveSelectedElements(twoLoopElements, twoLoopWires, new Set(['TM']), 20, 40);
+const movedSharedJunction = movedLoop.elements;
+const movedLoopRoutes = routeCircuitWires(movedLoop.elements, movedLoop.wires, 20);
+assert(movedLoopRoutes.every(route => !route.unrouted && isOrthogonalAutomaticRoute(route.points)),
+  'moving a junction shared by two cycles retains routable branches');
+assertUniqueVisibleInk(movedLoopRoutes, 'moved shared junction');
+assert.deepEqual(wireTopology(movedLoop.wires), twoLoopMetrics);
+const restoredLoop = moveSelectedElements(movedLoop.elements, movedLoop.wires, new Set(['TM']), -20, -40);
+assert.deepEqual(restoredLoop.elements, twoLoopElements,
+  'returning the shared junction restores its original document coordinates');
+assert.deepEqual(routeCircuitWires(restoredLoop.elements, restoredLoop.wires, 20).map(route => route.points.map(({ x, y }) => ({ x, y }))),
+  twoLoopRoutes.map(route => route.points.map(({ x, y }) => ({ x, y }))),
+  'returning the shared junction restores the original loop geometry');
+const cycleCache = new Map<string, Point[]>();
+for (let repetition = 0; repetition < 50; repetition++) {
+  const [x, y] = [[220, 40], [180, 20], [200, 0]][repetition % 3];
+  const changed = twoLoopElements.map(element => element.id === 'TM' ? { ...element, x, y } : element);
+  const routes = routeCircuitWires(changed, twoLoopWires, 20, cycleCache);
+  assert(routes.every(route => !route.unrouted && isOrthogonalAutomaticRoute(route.points)),
+    '50 moves of a junction in a cyclic network never leave an unrouted branch');
+  assertUniqueVisibleInk(routes, 'repeated cyclic junction movement');
+  assert.deepEqual(wireTopology(twoLoopWires), twoLoopMetrics);
+}
+assert.deepEqual(routeCircuitWires(twoLoopElements, twoLoopWires, 20, cycleCache)
+  .map(route => route.points.map(({ x, y }) => ({ x, y }))),
+  twoLoopRoutes.map(route => route.points.map(({ x, y }) => ({ x, y }))),
+  'returning after 50 cyclic moves restores the same visible geometry');
+const movedLoopSaved = parseYamlScm(exportToYamlScm(movedSharedJunction, movedLoop.wires,
+  SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect'));
+assert.deepEqual(wireTopology(movedLoopSaved.wires), twoLoopMetrics,
+  'SCM 8 reload preserves both shared-branch cycles after moving a junction');
+assert(routeCircuitWires(movedLoopSaved.elements, movedLoopSaved.wires, 20)
+  .every(route => !route.unrouted && isOrthogonalAutomaticRoute(route.points)),
+  'SCM 8 reload preserves the moved cyclic network geometry');
+const gridNodes: CircuitElement[] = [
+  ['g00', 0, 0], ['g10', 100, 0], ['g20', 200, 0],
+  ['g01', 0, 80], ['g11', 100, 80], ['g21', 200, 80],
+  ['g02', 0, 160], ['g12', 100, 160], ['g22', 200, 160],
+].map(([id, x, y]) => ({ id: String(id), name: String(id), type: 'JUNCTION',
+  x: Number(x), y: Number(y), rotation: 0, value: 0, valueStr: '', unit: '' }));
+const gridPairs = [
+  ['g00', 'g10'], ['g10', 'g20'], ['g01', 'g11'], ['g11', 'g21'],
+  ['g02', 'g12'], ['g12', 'g22'], ['g00', 'g01'], ['g01', 'g02'],
+  ['g10', 'g11'], ['g11', 'g12'], ['g20', 'g21'], ['g21', 'g22'],
+] as const;
+const gridWires: CircuitWire[] = gridPairs.map(([fromCompId, toCompId], index) => ({
+  id: `grid-${index}`, fromCompId, fromPinId: '1', toCompId, toPinId: '1',
+}));
+assert.deepEqual(wireTopology(gridWires), { vertices: 9, components: 1, cycles: 4 },
+  'a network containing T branches and an X junction has four independent cycles');
+const gridRoutes = routeCircuitWires(gridNodes, gridWires, 20);
+assert(gridRoutes.every(route => !route.unrouted && isOrthogonalAutomaticRoute(route.points)),
+  'the mixed T/X cyclic network routes every branch');
+assert.equal(assertUniqueVisibleInk(gridRoutes, 'mixed T/X cyclic network'), 1080,
+  'the T/X network retains every edge of its four visible cycles');
+assert.equal(new Set(gridNodes.map(element =>
+  buildCircuitGraph(gridNodes, gridWires).pinToNode.get(`${element.id}_1`))).size, 1,
+  'all T and X junctions in the same cyclic network have one electrical node');
+const gridSaved = parseYamlScm(exportToYamlScm(gridNodes, gridWires,
+  SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect'));
+assert.deepEqual(wireTopology(gridSaved.wires), { vertices: 9, components: 1, cycles: 4 },
+  'SCM 8 reload preserves the T/X cycle rank');
 const visibleTree = [
   { id: 'left', net: 'n1', points: [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }] },
   { id: 'right', net: 'n1', points: [{ x: 40, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }] },

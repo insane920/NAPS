@@ -34,6 +34,7 @@ cases.push('browser-anchored-crossing.cjs');
 cases.push('browser-manual-waypoint.cjs');
 cases.push('browser-connected-transforms.cjs');
 cases.push('browser-branch-integrity.cjs');
+cases.push('browser-w09-cycles.cjs');
 if (process.env.NAPS_BROWSER_CASE) {
   const selected = process.env.NAPS_BROWSER_CASE;
   if (!cases.includes(selected)) throw new Error(`Unknown browser case: ${selected}`);

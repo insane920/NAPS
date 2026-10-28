@@ -97,6 +97,7 @@ const fs = require('node:fs/promises');
       assert.equal(await page.getByRole('dialog', { name: 'Параметры переходного процесса' }).count(), 0);
       await page.getByRole('dialog', { name: 'Частотный анализ', exact: true }).waitFor();
       await load(fixture, 'reload-with-analysis.scm');
+      await page.getByRole('dialog', { name: 'Частотный анализ', exact: true }).waitFor({ state: 'hidden' });
       assert.equal(await page.getByRole('dialog', { name: 'Частотный анализ', exact: true }).count(), 0, 'file load closes the old parameter draft');
       const long = await page.evaluate(async fixture => {
         const { parseYamlScm, exportToYamlScm } = await import('/src/utils/yamlScm.ts');

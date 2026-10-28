@@ -4,7 +4,8 @@ import { SAMPLE_CIRCUITS } from '../src/data/sampleCircuits';
 import { exportToYamlScm, parseYamlScm } from '../src/utils/yamlScm';
 import { solveCircuitTransient, solveCircuitAC, getCircuitPinIds, formatEngValue } from '../src/math/circuitSolver';
 import { topologyTypes } from '../src/math/topologyTransient';
-import { COMPONENT_CATALOG, PLACEMENT_CATALOG, terminalGroupForType } from '../src/components/ComponentPalette';
+import { COMPONENT_CATALOG, PLACEMENT_CATALOG, terminalGroupForType, sourceVariantsForType, placementFamilyForType,
+  VOLTAGE_SOURCE_VARIANTS, CURRENT_SOURCE_VARIANTS } from '../src/components/ComponentPalette';
 import { renderComponentSymbol } from '../src/components/ComponentSymbol';
 import { getComponentLabelLayout, getComponentValueLabel, arrangeNodeLabels } from '../src/utils/componentLabels';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -50,6 +51,21 @@ assert.equal(loadEditorShortcuts({ getItem: () => JSON.stringify({ 'component:R'
 
 assert.equal(new Set(COMPONENT_CATALOG.map(item => item.type)).size, COMPONENT_CATALOG.length, 'catalog IDs must be unique');
 assert.deepEqual(new Set(PLACEMENT_CATALOG.map(item => item.type)), new Set(['V_DC', 'I_DC', 'R', 'C', 'L']));
+assert.equal(new Set([...VOLTAGE_SOURCE_VARIANTS, ...CURRENT_SOURCE_VARIANTS]).size, 10,
+  'ten historical source type IDs map to exactly two disjoint placement families');
+for (const type of VOLTAGE_SOURCE_VARIANTS) {
+  assert.deepEqual(sourceVariantsForType(type), VOLTAGE_SOURCE_VARIANTS);
+  assert.equal(placementFamilyForType(type), 'V_DC');
+}
+for (const type of CURRENT_SOURCE_VARIANTS) {
+  assert.deepEqual(sourceVariantsForType(type), CURRENT_SOURCE_VARIANTS);
+  assert.equal(placementFamilyForType(type), 'I_DC');
+}
+for (const type of ['R', 'C', 'L'] as const) {
+  assert.equal(sourceVariantsForType(type), null);
+  assert.equal(placementFamilyForType(type), type);
+}
+assert.equal(placementFamilyForType('PORT'), null, 'a hidden legacy port has no placement family');
 for (const type of [...COMPONENT_CATALOG.map(item => item.type), 'PORT' as const]) {
   for (const mode of ['explicit', 'connect'] as const) {
     const original = { id: 'archive', type, name: 'ARCHIVE', x: -143, y: 287, rotation: 45, flipH: true, value: 1, valueStr: '1', unit: '' };

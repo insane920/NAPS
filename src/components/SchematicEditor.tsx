@@ -35,7 +35,7 @@ import { nextComponentName } from '../utils/componentNames';
 import { getComponentLabelLayout, getComponentValueLabel, arrangeComponentLabels, arrangeNodeLabels, labelBounds } from '../utils/componentLabels';
 import { readEditorView } from '../utils/editorView';
 import { useModalFocus } from '../hooks/useModalFocus';
-import { ComponentPalette, COMPONENT_CATALOG, PLACEMENT_CATALOG, TERMINAL_GROUPS, terminalGroupForType, TerminalGroup } from './ComponentPalette';
+import { ComponentPalette, COMPONENT_CATALOG, PLACEMENT_CATALOG, TERMINAL_GROUPS, terminalGroupForType, sourceVariantsForType, placementFamilyForType, TerminalGroup } from './ComponentPalette';
 import { SYMBOL_METRICS } from './symbolMetrics';
 import { SCHEMATIC_UNITS_PER_MM, computePrintPlacement, paperSize, printScaleLabel, type PrintLayout, type PrintPlacement } from '../utils/printLayout';
 import { componentObstacle, routeAroundObstacles, routeIsClear, reanchorAutomaticRoute, isOrthogonalAutomaticRoute } from '../utils/orthogonalRouter';
@@ -81,16 +81,8 @@ type EditorAppearance = { element: string; wire: string; designation: string; no
 const DEFAULT_APPEARANCE: EditorAppearance = {
   element: '#1d4ed8', wire: '#15803d', designation: '#15803d', node: '#db2777', grid: '#cbd5e1',
 };
-const SOURCE_WAVEFORMS: Partial<Record<ComponentType, ComponentType[]>> = {
-  V_DC: ['V_DC', 'V_AC', 'V_PULSE', 'VCVS', 'CCVS'], V_AC: ['V_DC', 'V_AC', 'V_PULSE', 'VCVS', 'CCVS'],
-  V_PULSE: ['V_DC', 'V_AC', 'V_PULSE', 'VCVS', 'CCVS'], VCVS: ['V_DC', 'V_AC', 'V_PULSE', 'VCVS', 'CCVS'],
-  CCVS: ['V_DC', 'V_AC', 'V_PULSE', 'VCVS', 'CCVS'],
-  I_DC: ['I_DC', 'I_AC', 'I_PULSE', 'VCCS', 'CCCS'], I_AC: ['I_DC', 'I_AC', 'I_PULSE', 'VCCS', 'CCCS'],
-  I_PULSE: ['I_DC', 'I_AC', 'I_PULSE', 'VCCS', 'CCCS'], VCCS: ['I_DC', 'I_AC', 'I_PULSE', 'VCCS', 'CCCS'],
-  CCCS: ['I_DC', 'I_AC', 'I_PULSE', 'VCCS', 'CCCS'],
-};
 function cycleSourceWaveform(type: ComponentType, deltaY: number): ComponentType | null {
-  const variants = SOURCE_WAVEFORMS[type];
+  const variants = sourceVariantsForType(type);
   if (!variants) return null;
   const current = variants.indexOf(type);
   return variants[(current + (deltaY > 0 ? 1 : variants.length - 1)) % variants.length];
@@ -1468,7 +1460,7 @@ export function SchematicEditor({
       if (!options.length) return;
       event.preventDefault();
       const current = quickTypes[paletteDragGroup] ?? options[0].type;
-      const index = Math.max(0, options.findIndex(item => item.type === (SOURCE_WAVEFORMS[current]?.[0] ?? current)));
+      const index = Math.max(0, options.findIndex(item => item.type === (placementFamilyForType(current) ?? current)));
       const next = options[(index + (event.deltaY > 0 ? 1 : options.length - 1)) % options.length].type;
       setQuickTypes(types => ({ ...types, [paletteDragGroup]: next }));
       setPendingComponentType(next);
@@ -1564,10 +1556,10 @@ export function SchematicEditor({
           setPlacementPassiveModels(models => ({ ...models, [family]: models[family] === 'linear' ? 'nonlinear' : 'linear' }));
           return;
         }
-        const group = SOURCE_WAVEFORMS[pendingComponentType] ? 'two' : terminalGroupForType(pendingComponentType);
+        const group = sourceVariantsForType(pendingComponentType) ? 'two' : terminalGroupForType(pendingComponentType);
         const variants = PLACEMENT_CATALOG.filter(item => group && terminalGroupForType(item.type) === group);
         if (variants.length > 1) {
-          const current = variants.findIndex(item => item.type === (SOURCE_WAVEFORMS[pendingComponentType]?.[0] ?? pendingComponentType));
+          const current = variants.findIndex(item => item.type === (placementFamilyForType(pendingComponentType) ?? pendingComponentType));
           const next = variants[(current + (event.deltaY > 0 ? 1 : variants.length - 1)) % variants.length].type;
           setPendingComponentType(next);
           setQuickTypes(types => group ? { ...types, [group]: next } : types);
@@ -3289,17 +3281,17 @@ export function SchematicEditor({
             >
               <option value="linear">Линейный</option><option value="nonlinear">Нелинейный</option>
             </select>}
-            {pendingComponentType && SOURCE_WAVEFORMS[pendingComponentType] && <select
+            {pendingComponentType && sourceVariantsForType(pendingComponentType) && <select
               aria-label="Вариант размещаемого источника"
               value={pendingComponentType}
               onChange={event => setPendingComponentType(event.target.value as ComponentType)}
               className="rounded border border-slate-300 bg-white px-1 py-1 text-xs text-slate-700"
               title="Колесо над схемой переключает форму сигнала"
-            ><option value={SOURCE_WAVEFORMS[pendingComponentType]![0]}>Независимый · постоянный</option>
-              <option value={SOURCE_WAVEFORMS[pendingComponentType]![1]}>Независимый · синус</option>
-              <option value={SOURCE_WAVEFORMS[pendingComponentType]![2]}>Независимый · прямоугольный</option>
-              <option value={SOURCE_WAVEFORMS[pendingComponentType]![3]}>Зависимый · от напряжения</option>
-              <option value={SOURCE_WAVEFORMS[pendingComponentType]![4]}>Зависимый · от тока</option></select>}
+            ><option value={sourceVariantsForType(pendingComponentType)![0]}>Независимый · постоянный</option>
+              <option value={sourceVariantsForType(pendingComponentType)![1]}>Независимый · синус</option>
+              <option value={sourceVariantsForType(pendingComponentType)![2]}>Независимый · прямоугольный</option>
+              <option value={sourceVariantsForType(pendingComponentType)![3]}>Зависимый · от напряжения</option>
+              <option value={sourceVariantsForType(pendingComponentType)![4]}>Зависимый · от тока</option></select>}
 
             {/* Кнопка открытия полной библиотеки компонентов */}
             <button

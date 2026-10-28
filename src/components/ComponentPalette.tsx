@@ -251,6 +251,20 @@ export const COMPONENT_CATALOG: ComponentDefinition[] = [
 export const PLACEMENT_TYPES: readonly ComponentType[] = ['V_DC', 'I_DC', 'R', 'C', 'L'];
 export const PLACEMENT_CATALOG = COMPONENT_CATALOG.filter(item => PLACEMENT_TYPES.includes(item.type));
 
+/** One UI family per source output; historical SCM type IDs remain unchanged. */
+export const VOLTAGE_SOURCE_VARIANTS = ['V_DC', 'V_AC', 'V_PULSE', 'VCVS', 'CCVS'] as const;
+export const CURRENT_SOURCE_VARIANTS = ['I_DC', 'I_AC', 'I_PULSE', 'VCCS', 'CCCS'] as const;
+export function sourceVariantsForType(type: ComponentType): readonly ComponentType[] | null {
+  if ((VOLTAGE_SOURCE_VARIANTS as readonly ComponentType[]).includes(type)) return VOLTAGE_SOURCE_VARIANTS;
+  if ((CURRENT_SOURCE_VARIANTS as readonly ComponentType[]).includes(type)) return CURRENT_SOURCE_VARIANTS;
+  return null;
+}
+export function placementFamilyForType(type: ComponentType): ComponentType | null {
+  if (sourceVariantsForType(type) === VOLTAGE_SOURCE_VARIANTS) return 'V_DC';
+  if (sourceVariantsForType(type) === CURRENT_SOURCE_VARIANTS) return 'I_DC';
+  return PLACEMENT_TYPES.includes(type) ? type : null;
+}
+
 export const SUBTYPE_TABS = [
   { id: 'all', label: 'Все', icon: Layers },
   { id: 'two', label: 'Двухполюсники', icon: Radio },

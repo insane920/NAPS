@@ -107,8 +107,8 @@ const COMPONENT_SHORTCUT_CODES: Partial<Record<ComponentType, string>> = {
 };
 const SHORTCUT_ACTIONS: EditorShortcut[] = [
   'rotate', 'add',
-  ...COMPONENT_CATALOG.map(item => `component:${item.type}`),
-  'component:PORT',
+  ...COMPONENT_CATALOG.filter(item => placementFamilyForType(item.type)).map(item => `component:${item.type}`),
+  'component:GND', 'component:TEXT',
 ];
 export const DEFAULT_SHORTCUTS: Record<EditorShortcut, string> = Object.fromEntries([
   ['rotate', 'KeyR'], ['add', 'KeyA'],
@@ -1378,7 +1378,14 @@ export function SchematicEditor({
   const [recordingShortcut, setRecordingShortcut] = useState<EditorShortcut | null>(null);
   const [shortcutMessage, setShortcutMessage] = useState('Нажмите сочетание и затем щёлкните по схеме, чтобы разместить элемент.');
   const [editorShortcuts, setEditorShortcuts] = useState<Record<EditorShortcut, string>>(loadEditorShortcuts);
-  useEffect(() => { localStorage.setItem('naps_editor_shortcuts', JSON.stringify(editorShortcuts)); }, [editorShortcuts]);
+  useEffect(() => {
+    // Hidden historical components are inactive, but retain their saved bindings
+    // so enabling their library category in a later version does not discard preferences.
+    let previous: Record<string, unknown> = {};
+    try { previous = JSON.parse(localStorage.getItem('naps_editor_shortcuts') || '{}') as Record<string, unknown>; }
+    catch { /* Replace damaged preference data with valid active bindings. */ }
+    localStorage.setItem('naps_editor_shortcuts', JSON.stringify({ ...previous, ...editorShortcuts }));
+  }, [editorShortcuts]);
   const [appearance, setAppearance] = useState<EditorAppearance>(loadAppearance);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);

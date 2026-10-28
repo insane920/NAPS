@@ -11,6 +11,9 @@ const fs = require('node:fs/promises');
       page.on('pageerror', error => errors.push(error.message));
       page.on('dialog', dialog => dialog.accept());
       await page.goto(process.env.NAPS_TEST_URL || 'http://127.0.0.1:3000/', { waitUntil: 'networkidle' });
+      const viewButton = await page.getByRole('button', { name: 'Вид ▾', exact: true }).boundingBox();
+      assert.ok(viewButton && viewButton.x >= 0 && viewButton.x + viewButton.width <= width + 1,
+        'view controls remain inside the viewport at narrow and wide window sizes');
       const fixture = await page.evaluate(async () => {
         const { exportToYamlScm } = await import('/src/utils/yamlScm.ts');
         const { SAMPLE_CIRCUITS } = await import('/src/data/sampleCircuits.ts');

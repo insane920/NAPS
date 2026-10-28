@@ -46,7 +46,13 @@ for (const combo of ['Ctrl+KeyS', 'Ctrl+KeyW', 'Meta+KeyQ', 'Alt+F4', 'Ctrl+Shif
 assert.equal(isReservedEditorShortcut('Ctrl+Alt+Digit1'), false);
 const brokenShortcuts = { ...DEFAULT_SHORTCUTS, 'component:NPN': 'Shift+Digit0', 'component:PNP': 'Shift+Digit0', 'component:NMOS': 'Shift+Digit0', 'component:PMOS': 'Shift+Digit0' };
 const fixedShortcuts = loadEditorShortcuts({ getItem: () => JSON.stringify(brokenShortcuts) });
-assert.deepEqual(fixedShortcuts, DEFAULT_SHORTCUTS, 'repair old duplicate transistor/GND bindings without changing valid defaults');
+assert.deepEqual(fixedShortcuts, DEFAULT_SHORTCUTS, 'old shortcuts for hidden models stay inactive without changing visible defaults');
+for (const type of ['NPN', 'PNP', 'NMOS', 'PMOS', 'PORT', 'CHIP']) {
+  assert.equal(DEFAULT_SHORTCUTS[`component:${type}`], undefined, `${type}: hidden model has no placement shortcut`);
+}
+for (const type of ['V_DC', 'V_AC', 'V_PULSE', 'VCVS', 'CCVS', 'I_DC', 'I_AC', 'I_PULSE', 'VCCS', 'CCCS', 'R', 'C', 'L']) {
+  assert.ok(DEFAULT_SHORTCUTS[`component:${type}`], `${type}: visible two-terminal variant keeps a shortcut`);
+}
 assert.equal(loadEditorShortcuts({ getItem: () => JSON.stringify({ 'component:R': 'Ctrl+KeyW' }) })['component:R'], DEFAULT_SHORTCUTS['component:R']);
 
 assert.equal(new Set(COMPONENT_CATALOG.map(item => item.type)).size, COMPONENT_CATALOG.length, 'catalog IDs must be unique');

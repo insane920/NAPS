@@ -6,7 +6,25 @@ const fs = require('node:fs/promises');
   const browser = await chromium.launch({ ...(process.env.NAPS_CHROME_PATH ? { executablePath: process.env.NAPS_CHROME_PATH } : { channel: 'chrome' }), headless: true });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, acceptDownloads: true });
+    await page.addInitScript(() => localStorage.setItem('naps_editor_shortcuts', JSON.stringify({
+      'component:NPN': 'Ctrl+Alt+KeyN', 'component:PORT': 'Ctrl+Alt+KeyP',
+    })));
     await page.goto(process.env.NAPS_TEST_URL || 'http://127.0.0.1:3000/', { waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: 'Общие настройки', exact: true }).click();
+    await page.getByRole('button', { name: 'Настроить горячие клавиши', exact: true }).click();
+    const shortcuts = page.getByRole('dialog', { name: 'Горячие клавиши', exact: true });
+    assert.equal(await shortcuts.getByRole('button', { name: /Назначить: Транзистор NPN/ }).count(), 0,
+      'hidden archive types are absent from the shortcut UI');
+    assert.equal(await shortcuts.getByRole('button', { name: /Назначить: Порт/ }).count(), 0,
+      'legacy PORT remains hidden from placement shortcuts');
+    assert.equal(await shortcuts.getByRole('button', { name: /Назначить: Источник AC/ }).count(), 1,
+      'active source variants retain their own configurable shortcuts');
+    await shortcuts.getByRole('button', { name: 'Закрыть', exact: true }).click();
+    await page.keyboard.press('Control+Alt+n');
+    assert.equal(await page.locator('[data-placement-preview]').count(), 0,
+      'a saved shortcut for a hidden transistor cannot place it');
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('naps_editor_shortcuts'))['component:NPN']),
+      'Ctrl+Alt+KeyN', 'old hidden shortcut preferences survive for future restoration');
     await page.getByRole('button', { name: 'Библиотека...' }).click();
     assert.equal(await page.locator('.component-card').count(), 5, 'the library still shows five source/passive families');
     await page.getByTitle('Закрыть библиотеку').click();

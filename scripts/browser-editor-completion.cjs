@@ -55,6 +55,29 @@ const { version } = require('../package.json');
     await page.keyboard.press('Control+Shift+z');
     assert.equal(await copy.locator('[data-label-kind="value"]').textContent(), '2к', 'Ctrl+Shift+Z repeats the change');
 
+    await copy.locator('[data-label-kind="name"]').click();
+    await page.keyboard.press('Enter');
+    await dialog.locator('#element-value').fill('2кк');
+    await dialog.getByRole('button', { name: 'OK' }).click();
+    assert.match(await dialog.innerText(), /Лишние символы недопустимы/,
+      'an invalid suffix cannot leave a plausible label with a different solver value');
+    await dialog.locator('#element-value').fill('2,5 мкОм');
+    await dialog.getByRole('button', { name: 'OK' }).click();
+    assert.equal(await copy.locator('[data-label-kind="value"]').textContent(), '2.5мк',
+      'Russian micro prefix is shown without a space or unit in the nominal');
+    const [nominalDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
+    const nominalScm = await fs.readFile(await nominalDownload.path(), 'utf8');
+    const savedNominal = await page.evaluate(async text => {
+      const { parseYamlScm } = await import('/src/utils/yamlScm.ts');
+      return parseYamlScm(text).elements.find(element => element.valueStr === '2.5мк');
+    }, nominalScm);
+    assert.ok(Math.abs(savedNominal.value - 2.5e-6) < 1e-18,
+      'SCM stores the same physical value represented in the label');
+    await copy.locator('[data-label-kind="name"]').click();
+    await page.keyboard.press('Enter');
+    await dialog.locator('#element-value').fill('2к');
+    await dialog.getByRole('button', { name: 'OK' }).click();
+
     const copyCenter = await copy.evaluate(group => {
       const point = group.ownerSVGElement.createSVGPoint(); point.x = 0; point.y = 0;
       const screen = point.matrixTransform(group.getScreenCTM());

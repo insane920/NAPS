@@ -87,6 +87,8 @@ const fs = require('node:fs/promises');
         const point = await group.evaluate(g => { const p = g.ownerSVGElement.createSVGPoint(); const v = p.matrixTransform(g.getScreenCTM()); return { x: v.x, y: v.y }; });
         await page.mouse.click(point.x, point.y);
         assert.ok(await group.locator('[stroke="#dc2626"]').count());
+        assert.equal(await group.locator(':scope > rect[stroke="#dc2626"]').count(), 0,
+          `${type}: selection changes symbol ink without drawing a frame around the component`);
         await page.getByRole('button', { name: 'Экспорт ▾', exact: true }).click();
         await page.getByRole('menuitem', { name: 'SVG', exact: true }).click();
         await page.getByLabel('Ч/б', { exact: true }).uncheck();

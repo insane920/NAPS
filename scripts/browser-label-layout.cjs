@@ -37,6 +37,54 @@ const assert = require('node:assert/strict');
   if (wireCollisions.length) console.log(await page.locator('[data-element-labels] text').evaluateAll(nodes => nodes.map(node => ({ text: node.textContent, x: node.getAttribute('x'), y: node.getAttribute('y') }))));
   assert.deepEqual(wireCollisions, [], 'buck wires do not cross labels');
   await page.screenshot({ path: '.work/buck-label-layout.png' });
-  console.log('PASS: synchronous buck labels do not overlap.');
+  await page.getByRole('button', { name: 'Вид ▾' }).click();
+  await page.getByRole('menuitemcheckbox', { name: 'Обозначения' }).click();
+  await page.getByRole('button', { name: 'Вид ▾' }).click();
+  const denseValues = await page.locator('[data-label-kind="value"]').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect()));
+  for (let i = 0; i < denseValues.length; i++) for (let j = i + 1; j < denseValues.length; j++) {
+   const a = denseValues[i], b = denseValues[j];
+   assert.ok(!(a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top),
+    'hidden designations leave dense-schematic values on distinct readable lanes');
+  }
+  await page.getByRole('button', { name: 'Вид ▾' }).click();
+  await page.getByRole('menuitemcheckbox', { name: 'Обозначения' }).click();
+  await page.getByRole('button', { name: 'Вид ▾' }).click();
+  for (const angle of [45, 90]) {
+   const rotationFixture = await page.evaluate(async angle => {
+    const { exportToYamlScm } = await import('/src/utils/yamlScm.ts');
+    const { SAMPLE_CIRCUITS } = await import('/src/data/sampleCircuits.ts');
+    const types = ['V_DC', 'I_DC', 'R', 'C', 'L'];
+    return exportToYamlScm(types.map((type, index) => ({
+     id: `test_${index}`, name: `T${index + 1}`, type, value: 1, valueStr: '1', unit: '',
+     x: 220 + index * 180, y: 330, rotation: angle,
+    })), [], SAMPLE_CIRCUITS[0].transient);
+   }, angle);
+   await page.locator('input[type=file]').setInputFiles({ name: `labels-${angle}.scm`, mimeType: 'text/plain', buffer: Buffer.from(rotationFixture) });
+   await page.waitForFunction(() => document.querySelectorAll('[data-component-id]').length === 5);
+   const positions = async () => page.locator('[data-component-id]').evaluateAll(groups => groups.map(group => {
+    const name = group.querySelector('[data-label-kind="name"]');
+    const value = group.querySelector('[data-label-kind="value"]');
+    return { name: name && { x: Number(name.getAttribute('x')), y: Number(name.getAttribute('y')) },
+     value: value && { x: Number(value.getAttribute('x')), y: Number(value.getAttribute('y')) } };
+   }));
+   const shown = await positions();
+   assert.equal(shown.length, 5);
+   for (const labels of shown) {
+    assert.ok(labels.name && labels.value);
+    assert.ok(labels.name.x > 0 && labels.value.x < 0, `${angle}°: designation and nominal occupy opposite sides`);
+   }
+   await page.getByRole('button', { name: 'Вид ▾' }).click();
+   await page.getByRole('menuitemcheckbox', { name: 'Обозначения' }).click();
+   await page.getByRole('button', { name: 'Вид ▾' }).click();
+   const hidden = await positions();
+   for (const labels of hidden) {
+    assert.equal(labels.name, null);
+    assert.ok(labels.value && labels.value.x > 0, `${angle}°: nominal takes the designation side when the name is hidden`);
+   }
+   await page.getByRole('button', { name: 'Вид ▾' }).click();
+   await page.getByRole('menuitemcheckbox', { name: 'Обозначения' }).click();
+   await page.getByRole('button', { name: 'Вид ▾' }).click();
+  }
+  console.log('PASS: buck collision layout and 45°/90° designation sides for five families, with hidden-name nominal placement.');
  } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

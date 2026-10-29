@@ -40,6 +40,7 @@ cases.push('browser-group-topology.cjs');
 cases.push('browser-nonlinear-analysis.cjs');
 cases.push('browser-multipage-print.cjs');
 cases.push('browser-print-formats.cjs');
+cases.push('browser-grid-rotated-pins.cjs');
 if (process.env.NAPS_BROWSER_CASE) {
   const selected = process.env.NAPS_BROWSER_CASE;
   if (!cases.includes(selected)) throw new Error(`Unknown browser case: ${selected}`);

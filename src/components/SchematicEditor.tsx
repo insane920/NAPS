@@ -37,7 +37,7 @@ import { readEditorView } from '../utils/editorView';
 import { useModalFocus } from '../hooks/useModalFocus';
 import { ComponentPalette, COMPONENT_CATALOG, PLACEMENT_CATALOG, TERMINAL_GROUPS, terminalGroupForType, sourceVariantsForType, placementFamilyForType, TerminalGroup } from './ComponentPalette';
 import { SYMBOL_METRICS } from './symbolMetrics';
-import { SCHEMATIC_UNITS_PER_MM, computePrintPlacement, paperSize, printScaleLabel, saveDefaultPrintLayout, type PrintLayout, type PrintPlacement } from '../utils/printLayout';
+import { SCHEMATIC_UNITS_PER_MM, computePrintPlacement, computePrintTiles, paperSize, printScaleLabel, saveDefaultPrintLayout, type PrintLayout, type PrintPlacement } from '../utils/printLayout';
 import { componentObstacle, routeAroundObstacles, routeIsClear, reanchorAutomaticRoute, isOrthogonalAutomaticRoute } from '../utils/orthogonalRouter';
 import type { CircuitDescription } from '../utils/yamlScm';
 import { createTitleBlock } from '../utils/eskdTitleBlock';
@@ -1421,8 +1421,9 @@ export function SchematicEditor({
   const [centerPrint, setCenterPrint] = useState(true);
   const [printMonochrome, setPrintMonochrome] = useState(true);
   const [printFrame, setPrintFrame] = useState(true);
+  const [printAcrossPages, setPrintAcrossPages] = useState(false);
   const [pngDpi, setPngDpi] = useState<96 | 150 | 300>(300);
-  const [exportPlan, setExportPlan] = useState<{ xml: string; html: string; placement: PrintPlacement } | null>(null);
+  const [exportPlan, setExportPlan] = useState<{ xml: string; html: string; placement: PrintPlacement; pages: string[] } | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const printPreviewRef = useRef<HTMLIFrameElement>(null);
   const [initialView] = useState(readEditorView);
@@ -3134,6 +3135,7 @@ export function SchematicEditor({
   useEffect(() => {
     if (!exportTarget) return;
     let cancelled = false;
+    setExportPlan(null);
     void (async () => {
     try {
       const { default: gostFontDataUrl } = await import('../assets/fonts/OpenGOSTtypeA-Regular.ttf?inline');
@@ -3168,10 +3170,12 @@ export function SchematicEditor({
       const bounds = elements.length || wires.length
         ? { x: box.x - padding, y: box.y - padding, width: Math.max(box.width, 1) + 2 * padding, height: Math.max(box.height, 1) + 2 * padding }
         : { x: 0, y: 0, width: 1, height: 1 };
-      const placement = computePrintPlacement(bounds, printLayout, printFrame ? Math.max(20, printMarginMm) : printMarginMm,
+      const effectiveMarginMm = printFrame ? Math.max(20, printMarginMm) : printMarginMm;
+      const reservedBottomMm = printFrame && !(printLayout.format === 'A4' && printLayout.orientation === 'landscape') ? 65 : 0;
+      const reservedRightMm = printFrame && printLayout.format === 'A4' && printLayout.orientation === 'landscape' ? 65 : 0;
+      const placement = computePrintPlacement(bounds, printLayout, effectiveMarginMm,
         printMode, requestedPrintScale, centerPrint,
-        printFrame && !(printLayout.format === 'A4' && printLayout.orientation === 'landscape') ? 65 : 0,
-        printFrame && printLayout.format === 'A4' && printLayout.orientation === 'landscape' ? 65 : 0);
+        reservedBottomMm, reservedRightMm);
       clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
       const embeddedFont = document.createElementNS('http://www.w3.org/2000/svg', 'style');
       embeddedFont.textContent = `@font-face{font-family:'NAPS Drafting';src:url('${gostFontDataUrl}') format('truetype');font-weight:400;font-style:normal}`;
@@ -3204,9 +3208,37 @@ export function SchematicEditor({
           }
         }
       });
-      const xml = new XMLSerializer().serializeToString(clone);
-      const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><style>@page{size:${placement.widthMm}mm ${placement.heightMm}mm;margin:0}body{margin:0;background:#e2e8f0;display:flex;justify-content:center}svg{display:block;max-width:100%;height:auto;background:white;box-shadow:0 4px 24px #0002}@media print{body{display:block;background:white}svg{width:${placement.widthMm}mm!important;height:${placement.heightMm}mm!important;max-width:none;box-shadow:none}}</style></head><body>${xml}</body></html>`;
-      if (!cancelled) { setExportPlan({ xml, html, placement }); setExportError(null); }
+      const multiPage = printAcrossPages && printMode === 'actual' && (exportTarget === 'pdf' || exportTarget === 'print') && !placement.fits;
+      const tiles = multiPage ? computePrintTiles(bounds, printLayout, effectiveMarginMm, placement.scale, reservedBottomMm, reservedRightMm) : [];
+      if (tiles.length && clone.outerHTML.length * tiles.length > 24_000_000) {
+        throw new Error('Многостраничный документ слишком велик для безопасного экспорта. Выберите больший формат или меньший масштаб.');
+      }
+      const pages = tiles.length ? tiles.map(tile => {
+        const page = clone.cloneNode(true) as SVGSVGElement;
+        const pageWorld = page.querySelector('#schematic-world') as SVGGElement;
+        pageWorld.setAttribute('transform', `translate(${tile.translateX} ${tile.translateY}) scale(${placement.scale})`);
+        const clip = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
+        clip.setAttribute('id', 'naps-print-content-clip');
+        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('x', String(effectiveMarginMm * SCHEMATIC_UNITS_PER_MM));
+        rect.setAttribute('y', String(effectiveMarginMm * SCHEMATIC_UNITS_PER_MM));
+        rect.setAttribute('width', String(placement.width - (effectiveMarginMm + Math.max(effectiveMarginMm, reservedRightMm)) * SCHEMATIC_UNITS_PER_MM));
+        rect.setAttribute('height', String(placement.height - (effectiveMarginMm + Math.max(effectiveMarginMm, reservedBottomMm)) * SCHEMATIC_UNITS_PER_MM));
+        clip.appendChild(rect);
+        const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+        defs.appendChild(clip);
+        page.insertBefore(defs, pageWorld);
+        const clipped = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        clipped.setAttribute('clip-path', 'url(#naps-print-content-clip)');
+        pageWorld.parentNode?.insertBefore(clipped, pageWorld);
+        clipped.appendChild(pageWorld);
+        page.setAttribute('data-page-column', String(tile.column));
+        page.setAttribute('data-page-row', String(tile.row));
+        return new XMLSerializer().serializeToString(page);
+      }) : [new XMLSerializer().serializeToString(clone)];
+      const xml = pages[0];
+      const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><style>@page{size:${placement.widthMm}mm ${placement.heightMm}mm;margin:0}body{margin:0;background:#e2e8f0;display:flex;flex-direction:column;align-items:center;gap:12px}svg{display:block;max-width:100%;height:auto;background:white;box-shadow:0 4px 24px #0002}@media print{body{display:block;background:white}svg{width:${placement.widthMm}mm!important;height:${placement.heightMm}mm!important;max-width:none;box-shadow:none;break-after:page}svg:last-child{break-after:auto}}</style></head><body>${pages.join('')}</body></html>`;
+      if (!cancelled) { setExportPlan({ xml, html, placement, pages }); setExportError(null); }
     } catch (error) {
       if (!cancelled) {
         setExportPlan(null);
@@ -3215,10 +3247,10 @@ export function SchematicEditor({
     }
     })();
     return () => { cancelled = true; };
-  }, [exportTarget, printLayout, printMarginMm, printMode, requestedPrintScale, centerPrint, printMonochrome, printFrame, description, elements, wires, zoom, pan, showElementNames, showElementValues, showNodeNumbers, showPolarity, appearance]);
+  }, [exportTarget, printLayout, printMarginMm, printMode, requestedPrintScale, centerPrint, printMonochrome, printFrame, printAcrossPages, description, elements, wires, zoom, pan, showElementNames, showElementValues, showNodeNumbers, showPolarity, appearance]);
 
   const downloadSchematic = (format: 'png' | 'svg' | 'pdf' | 'print') => {
-    if (!exportPlan || !exportPlan.placement.fits) return;
+    if (!exportPlan || (!exportPlan.placement.fits && exportPlan.pages.length < 2)) return;
     if (format === 'print') { printPreviewRef.current?.contentWindow?.print(); return; }
     const { xml, placement } = exportPlan;
     const { width, height, widthMm, heightMm } = placement;
@@ -3231,7 +3263,7 @@ export function SchematicEditor({
       return;
     }
     if (format === 'pdf') {
-      void import('../utils/vectorPdf').then(({ vectorPagePdf }) => vectorPagePdf(xml, widthMm, heightMm))
+      void import('../utils/vectorPdf').then(({ vectorPagesPdf }) => vectorPagesPdf(exportPlan.pages, widthMm, heightMm))
         .then(blob => {
           const outputUrl = URL.createObjectURL(blob);
           const link = document.createElement('a');
@@ -4262,11 +4294,12 @@ export function SchematicEditor({
           <label>Поля, мм <input aria-label="Поля страницы в миллиметрах" type="number" min="0" max="100" step="1" value={printMarginMm} onChange={event => setPrintMarginMm(Number(event.target.value))} className="w-14 rounded border border-slate-300 p-1" /></label>
           <label className="flex items-center gap-1"><input type="checkbox" checked={centerPrint} onChange={event => setCenterPrint(event.target.checked)} />По центру</label>
           <label className="flex items-center gap-1"><input type="checkbox" checked={printFrame} onChange={event => setPrintFrame(event.target.checked)} />Рамка и основная надпись</label>
+          {(exportTarget === 'pdf' || exportTarget === 'print') && printMode === 'actual' && <label className="flex items-center gap-1"><input type="checkbox" aria-label="Разместить на нескольких листах" checked={printAcrossPages} onChange={event => setPrintAcrossPages(event.target.checked)} />Несколько листов</label>}
           <label className="flex items-center gap-1"><input type="checkbox" checked={printMonochrome} onChange={event => setPrintMonochrome(event.target.checked)} />Ч/б</label>
           {exportTarget === 'png' && <label>PNG <select aria-label="Разрешение PNG" value={pngDpi} onChange={event => setPngDpi(Number(event.target.value) as 96 | 150 | 300)} className="rounded border border-slate-300 p-1"><option value={96}>96 DPI</option><option value={150}>150 DPI</option><option value={300}>300 DPI</option></select></label>}
-          <div className="ml-auto flex gap-2"><button type="button" disabled={!exportPlan?.placement.fits || pngTooLarge} onClick={() => downloadSchematic(exportTarget)} className="rounded bg-blue-600 px-3 py-1.5 text-white disabled:opacity-40">{exportTarget === 'print' ? 'Печать…' : `Скачать ${exportTarget.toUpperCase()}`}</button><button type="button" onClick={() => setExportTarget(null)} className="rounded border border-slate-300 px-3 py-1.5">Закрыть</button></div>
+          <div className="ml-auto flex gap-2"><button type="button" disabled={!exportPlan || (!exportPlan.placement.fits && exportPlan.pages.length < 2) || pngTooLarge} onClick={() => downloadSchematic(exportTarget)} className="rounded bg-blue-600 px-3 py-1.5 text-white disabled:opacity-40">{exportTarget === 'print' ? 'Печать…' : `Скачать ${exportTarget.toUpperCase()}`}</button><button type="button" onClick={() => setExportTarget(null)} className="rounded border border-slate-300 px-3 py-1.5">Закрыть</button></div>
         </div>
-        <div className="mx-auto w-full max-w-6xl bg-white px-4 py-1 text-xs text-slate-600">{exportPlan && <>Схема: {exportPlan.placement.contentWidthMm.toFixed(1)} × {exportPlan.placement.contentHeightMm.toFixed(1)} мм · фактический масштаб {printScaleLabel(exportPlan.placement.scale)} · лист {exportPlan.placement.widthMm} × {exportPlan.placement.heightMm} мм</>}{exportTarget === 'png' && exportPlan && <span className="ml-2">PNG: {Math.ceil(exportPlan.placement.widthMm * pngDpi / 25.4)} × {Math.ceil(exportPlan.placement.heightMm * pngDpi / 25.4)} px</span>}{pngTooLarge && <span className="ml-2 text-red-700">Разрешение превышает предел 36 млн пикселей. Выберите меньший DPI или SVG/PDF.</span>}{exportError && <span className="text-red-700">{exportError}</span>}{exportPlan && !exportPlan.placement.fits && <span className="ml-2 text-red-700">Схема не помещается: выберите А3, уменьшите масштаб или включите «Вписать в страницу». Автоматическое обрезание отключено.</span>}{printFrame && printLayout.format === 'A4' && printLayout.orientation === 'landscape' && <span className="ml-2 text-amber-800">Для графического документа A4 ГОСТ Р 2.104-2023 требует книжную ориентацию. Альбомный экспорт доступен как пользовательский вариант.</span>}</div>
+        <div className="mx-auto w-full max-w-6xl bg-white px-4 py-1 text-xs text-slate-600">{exportPlan && <>Схема: {exportPlan.placement.contentWidthMm.toFixed(1)} × {exportPlan.placement.contentHeightMm.toFixed(1)} мм · фактический масштаб {printScaleLabel(exportPlan.placement.scale)} · лист {exportPlan.placement.widthMm} × {exportPlan.placement.heightMm} мм{exportPlan.pages.length > 1 && <> · {exportPlan.pages.length} листов</>}</>}{exportTarget === 'png' && exportPlan && <span className="ml-2">PNG: {Math.ceil(exportPlan.placement.widthMm * pngDpi / 25.4)} × {Math.ceil(exportPlan.placement.heightMm * pngDpi / 25.4)} px</span>}{pngTooLarge && <span className="ml-2 text-red-700">Разрешение превышает предел 36 млн пикселей. Выберите меньший DPI или SVG/PDF.</span>}{exportError && <span className="text-red-700">{exportError}</span>}{exportPlan && !exportPlan.placement.fits && exportPlan.pages.length < 2 && <span className="ml-2 text-red-700">Схема не помещается: выберите больший формат, уменьшите масштаб, включите «Вписать в страницу» или разложите на несколько листов. Автоматическое обрезание отключено.</span>}{printFrame && printLayout.format === 'A4' && printLayout.orientation === 'landscape' && <span className="ml-2 text-amber-800">Для графического документа A4 ГОСТ Р 2.104-2023 требует книжную ориентацию. Альбомный экспорт доступен как пользовательский вариант.</span>}</div>
         <iframe ref={printPreviewRef} title="Предварительный просмотр листа" srcDoc={exportPlan?.html ?? ''} className="mx-auto min-h-0 w-full max-w-6xl flex-1 rounded-b bg-white" />
       </div>}
     </div>

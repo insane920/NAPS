@@ -8,6 +8,7 @@ export interface PrintPlacement {
   scale: number; translateX: number; translateY: number; fits: boolean;
   contentWidthMm: number; contentHeightMm: number;
 }
+export interface PrintTile { column: number; row: number; translateX: number; translateY: number }
 
 // The schematic has always used a 20-unit main grid. Give that existing
 // coordinate system a physical meaning without moving legacy SCM objects.
@@ -45,6 +46,27 @@ export function computePrintPlacement(bounds: SchemeBounds, layout: PrintLayout,
   const translateY = (center ? top + (usableHeight - bounds.height * scale) / 2 : top) - bounds.y * scale;
   return { ...page, scale, translateX, translateY, fits,
     contentWidthMm: bounds.width / SCHEMATIC_UNITS_PER_MM, contentHeightMm: bounds.height / SCHEMATIC_UNITS_PER_MM };
+}
+
+/** Partition an oversized drawing at a fixed physical scale. Every tile retains
+ * the same document transform; only the page origin changes. */
+export function computePrintTiles(bounds: SchemeBounds, layout: PrintLayout, marginMm: number,
+  scale: number, reservedBottomMm = 0, reservedRightMm = 0): PrintTile[] {
+  const placement = computePrintPlacement(bounds, layout, marginMm, 'actual', scale, false, reservedBottomMm, reservedRightMm);
+  const left = marginMm * SCHEMATIC_UNITS_PER_MM;
+  const top = marginMm * SCHEMATIC_UNITS_PER_MM;
+  const usableWidth = placement.width - left - Math.max(marginMm, reservedRightMm) * SCHEMATIC_UNITS_PER_MM;
+  const usableHeight = placement.height - top - Math.max(marginMm, reservedBottomMm) * SCHEMATIC_UNITS_PER_MM;
+  const columns = Math.max(1, Math.ceil(bounds.width * scale / usableWidth - 1e-10));
+  const rows = Math.max(1, Math.ceil(bounds.height * scale / usableHeight - 1e-10));
+  if (columns * rows > 64) throw new Error(`Для печати требуется ${columns * rows} листов. Предел — 64; выберите больший формат или меньший масштаб.`);
+  const tiles: PrintTile[] = [];
+  for (let row = 0; row < rows; row++) for (let column = 0; column < columns; column++) {
+    tiles.push({ column, row,
+      translateX: left - bounds.x * scale - column * usableWidth,
+      translateY: top - bounds.y * scale - row * usableHeight });
+  }
+  return tiles;
 }
 
 export function printScaleLabel(scale: number): string {

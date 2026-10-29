@@ -12,7 +12,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { buildStoredWireRoute, canRouteReconnectedEnd, computeOrthogonalWirePoints, getComponentPins, isAllowedWireSegment, moveWireSegment, projectPointToWire, reanchorManualWires, snapManualWirePoint, splitWireRoute, wireGapDashArray } from '../src/components/SchematicEditor';
 import { buildCircuitGraph } from '../src/math/circuitSolver';
 import { nextComponentName } from '../src/utils/componentNames';
-import { paperSize, parsePrintLayout, computePrintPlacement, SCHEMATIC_UNITS_PER_MM,
+import { paperSize, parsePrintLayout, computePrintPlacement, computePrintTiles, SCHEMATIC_UNITS_PER_MM,
   readDefaultPrintLayout, saveDefaultPrintLayout, DEFAULT_LAYOUT_STORAGE_KEY, DEFAULT_PRINT_LAYOUT } from '../src/utils/printLayout';
 import { titleBlockBounds, TITLE_BLOCK_HEIGHT_MM, TITLE_BLOCK_WIDTH_MM } from '../src/utils/eskdTitleBlock';
 import { rasterPagePdf } from '../src/utils/rasterPdf';
@@ -230,6 +230,14 @@ const fitted = computePrintPlacement(wideScheme, a4Layout, 5, 'fit');
 assert.ok(fitted.fits);
 assert.ok(wideScheme.width * fitted.scale <= fitted.width - 10 * SCHEMATIC_UNITS_PER_MM);
 assert.ok(wideScheme.height * fitted.scale <= fitted.height - 10 * SCHEMATIC_UNITS_PER_MM);
+const tiled = computePrintTiles(wideScheme, a4Layout, 5, 1);
+assert.equal(tiled.length, 6, 'oversized A4 drawing spans three columns and two rows at 1:1');
+assert.deepEqual(tiled.map(tile => [tile.column, tile.row]), [[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1]]);
+assert.equal(tiled[1].translateX - tiled[0].translateX, -(297 - 10) * SCHEMATIC_UNITS_PER_MM,
+  'adjacent pages use a continuous world transform without changing physical scale');
+assert.equal(tiled[3].translateY - tiled[0].translateY, -(210 - 10) * SCHEMATIC_UNITS_PER_MM);
+assert.throws(() => computePrintTiles({ x: 0, y: 0, width: 100_000, height: 100_000 }, a4Layout, 5, 1), /Предел — 64/,
+  'pathological page counts are rejected before materializing SVG pages');
 const rotatedBlockFit = computePrintPlacement({ x: 0, y: 0, width: 240 * SCHEMATIC_UNITS_PER_MM,
   height: 100 * SCHEMATIC_UNITS_PER_MM }, a4Layout, 20, 'fit', 1, true, 0, 65);
 assert(rotatedBlockFit.fits && rotatedBlockFit.scale < 1, 'A4 landscape reserves the title-block column');

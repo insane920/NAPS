@@ -2143,13 +2143,11 @@ export function SchematicEditor({
         (w.toCompId !== replacing.id || validPins.has(w.toPinId))
       ));
       setReplacingId(null);
-      setSelectedId(replacing.id);
-      setSelectedIds([replacing.id]);
     } else {
       onElementsChange([...elements, newElem]);
     }
-    setSelectedId(newElem.id);
-    setSelectedIds([newElem.id]);
+    setSelectedId(replacing?.id ?? newElem.id);
+    setSelectedIds([replacing?.id ?? newElem.id]);
     if (replacing) setPendingComponentType(null);
   };
 

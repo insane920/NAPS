@@ -130,6 +130,47 @@ const fs = require('node:fs/promises');
       assert.doesNotMatch(largePdf, /\/Subtype\s*\/Image/, `${format} PDF remains vector-based`);
       await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
     }
+    await page.getByRole('combobox', { name: 'Формат документа' }).selectOption('A0');
+    await page.getByRole('button', { name: 'Экспорт ▾' }).click();
+    await page.getByRole('menuitem', { name: 'PNG' }).click();
+    await page.waitForFunction(() => document.querySelector('iframe[title="Предварительный просмотр листа"]')?.getAttribute('srcdoc')?.includes('width="841mm"'));
+    assert.equal(await page.getByRole('button', { name: 'Скачать PNG' }).isDisabled(), true,
+      'A0 at 300 DPI is rejected before creating an oversized canvas');
+    assert.match(await page.getByText(/Разрешение превышает предел 36 млн пикселей/).innerText(), /Выберите меньший DPI/);
+    await page.getByLabel('Разрешение PNG').selectOption('96');
+    const [a0PngDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать PNG' }).click()]);
+    const a0Png = await fs.readFile(await a0PngDownload.path());
+    assert.equal(a0Png.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+    assert.equal(a0Png.readUInt32BE(16), Math.ceil(841 * 96 / 25.4));
+    assert.equal(a0Png.readUInt32BE(20), Math.ceil(1189 * 96 / 25.4));
+    await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
+    for (const [format, width, height] of [['A1', 594, 841], ['A2', 420, 594], ['A3', 297, 420], ['A4', 210, 297]]) {
+      await page.getByRole('combobox', { name: 'Формат документа' }).selectOption(format);
+      await page.getByRole('button', { name: 'Экспорт ▾' }).click();
+      await page.getByRole('menuitem', { name: 'PNG' }).click();
+      await page.waitForFunction(expected => document.querySelector('iframe[title="Предварительный просмотр листа"]')?.getAttribute('srcdoc')?.includes(`width="${expected}mm"`), width);
+      assert.equal(await page.getByLabel('Разрешение PNG').inputValue(), '96');
+      const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать PNG' }).click()]);
+      const image = await fs.readFile(await download.path());
+      assert.equal(image.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+      assert.equal(image.readUInt32BE(16), Math.ceil(width * 96 / 25.4), `${format} PNG physical width`);
+      assert.equal(image.readUInt32BE(20), Math.ceil(height * 96 / 25.4), `${format} PNG physical height`);
+      await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
+      await page.waitForTimeout(150);
+    }
+    for (const [format, width, height] of [['A0', 841, 1189], ['A1', 594, 841], ['A2', 420, 594], ['A3', 297, 420], ['A4', 210, 297]]) {
+      await page.getByRole('combobox', { name: 'Формат документа' }).selectOption(format);
+      await page.getByRole('button', { name: 'Экспорт ▾' }).click();
+      await page.getByRole('menuitem', { name: 'SVG' }).click();
+      await page.waitForFunction(expected => document.querySelector('iframe[title="Предварительный просмотр листа"]')?.getAttribute('srcdoc')?.includes(`width="${expected}mm"`), width);
+      const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать SVG' }).click()]);
+      const document = await fs.readFile(await download.path(), 'utf8');
+      assert.match(document, new RegExp(`width="${width}mm"`), `${format} SVG physical width`);
+      assert.match(document, new RegExp(`height="${height}mm"`), `${format} SVG physical height`);
+      assert.match(document, /data-component-symbol="R"/, `${format} SVG retains the vector symbol`);
+      await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
+      await page.waitForTimeout(150);
+    }
     await page.getByRole('combobox', { name: 'Формат документа' }).selectOption('A4');
     await page.getByRole('button', { name: 'Экспорт ▾' }).click();
     await page.getByRole('menuitem', { name: 'PDF' }).click();

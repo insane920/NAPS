@@ -1421,6 +1421,7 @@ export function SchematicEditor({
   const [centerPrint, setCenterPrint] = useState(true);
   const [printMonochrome, setPrintMonochrome] = useState(true);
   const [printFrame, setPrintFrame] = useState(true);
+  const [pngDpi, setPngDpi] = useState<96 | 150 | 300>(300);
   const [exportPlan, setExportPlan] = useState<{ xml: string; html: string; placement: PrintPlacement } | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const printPreviewRef = useRef<HTMLIFrameElement>(null);
@@ -3240,12 +3241,19 @@ export function SchematicEditor({
         .catch(error => window.alert(error instanceof Error ? error.message : 'Ошибка векторного экспорта PDF.'));
       return;
     }
+    const pixelWidth = Math.ceil(widthMm * pngDpi / 25.4);
+    const pixelHeight = Math.ceil(heightMm * pngDpi / 25.4);
+    if (pixelWidth * pixelHeight > 36_000_000) {
+      setExportError('Для этого размера PNG уменьшите разрешение: предел составляет 36 млн пикселей. SVG и PDF доступны без этого ограничения.');
+      return;
+    }
+    setExportError(null);
     const url = URL.createObjectURL(new Blob([xml], { type: 'image/svg+xml;charset=utf-8' }));
     const image = new Image();
     image.onload = () => {
-      const scale = 300 / 25.4 / SCHEMATIC_UNITS_PER_MM;
+      const scale = pngDpi / 25.4 / SCHEMATIC_UNITS_PER_MM;
       const canvas = document.createElement('canvas');
-      canvas.width = Math.ceil(width * scale); canvas.height = Math.ceil(height * scale);
+      canvas.width = pixelWidth; canvas.height = pixelHeight;
       const context = canvas.getContext('2d');
       if (!context) { URL.revokeObjectURL(url); return; }
       context.scale(scale, scale); context.fillStyle = '#ffffff'; context.fillRect(0, 0, width, height); context.drawImage(image, 0, 0, width, height);
@@ -3254,7 +3262,7 @@ export function SchematicEditor({
           if (!blob) throw new Error('Не удалось сформировать лист.');
           const link = document.createElement('a');
           const outputUrl = URL.createObjectURL(blob);
-          link.href = outputUrl; link.download = `${fileName}-300dpi.png`; link.click();
+          link.href = outputUrl; link.download = `${fileName}-${pngDpi}dpi.png`; link.click();
           setTimeout(() => URL.revokeObjectURL(outputUrl), 1000);
         } catch (error) { window.alert(error instanceof Error ? error.message : 'Ошибка экспорта листа.'); }
         finally { URL.revokeObjectURL(url); }
@@ -3270,6 +3278,11 @@ export function SchematicEditor({
   // The cached symbol layer must still dispatch with the latest hovered contact.
   const elementMouseDownRef = useRef(handleElementMouseDown);
   elementMouseDownRef.current = handleElementMouseDown;
+  const pngPixelCount = exportPlan
+    ? Math.ceil(exportPlan.placement.widthMm * pngDpi / 25.4) * Math.ceil(exportPlan.placement.heightMm * pngDpi / 25.4)
+    : 0;
+  const pngTooLarge = exportTarget === 'png' && pngPixelCount > 36_000_000;
+
   return (
     <div className="schematic-editor flex flex-col h-full bg-slate-100 select-none border border-slate-300 rounded overflow-hidden text-slate-800">
       {/* Верхняя панель инструментов редактора. */}
@@ -4250,9 +4263,10 @@ export function SchematicEditor({
           <label className="flex items-center gap-1"><input type="checkbox" checked={centerPrint} onChange={event => setCenterPrint(event.target.checked)} />По центру</label>
           <label className="flex items-center gap-1"><input type="checkbox" checked={printFrame} onChange={event => setPrintFrame(event.target.checked)} />Рамка и основная надпись</label>
           <label className="flex items-center gap-1"><input type="checkbox" checked={printMonochrome} onChange={event => setPrintMonochrome(event.target.checked)} />Ч/б</label>
-          <div className="ml-auto flex gap-2"><button type="button" disabled={!exportPlan?.placement.fits} onClick={() => downloadSchematic(exportTarget)} className="rounded bg-blue-600 px-3 py-1.5 text-white disabled:opacity-40">{exportTarget === 'print' ? 'Печать…' : `Скачать ${exportTarget.toUpperCase()}`}</button><button type="button" onClick={() => setExportTarget(null)} className="rounded border border-slate-300 px-3 py-1.5">Закрыть</button></div>
+          {exportTarget === 'png' && <label>PNG <select aria-label="Разрешение PNG" value={pngDpi} onChange={event => setPngDpi(Number(event.target.value) as 96 | 150 | 300)} className="rounded border border-slate-300 p-1"><option value={96}>96 DPI</option><option value={150}>150 DPI</option><option value={300}>300 DPI</option></select></label>}
+          <div className="ml-auto flex gap-2"><button type="button" disabled={!exportPlan?.placement.fits || pngTooLarge} onClick={() => downloadSchematic(exportTarget)} className="rounded bg-blue-600 px-3 py-1.5 text-white disabled:opacity-40">{exportTarget === 'print' ? 'Печать…' : `Скачать ${exportTarget.toUpperCase()}`}</button><button type="button" onClick={() => setExportTarget(null)} className="rounded border border-slate-300 px-3 py-1.5">Закрыть</button></div>
         </div>
-        <div className="mx-auto w-full max-w-6xl bg-white px-4 py-1 text-xs text-slate-600">{exportPlan && <>Схема: {exportPlan.placement.contentWidthMm.toFixed(1)} × {exportPlan.placement.contentHeightMm.toFixed(1)} мм · фактический масштаб {printScaleLabel(exportPlan.placement.scale)} · лист {exportPlan.placement.widthMm} × {exportPlan.placement.heightMm} мм</>}{exportError && <span className="text-red-700">{exportError}</span>}{exportPlan && !exportPlan.placement.fits && <span className="ml-2 text-red-700">Схема не помещается: выберите А3, уменьшите масштаб или включите «Вписать в страницу». Автоматическое обрезание отключено.</span>}{printFrame && printLayout.format === 'A4' && printLayout.orientation === 'landscape' && <span className="ml-2 text-amber-800">Для графического документа A4 ГОСТ Р 2.104-2023 требует книжную ориентацию. Альбомный экспорт доступен как пользовательский вариант.</span>}</div>
+        <div className="mx-auto w-full max-w-6xl bg-white px-4 py-1 text-xs text-slate-600">{exportPlan && <>Схема: {exportPlan.placement.contentWidthMm.toFixed(1)} × {exportPlan.placement.contentHeightMm.toFixed(1)} мм · фактический масштаб {printScaleLabel(exportPlan.placement.scale)} · лист {exportPlan.placement.widthMm} × {exportPlan.placement.heightMm} мм</>}{exportTarget === 'png' && exportPlan && <span className="ml-2">PNG: {Math.ceil(exportPlan.placement.widthMm * pngDpi / 25.4)} × {Math.ceil(exportPlan.placement.heightMm * pngDpi / 25.4)} px</span>}{pngTooLarge && <span className="ml-2 text-red-700">Разрешение превышает предел 36 млн пикселей. Выберите меньший DPI или SVG/PDF.</span>}{exportError && <span className="text-red-700">{exportError}</span>}{exportPlan && !exportPlan.placement.fits && <span className="ml-2 text-red-700">Схема не помещается: выберите А3, уменьшите масштаб или включите «Вписать в страницу». Автоматическое обрезание отключено.</span>}{printFrame && printLayout.format === 'A4' && printLayout.orientation === 'landscape' && <span className="ml-2 text-amber-800">Для графического документа A4 ГОСТ Р 2.104-2023 требует книжную ориентацию. Альбомный экспорт доступен как пользовательский вариант.</span>}</div>
         <iframe ref={printPreviewRef} title="Предварительный просмотр листа" srcDoc={exportPlan?.html ?? ''} className="mx-auto min-h-0 w-full max-w-6xl flex-1 rounded-b bg-white" />
       </div>}
     </div>

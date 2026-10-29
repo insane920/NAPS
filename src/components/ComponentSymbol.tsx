@@ -4,9 +4,9 @@ import { SYMBOL_METRICS } from './symbolMetrics';
 import { chipPins } from '../utils/chipPins';
 import { textBlockBounds } from '../utils/textBlock';
 
-export function renderComponentSymbol(el: CircuitElement, selected = false, showEmbeddedLabel = true, elementColor = '#1d4ed8') {
+export function renderComponentSymbol(el: CircuitElement, selected = false, showEmbeddedLabel = true, elementColor = '#1d4ed8', lineWidth: number = SYMBOL_METRICS.normalStroke) {
   const stroke = selected ? '#dc2626' : elementColor;
-  const strokeW = SYMBOL_METRICS.normalStroke;
+  const strokeW = lineWidth;
 
   switch (el.type) {
     case 'JUNCTION':

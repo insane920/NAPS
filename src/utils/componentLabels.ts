@@ -49,10 +49,11 @@ export function getComponentLabelLayout({
 }
 
 interface LabelBox { x: number; y: number; width: number; height: number }
-export function labelBounds(point: ComponentLabelPoint, text: string, x = 0, y = 0): LabelBox {
-  const width = Math.max(8, text.length * 7.5);
+export function labelBounds(point: ComponentLabelPoint, text: string, x = 0, y = 0, fontSize = 11): LabelBox {
+  const scale = fontSize / 11;
+  const width = Math.max(8, text.length * 7.5 * scale);
   return { x: x + point.x - (point.anchor === 'middle' ? width / 2 : point.anchor === 'end' ? width : 0) - 3,
-    y: y + point.y - 12, width: width + 6, height: 17 };
+    y: y + point.y - 12 * scale, width: width + 6, height: 17 * scale };
 }
 const overlaps = (a: LabelBox, b: LabelBox) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
 function crosses(box: LabelBox, a: { x: number; y: number }, b: { x: number; y: number }): boolean {
@@ -95,7 +96,7 @@ export function arrangeNodeLabels(
 /** Move only labels, leaving model coordinates and electrical connections untouched. */
 export function arrangeComponentLabels(
   elements: CircuitElement[], routes: Array<{ points: Array<{ x: number; y: number }> }>,
-  bodies: LabelBox[], showName: boolean, showValue: boolean,
+  bodies: LabelBox[], showName: boolean, showValue: boolean, fontSize = 11,
 ): Map<string, ComponentLabelLayout> {
   const occupied: LabelBox[] = [];
   const layouts = new Map<string, ComponentLabelLayout>();
@@ -109,7 +110,7 @@ export function arrangeComponentLabels(
     if (element.type === 'TEXT' || element.type === 'JUNCTION') { layouts.set(element.id, layout); continue; }
     const labels = [showName ? ['name', element.name] : null, showValue ? ['value', getComponentValueLabel(element)] : null,
       element.isolation === 'short' ? ['isolation', 'КЗ'] : null].filter(Boolean) as Array<[keyof ComponentLabelLayout, string]>;
-    const radius = 150 + Math.max(0, ...labels.map(([, text]) => text.length * 7.5));
+    const radius = 150 + Math.max(0, ...labels.map(([, text]) => text.length * 7.5 * fontSize / 11));
     const nearbyBodies = bodyIndex.query(element.x, element.y, radius);
     const nearbySegments = segmentIndex.query(element.x, element.y, radius);
     const nearbyLabels = occupied.filter(box => overlaps(box, { x: element.x - radius, y: element.y - radius, width: radius * 2, height: radius * 2 }));
@@ -120,7 +121,7 @@ export function arrangeComponentLabels(
       // Keep preferred orientation first; search nearby clear lanes if a wire or neighbour intervenes.
       search: for (const dx of [0, -16, 16, -32, 32, -48, 48, -64, 64]) for (const dy of [0, -16, 16, -32, 32, -48, 48, -64, 64]) {
         const point = { ...original, x: original.x + dx, y: original.y + dy };
-        const box = labelBounds(point, text, element.x, element.y);
+        const box = labelBounds(point, text, element.x, element.y, fontSize);
         const collisions = nearbyBodies.filter(body => overlaps(box, body)).length + nearbyLabels.filter(other => overlaps(box, other)).length;
         let lines = 0;
         for (const { a, b } of nearbySegments) if (crosses(box, a, b)) lines++;
@@ -129,7 +130,7 @@ export function arrangeComponentLabels(
         if (score === 0) break search;
       }
       layout[kind] = best;
-      occupied.push(labelBounds(best, text, element.x, element.y));
+      occupied.push(labelBounds(best, text, element.x, element.y, fontSize));
       nearbyLabels.push(occupied[occupied.length - 1]);
     }
     layouts.set(element.id, layout);

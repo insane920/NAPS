@@ -77,9 +77,9 @@ interface SchematicEditorProps {
 }
 
 const GRID_SIZE = 20;
-type EditorAppearance = { element: string; wire: string; designation: string; node: string; grid: string };
+type EditorAppearance = { element: string; wire: string; designation: string; node: string; grid: string; lineWidthMm: number; labelSizeMm: number };
 const DEFAULT_APPEARANCE: EditorAppearance = {
-  element: '#1d4ed8', wire: '#15803d', designation: '#15803d', node: '#db2777', grid: '#cbd5e1',
+  element: '#1d4ed8', wire: '#15803d', designation: '#15803d', node: '#db2777', grid: '#cbd5e1', lineWidthMm: 0.5, labelSizeMm: 2.75,
 };
 function cycleSourceWaveform(type: ComponentType, deltaY: number): ComponentType | null {
   const variants = sourceVariantsForType(type);
@@ -90,8 +90,14 @@ function cycleSourceWaveform(type: ComponentType, deltaY: number): ComponentType
 function loadAppearance(): EditorAppearance {
   try {
     const saved = JSON.parse(localStorage.getItem('naps_editor_appearance') || '{}');
-    return Object.fromEntries(Object.entries(DEFAULT_APPEARANCE).map(([key, fallback]) =>
-      [key, typeof saved[key] === 'string' && /^#[0-9a-f]{6}$/i.test(saved[key]) ? saved[key] : fallback])) as EditorAppearance;
+    return {
+      ...Object.fromEntries(Object.entries(DEFAULT_APPEARANCE).filter(([key]) => key !== 'lineWidthMm' && key !== 'labelSizeMm').map(([key, fallback]) =>
+        [key, typeof saved[key] === 'string' && /^#[0-9a-f]{6}$/i.test(saved[key]) ? saved[key] : fallback])),
+      lineWidthMm: typeof saved.lineWidthMm === 'number' && Number.isFinite(saved.lineWidthMm) && saved.lineWidthMm >= 0.2 && saved.lineWidthMm <= 1
+        ? saved.lineWidthMm : DEFAULT_APPEARANCE.lineWidthMm,
+      labelSizeMm: typeof saved.labelSizeMm === 'number' && Number.isFinite(saved.labelSizeMm) && saved.labelSizeMm >= 2 && saved.labelSizeMm <= 4
+        ? saved.labelSizeMm : DEFAULT_APPEARANCE.labelSizeMm,
+    } as EditorAppearance;
   } catch { return { ...DEFAULT_APPEARANCE }; }
 }
 type EditorShortcut = string;
@@ -1402,7 +1408,11 @@ export function SchematicEditor({
   const [copiedGroup, setCopiedGroup] = useState<{ elements: CircuitElement[]; wires: CircuitWire[] } | null>(null);
   const [replacingId, setReplacingId] = useState<string | null>(null);
   const [selectedWireId, setSelectedWireId] = useState<string | null>(null);
-  const [wireMode, setWireMode] = useState<'orthogonal' | 'direct'>('orthogonal');
+  const [wireMode, setWireMode] = useState<'orthogonal' | 'direct'>(() => {
+    try { return localStorage.getItem('naps_editor_wire_mode') === 'direct' ? 'direct' : 'orthogonal'; }
+    catch { return 'orthogonal'; }
+  });
+  useEffect(() => { try { localStorage.setItem('naps_editor_wire_mode', wireMode); } catch { /* Optional preference. */ } }, [wireMode]);
   const [exportTarget, setExportTarget] = useState<'png' | 'svg' | 'pdf' | 'print' | null>(null);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [printMode, setPrintMode] = useState<'actual' | 'fit'>('actual');
@@ -1419,12 +1429,13 @@ export function SchematicEditor({
   const [showElementNames, setShowElementNames] = useState(initialView.names);
   const [showElementValues, setShowElementValues] = useState(initialView.values);
   const [showGrid, setShowGrid] = useState(initialView.grid);
+  const [snapEnabled, setSnapEnabled] = useState(initialView.snap);
   const [showPolarity, setShowPolarity] = useState(initialView.polarity);
   const teacherPresentation = printLayout.presentation !== 'eskd';
   useEffect(() => {
-    try { localStorage.setItem('naps_editor_view', JSON.stringify({ nodes: showNodeNumbers, names: showElementNames, values: showElementValues, grid: showGrid, polarity: showPolarity })); }
+    try { localStorage.setItem('naps_editor_view', JSON.stringify({ nodes: showNodeNumbers, names: showElementNames, values: showElementValues, grid: showGrid, polarity: showPolarity, snap: snapEnabled })); }
     catch { /* View preferences are optional; the project remains editable without browser storage. */ }
-  }, [showNodeNumbers, showElementNames, showElementValues, showGrid, showPolarity]);
+  }, [showNodeNumbers, showElementNames, showElementValues, showGrid, showPolarity, snapEnabled]);
   const gridUnits = printLayout.gridMm * SCHEMATIC_UNITS_PER_MM;
   const [zoom, setZoom] = useState<number>(1);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 50, y: 30 });
@@ -1453,8 +1464,15 @@ export function SchematicEditor({
 
   // Режим размещения нового элемента
   const [pendingComponentType, setPendingComponentType] = useState<ComponentType | null>(null);
-  const [placementRotation, setPlacementRotation] = useState(0);
-  useEffect(() => { if (!pendingComponentType) setPlacementRotation(0); }, [pendingComponentType]);
+  const [defaultPlacementRotation, setDefaultPlacementRotation] = useState(() => {
+    try {
+      const angle = Number(localStorage.getItem('naps_editor_default_rotation'));
+      return [0, 45, 90, 180, 270].includes(angle) ? angle : 0;
+    } catch { return 0; }
+  });
+  const [placementRotation, setPlacementRotation] = useState(defaultPlacementRotation);
+  useEffect(() => { if (!pendingComponentType) setPlacementRotation(defaultPlacementRotation); }, [pendingComponentType, defaultPlacementRotation]);
+  useEffect(() => { try { localStorage.setItem('naps_editor_default_rotation', String(defaultPlacementRotation)); } catch { /* Optional preference. */ } }, [defaultPlacementRotation]);
   const [placementPassiveModels, setPlacementPassiveModels] = useState<Record<'R' | 'C' | 'L', 'linear' | 'nonlinear'>>({ R: 'linear', C: 'linear', L: 'linear' });
   const [quickTypes, setQuickTypes] = useState<Partial<Record<TerminalGroup, ComponentType>>>({ two: 'R', three: 'THYRISTOR', four: 'TR3' });
   const [paletteDragGroup, setPaletteDragGroup] = useState<TerminalGroup | null>(null);
@@ -1689,7 +1707,7 @@ export function SchematicEditor({
   const circuitGraph = useMemo(() => buildCircuitGraph(elements, wires), [elements, wires]);
 
   // Снэп к сетке
-  const snapToGrid = (val: number) => Math.round(val / gridUnits) * gridUnits;
+  const snapToGrid = (val: number) => snapEnabled ? Math.round(val / gridUnits) * gridUnits : val;
   const changeElementGeometry = useCallback((before: CircuitElement, after: CircuitElement) => {
     beginGeometryAction();
     const rotating = before.rotation !== after.rotation || before.flipH !== after.flipH || before.flipV !== after.flipV;
@@ -1757,7 +1775,7 @@ export function SchematicEditor({
         rawY,
       };
     },
-    [pan, zoom, gridUnits]
+    [pan, zoom, gridUnits, snapEnabled]
   );
   const junctionAtPointer = (clientX: number, clientY: number) => {
     const pointer = screenToWorld(clientX, clientY);
@@ -2262,7 +2280,7 @@ export function SchematicEditor({
     const radius = (element.rotation || 0) % 90 === 0 ? 24 : 32;
     return [{ x: element.x - radius, y: element.y - radius, width: radius * 2, height: radius * 2 },
       ...pins.map(pin => ({ x: element.x + pin.x - 9, y: element.y + pin.y - 12, width: 26, height: 22 }))];
-  }), showElementNames, showElementValues), [elements, wireGeometries, showElementNames, showElementValues]);
+  }), showElementNames, showElementValues, appearance.labelSizeMm * SCHEMATIC_UNITS_PER_MM), [elements, wireGeometries, showElementNames, showElementValues, appearance.labelSizeMm]);
   const nodeAnnotations = useMemo(() => {
     if (!showNodeNumbers) return [];
     const anchors = new Map<number, Point[]>();
@@ -2276,8 +2294,8 @@ export function SchematicEditor({
       }
       const layout = sceneLabels.get(element.id);
       if (layout && element.type !== 'JUNCTION' && element.type !== 'TEXT') {
-        if (showElementNames) obstacles.push(labelBounds(layout.name, element.name, element.x, element.y));
-        if (showElementValues) obstacles.push(labelBounds(layout.value, getComponentValueLabel(element), element.x, element.y));
+        if (showElementNames) obstacles.push(labelBounds(layout.name, element.name, element.x, element.y, appearance.labelSizeMm * SCHEMATIC_UNITS_PER_MM));
+        if (showElementValues) obstacles.push(labelBounds(layout.value, getComponentValueLabel(element), element.x, element.y, appearance.labelSizeMm * SCHEMATIC_UNITS_PER_MM));
       }
       for (const pin of getComponentPins(element)) {
         const node = circuitGraph.pinToNode.get(`${element.id}_${pin.id}`);
@@ -2287,7 +2305,7 @@ export function SchematicEditor({
       }
     }
     return arrangeNodeLabels([...anchors].sort(([a], [b]) => a - b).map(([node, points]) => ({ node, anchors: points })), obstacles, wireGeometries);
-  }, [elements, circuitGraph, wireGeometries, sceneLabels, showElementNames, showElementValues, showNodeNumbers]);
+  }, [elements, circuitGraph, wireGeometries, sceneLabels, showElementNames, showElementValues, showNodeNumbers, appearance.labelSizeMm]);
   const wireSpatialIndex = useMemo(() => new SpatialIndex(wireGeometries.flatMap(geometry =>
     geometry.wire.disabled ? [] : geometry.points.slice(1).map((b, index) => {
       const a = geometry.points[index];
@@ -2326,7 +2344,7 @@ export function SchematicEditor({
           showElementValues ? [layout.value, getComponentValueLabel(element)] as const : null];
         for (const label of labels) {
           if (!label || !label[1]) continue;
-          const bounds = labelBounds(label[0], label[1], element.x, element.y);
+          const bounds = labelBounds(label[0], label[1], element.x, element.y, appearance.labelSizeMm * SCHEMATIC_UNITS_PER_MM);
           shapes.push({ kind: 'label', id: element.id,
             left: bounds.x, top: bounds.y, right: bounds.x + bounds.width, bottom: bounds.y + bounds.height });
         }
@@ -2345,7 +2363,7 @@ export function SchematicEditor({
       if (last) shapes.push({ kind: 'wire-end', id: `${geometry.wire.id}:to`, x: last.x, y: last.y, radiusPx: 7 });
     }
     return shapes;
-  }, [elements, pinPositions, wireGeometries, selectedWireId, sceneLabels, showElementNames, showElementValues]);
+  }, [elements, pinPositions, wireGeometries, selectedWireId, sceneLabels, showElementNames, showElementValues, appearance.labelSizeMm]);
   const editorHitAt = (clientX: number, clientY: number, context: 'select' | 'connect') => {
     const pointer = screenToWorld(clientX, clientY);
     return hitTestEditorScene(editorHitShapes, { x: pointer.rawX, y: pointer.rawY }, zoom, context);
@@ -3374,6 +3392,7 @@ export function SchematicEditor({
                 { label: 'Номера узлов', value: showNodeNumbers, toggle: () => setShowNodeNumbers(value => !value) },
                 { label: 'Полярность выводов', value: showPolarity, toggle: () => setShowPolarity(value => !value) },
                 { label: 'Сетка', value: showGrid, toggle: () => setShowGrid(value => !value) },
+                { label: 'Привязка к сетке', value: snapEnabled, toggle: () => setSnapEnabled(value => !value) },
               ].map(item => <button key={item.label} type="button" role="menuitemcheckbox" aria-label={item.label} aria-checked={item.value} onClick={item.toggle} className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-blue-50">{item.value ? '✓ ' : '　'}{item.label}</button>)}
             </div>}
           </div>
@@ -3554,6 +3573,16 @@ export function SchematicEditor({
               ['element', 'Элементы'], ['wire', 'Провода'], ['designation', 'Обозначения элементов'],
               ['node', 'Обозначения узлов'], ['grid', 'Сетка'],
             ] as const).map(([key, label]) => <label key={key} className="mb-2 flex items-center justify-between text-sm">{label}<input type="color" aria-label={`Цвет: ${label}`} value={appearance[key]} onChange={event => setAppearance(current => ({ ...current, [key]: event.target.value }))} /></label>)}
+            <label className="mb-2 grid gap-1 text-sm">Толщина линий схемы
+              <select aria-label="Толщина линий схемы" value={appearance.lineWidthMm} onChange={event => setAppearance(current => ({ ...current, lineWidthMm: Number(event.target.value) }))} className="rounded border p-1">
+                {[0.25, 0.35, 0.5, 0.7, 1].map(width => <option key={width} value={width}>{width} мм</option>)}
+              </select>
+            </label>
+            <label className="mb-2 grid gap-1 text-sm">Размер подписей
+              <select aria-label="Размер подписей" value={appearance.labelSizeMm} onChange={event => setAppearance(current => ({ ...current, labelSizeMm: Number(event.target.value) }))} className="rounded border p-1">
+                {[2.25, 2.75, 3.25].map(size => <option key={size} value={size}>{size} мм</option>)}
+              </select>
+            </label>
             <button type="button" onClick={() => setAppearance({ ...DEFAULT_APPEARANCE })} className="mt-3 text-sm text-blue-700">Цвета по умолчанию</button>
             </div>}
             {settingsTab === 'editor' && <div role="tabpanel" aria-label="Редактор" className="grid gap-3 text-sm">
@@ -3563,9 +3592,15 @@ export function SchematicEditor({
                 </select>
               </label>
               <label className="flex items-center gap-2"><input type="checkbox" checked={showGrid} onChange={event => setShowGrid(event.target.checked)} />Показывать сетку</label>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={snapEnabled} onChange={event => setSnapEnabled(event.target.checked)} />Привязка к сетке</label>
               <label className="grid gap-1">Прокладка новых проводов
                 <select aria-label="Прокладка новых проводов" value={wireMode} onChange={event => { setWireMode(event.target.value as 'orthogonal' | 'direct'); setWiringWaypoints([]); }} className="rounded border p-1">
                   <option value="orthogonal">Ортогональная</option><option value="direct">Прямая</option>
+                </select>
+              </label>
+              <label className="grid gap-1">Начальный поворот размещаемого элемента
+                <select aria-label="Начальный поворот элемента" value={defaultPlacementRotation} onChange={event => setDefaultPlacementRotation(Number(event.target.value))} className="rounded border p-1">
+                  {[0, 45, 90, 180, 270].map(angle => <option key={angle} value={angle}>{angle}°</option>)}
                 </select>
               </label>
               <p className="text-xs text-slate-600">Размещение элементов и ортогональных точек привязано к выбранной сетке.</p>
@@ -3758,7 +3793,7 @@ export function SchematicEditor({
                     d={visiblePath}
                     fill="none"
                     stroke={wg.unrouted ? '#dc2626' : wire.disabled ? '#94a3b8' : isSelected ? '#2563eb' : appearance.wire}
-                    strokeWidth={isSelected ? 2.5 : 2}
+                    strokeWidth={isSelected ? Math.max(2.5, appearance.lineWidthMm * SCHEMATIC_UNITS_PER_MM) : appearance.lineWidthMm * SCHEMATIC_UNITS_PER_MM}
                     strokeDasharray={wg.unrouted ? '5 4' : wire.disabled ? wireGapDashArray(wg.points) : undefined}
                     strokeLinecap="round"
                     strokeLinejoin="round"
@@ -3950,14 +3985,14 @@ export function SchematicEditor({
                             onMouseDown={(e) => { if (e.altKey || (wiringFromRef.current ?? wiringFrom)) handlePinClick(e, el.id, '1', el.x, el.y); }}
                             onMouseUp={(e) => handlePinMouseUp(e, el.id, '1', el.x, el.y)} />
                         </g>
-                      : renderComponentSymbol(el, isSelected && !el.isolation, el.type !== 'PORT', appearance.element)}
+                      : renderComponentSymbol(el, isSelected && !el.isolation, el.type !== 'PORT', appearance.element, appearance.lineWidthMm * SCHEMATIC_UNITS_PER_MM)}
                   </g>
                   {el.type === 'PORT' && <text x={0} y={3} textAnchor="middle" fontSize={9} fontWeight="bold" fill={isSelected ? '#dc2626' : '#1e293b'} className="pointer-events-none select-none">{el.portName || el.name}</text>}
 
                   {/* Подписи следуют ориентации элемента, но остаются горизонтальными и читаемыми. */}
                   {el.type !== 'TEXT' && el.type !== 'JUNCTION' && (showElementNames || showElementValues || el.isolation === 'short') && <g data-element-labels={el.id} className="select-none" pointerEvents={wiringFrom ? 'none' : 'visiblePainted'} style={{ fontFamily: 'NAPS Drafting, Arial Narrow, sans-serif', paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 3.5, strokeLinejoin: 'round' }}>
-                    {showElementNames && <text data-label-kind="name" x={labelLayout.name.x} y={labelLayout.name.y} textAnchor={labelLayout.name.anchor} fontSize={11} fontWeight="bold" textDecoration={teacherPresentation && (el.type === 'VCCS' || el.type === 'CCCS') ? 'underline' : undefined} fill={el.isolation === 'open' ? '#94a3b8' : appearance.designation}>{el.name}</text>}
-                    {showElementValues && valueLabel && <text data-label-kind="value" x={labelLayout.value.x} y={labelLayout.value.y} textAnchor={labelLayout.value.anchor} fontSize={11} fill={el.isolation === 'open' ? '#94a3b8' : '#3730a3'}>{valueLabel}</text>}
+                    {showElementNames && <text data-label-kind="name" x={labelLayout.name.x} y={labelLayout.name.y} textAnchor={labelLayout.name.anchor} fontSize={appearance.labelSizeMm * SCHEMATIC_UNITS_PER_MM} fontWeight="bold" textDecoration={teacherPresentation && (el.type === 'VCCS' || el.type === 'CCCS') ? 'underline' : undefined} fill={el.isolation === 'open' ? '#94a3b8' : appearance.designation}>{el.name}</text>}
+                    {showElementValues && valueLabel && <text data-label-kind="value" x={labelLayout.value.x} y={labelLayout.value.y} textAnchor={labelLayout.value.anchor} fontSize={appearance.labelSizeMm * SCHEMATIC_UNITS_PER_MM} fill={el.isolation === 'open' ? '#94a3b8' : '#3730a3'}>{valueLabel}</text>}
                     {el.isolation === 'short' && <text data-label-kind="isolation" x={labelLayout.isolation.x} y={labelLayout.isolation.y} textAnchor={labelLayout.isolation.anchor} fontSize={9} fill="#b91c1c" fontWeight="bold">КЗ</text>}
                   </g>}
 

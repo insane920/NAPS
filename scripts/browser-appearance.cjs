@@ -47,12 +47,18 @@ const fs = require('node:fs/promises');
     assert.equal(await settings.getByRole('button', { name: 'Открыть назначения клавиш' }).count(), 1);
     await settings.getByRole('tab', { name: 'Оформление' }).click();
     await settings.getByLabel('Цвет: Элементы').fill('#123abc');
+    await settings.getByLabel('Толщина линий схемы').selectOption('0.7');
+    await settings.getByLabel('Размер подписей').selectOption('3.25');
     await page.getByRole('button', { name: 'Готово' }).click();
     await page.getByRole('button', { name: 'Резистор', exact: true }).first().click();
     const canvas = await page.locator('.schematic-editor div.relative.overflow-hidden.bg-white').last().boundingBox();
     await page.mouse.click(canvas.x + 260, canvas.y + 200);
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('[data-component-id] line').first().getAttribute('stroke'), '#123abc');
+    assert.equal(await page.locator('[data-component-id] line').first().getAttribute('stroke-width'), '2.8',
+      '0.7 mm line setting changes the actual SVG stroke in document coordinates');
+    assert.equal(await page.locator('[data-label-kind="name"]').first().getAttribute('font-size'), '13',
+      '3.25 mm label setting changes the actual SVG text size');
     await page.getByRole('slider', { name: 'Масштаб просмотра в процентах' }).fill('75');
     assert.equal(await page.getByText('3.00 px/мм').count(), 1);
     await page.getByRole('combobox', { name: 'Формат документа' }).selectOption('A3');
@@ -158,9 +164,37 @@ const fs = require('node:fs/promises');
     assert.doesNotMatch(pdf.toString('latin1'), /\/Subtype\s*\/Image/,
       'A4 landscape PDF has no raster page image');
     await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
+    await page.getByRole('button', { name: 'Прямой', exact: true }).click();
     await page.reload({ waitUntil: 'networkidle' });
     await page.getByRole('button', { name: 'Общие настройки' }).click();
     assert.equal(await page.getByRole('dialog', { name: 'Общие настройки редактора' }).getByLabel('Цвет: Элементы').inputValue(), '#123abc');
+    assert.equal(await page.getByRole('dialog', { name: 'Общие настройки редактора' }).getByLabel('Толщина линий схемы').inputValue(), '0.7');
+    assert.equal(await page.getByRole('dialog', { name: 'Общие настройки редактора' }).getByLabel('Размер подписей').inputValue(), '3.25');
+    assert.equal(await page.getByRole('button', { name: 'Прямой', exact: true }).getAttribute('aria-pressed'), 'true',
+      'preferred routing mode survives restart');
+    await page.getByRole('dialog', { name: 'Общие настройки редактора' }).getByRole('tab', { name: 'Редактор' }).click();
+    const snapControl = page.getByRole('dialog', { name: 'Общие настройки редактора' }).getByRole('checkbox', { name: 'Привязка к сетке' });
+    await snapControl.uncheck();
+    await page.getByRole('dialog', { name: 'Общие настройки редактора' }).getByLabel('Начальный поворот элемента').selectOption('45');
+    await page.getByRole('button', { name: 'Готово' }).click();
+    await page.getByRole('button', { name: 'Резистор', exact: true }).first().click();
+    const freePoint = await page.locator('#schematic-world').evaluate(world => {
+      const point = new DOMPoint(307, 243).matrixTransform(world.getScreenCTM());
+      return { x: point.x, y: point.y };
+    });
+    await page.mouse.click(freePoint.x, freePoint.y);
+    const freeTransform = await page.locator('[data-component-id]').last().getAttribute('transform');
+    const coordinates = freeTransform.match(/translate\(([-\d.]+), ([-\d.]+)\)/);
+    assert.ok(coordinates && Math.abs(Number(coordinates[1]) - 307) <= 0.5 && Math.abs(Number(coordinates[2]) - 243) <= 0.5,
+      'disabled snap places an element at its actual document coordinate to the editor precision');
+    assert.match(await page.locator('[data-component-id]').last().locator('[data-component-symbol="R"]').getAttribute('transform'), /rotate\(45\)/,
+      'the configured default rotation applies to the next placed component');
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: 'Общие настройки' }).click();
+    await page.getByRole('dialog', { name: 'Общие настройки редактора' }).getByRole('tab', { name: 'Редактор' }).click();
+    assert.equal(await page.getByRole('dialog', { name: 'Общие настройки редактора' }).getByRole('checkbox', { name: 'Привязка к сетке' }).isChecked(), false,
+      'snap preference survives restart independently of grid visibility');
+    assert.equal(await page.getByRole('dialog', { name: 'Общие настройки редактора' }).getByLabel('Начальный поворот элемента').inputValue(), '45');
     console.log('PASS: appearance persistence, A3 portrait SCM, sheet zoom, zoom px/mm and monochrome ESKD export preview.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

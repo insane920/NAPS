@@ -104,6 +104,25 @@ const fs = require('node:fs/promises');
         assert.equal(selectedInk, 0, `${type}: export strips editor selection colour`);
         await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
       }
+      if (width === 1440) {
+        await page.getByRole('button', { name: 'Экспорт ▾', exact: true }).click();
+        await page.getByRole('menuitem', { name: 'SVG', exact: true }).click();
+        await page.getByLabel('Ч/б', { exact: true }).check();
+        await page.waitForFunction(() => document.querySelector('iframe[title="Предварительный просмотр листа"]')
+          ?.getAttribute('srcdoc')?.includes('data-component-symbol="L"'));
+        const ink = await page.getByTitle('Предварительный просмотр листа').evaluate(frame => {
+          const doc = new DOMParser().parseFromString(frame.getAttribute('srcdoc'), 'text/html');
+          const types = ['V_DC', 'I_DC', 'R', 'C', 'L'];
+          const symbols = types.map(type => doc.querySelector(`[data-component-symbol="${type}"]`));
+          return { distinct: new Set(symbols.map(symbol => symbol?.innerHTML)).size,
+            blackSymbols: symbols.map(symbol => symbol?.querySelectorAll('[stroke="#111111"]').length || 0),
+            wireStroke: doc.querySelector('[data-wire-ink]')?.getAttribute('stroke') };
+        });
+        assert.equal(ink.distinct, 5, 'all five symbols retain distinct geometry in monochrome');
+        assert.ok(ink.blackSymbols.every(count => count > 0), 'all five symbols retain visible dark outlines');
+        assert.equal(ink.wireStroke, '#111111', 'conductors remain visible in monochrome');
+        await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
+      }
       assert.equal(await page.getByRole('button', { name: 'Экспорт ▾', exact: true }).count(), 1);
       await page.getByTitle('Параметры расчета (t_max, шаг)').click();
       await page.getByRole('dialog', { name: 'Параметры переходного процесса' }).waitFor();

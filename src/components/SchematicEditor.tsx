@@ -3144,7 +3144,7 @@ export function SchematicEditor({
       clone.querySelectorAll('[data-export-hide="true"]').forEach(node => node.remove());
       clone.querySelectorAll<SVGElement>('[data-document-stroke]').forEach(node => {
         node.setAttribute('stroke', node.getAttribute('data-document-stroke')!);
-        node.setAttribute('stroke-width', '2');
+        node.setAttribute('stroke-width', String(appearance.lineWidthMm * SCHEMATIC_UNITS_PER_MM));
       });
       clone.querySelectorAll<SVGElement>('[data-document-fill]').forEach(node => node.setAttribute('fill', node.getAttribute('data-document-fill')!));
       // Selection is an editor interaction, not document content, including in colour exports.

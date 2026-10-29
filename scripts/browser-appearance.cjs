@@ -176,6 +176,10 @@ const fs = require('node:fs/promises');
     await page.getByRole('menuitem', { name: 'PDF' }).click();
     await page.waitForFunction(() => document.querySelector('iframe[title="Предварительный просмотр листа"]')?.getAttribute('srcdoc')?.includes('width="210mm"'));
     const a4Preview = await page.getByTitle('Предварительный просмотр листа').getAttribute('srcdoc');
+    assert.equal(await page.getByTitle('Предварительный просмотр листа').evaluate(frame => {
+      const doc = new DOMParser().parseFromString(frame.getAttribute('srcdoc'), 'text/html');
+      return doc.querySelector('[data-component-symbol="R"] line')?.getAttribute('stroke-width');
+    }), '2.8', 'configured 0.7 mm symbol line survives into the export document');
     assert.match(a4Preview, /data-eskd-title-block="true"/);
     assert.match(a4Preview, /data-eskd-frame="true"/);
     assert.match(a4Preview, /#111111/);

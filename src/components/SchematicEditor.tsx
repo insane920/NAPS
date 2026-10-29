@@ -3149,6 +3149,12 @@ export function SchematicEditor({
         node.setAttribute('stroke-width', String(appearance.lineWidthMm * SCHEMATIC_UNITS_PER_MM));
       });
       clone.querySelectorAll<SVGElement>('[data-document-fill]').forEach(node => node.setAttribute('fill', node.getAttribute('data-document-fill')!));
+      // SVG text otherwise inherits its editor font from page CSS, which is
+      // absent in the standalone document and ignored by svg2pdf.
+      clone.querySelectorAll<SVGTextElement>('text').forEach(node => {
+        node.setAttribute('font-family', 'NAPS Drafting');
+        if (!node.hasAttribute('stroke') && !node.style.stroke) node.setAttribute('stroke', 'none');
+      });
       // Selection is an editor interaction, not document content, including in colour exports.
       clone.querySelectorAll<SVGGElement>('[data-component-symbol]').forEach(symbol => {
         const normal = symbol.getAttribute('data-component-symbol') === 'JUNCTION' ? appearance.wire : appearance.element;
@@ -3217,21 +3223,30 @@ export function SchematicEditor({
         const page = clone.cloneNode(true) as SVGSVGElement;
         const pageWorld = page.querySelector('#schematic-world') as SVGGElement;
         pageWorld.setAttribute('transform', `translate(${tile.translateX} ${tile.translateY}) scale(${placement.scale})`);
-        const clip = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
-        clip.setAttribute('id', 'naps-print-content-clip');
-        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-        rect.setAttribute('x', String(effectiveMarginMm * SCHEMATIC_UNITS_PER_MM));
-        rect.setAttribute('y', String(effectiveMarginMm * SCHEMATIC_UNITS_PER_MM));
-        rect.setAttribute('width', String(placement.width - (effectiveMarginMm + Math.max(effectiveMarginMm, reservedRightMm)) * SCHEMATIC_UNITS_PER_MM));
-        rect.setAttribute('height', String(placement.height - (effectiveMarginMm + Math.max(effectiveMarginMm, reservedBottomMm)) * SCHEMATIC_UNITS_PER_MM));
-        clip.appendChild(rect);
-        const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-        defs.appendChild(clip);
-        page.insertBefore(defs, pageWorld);
-        const clipped = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-        clipped.setAttribute('clip-path', 'url(#naps-print-content-clip)');
-        pageWorld.parentNode?.insertBefore(clipped, pageWorld);
-        clipped.appendChild(pageWorld);
+        // Opaque page masks keep the same printable rectangle in SVG and PDF
+        // without relying on the renderers' handling of nested clip paths.
+        // The frame and title block remain above these masks.
+        const left = effectiveMarginMm * SCHEMATIC_UNITS_PER_MM;
+        const top = left;
+        const right = Math.max(effectiveMarginMm, reservedRightMm) * SCHEMATIC_UNITS_PER_MM;
+        const bottom = Math.max(effectiveMarginMm, reservedBottomMm) * SCHEMATIC_UNITS_PER_MM;
+        const visibleWidth = placement.width - left - right;
+        const visibleHeight = placement.height - top - bottom;
+        const title = page.querySelector('[data-eskd-title-block]');
+        for (const [x, y, width, height] of [
+          [0, 0, placement.width, top],
+          [0, top + visibleHeight, placement.width, bottom],
+          [0, top, left, visibleHeight],
+          [left + visibleWidth, top, right, visibleHeight],
+        ]) {
+          const mask = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+          mask.setAttribute('x', String(x)); mask.setAttribute('y', String(y));
+          mask.setAttribute('width', String(width)); mask.setAttribute('height', String(height));
+          mask.setAttribute('fill', '#ffffff'); mask.setAttribute('data-print-margin-mask', 'true');
+          page.insertBefore(mask, title);
+        }
+        const frame = page.querySelector('[data-eskd-frame]');
+        if (frame) page.insertBefore(frame, title);
         page.setAttribute('data-page-column', String(tile.column));
         page.setAttribute('data-page-row', String(tile.row));
         return new XMLSerializer().serializeToString(page);

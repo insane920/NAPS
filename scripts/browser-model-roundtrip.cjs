@@ -15,6 +15,11 @@ const fs = require('node:fs/promises');
       const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
       return fs.readFile(await download.path(), 'utf8');
     }
+    async function load(content, name) {
+      await page.locator('input[type="file"]').setInputFiles({ name: `${name}.scm`, mimeType: 'text/plain', buffer: Buffer.from(content) });
+      await page.getByText(name, { exact: true }).waitFor();
+      await page.locator('[data-component-id]').first().waitFor({ state: 'visible' });
+    }
     const types = ['R', 'C', 'L', 'TR3', 'DIODE', 'THYRISTOR', 'SWITCH', 'NPN', 'PNP', 'NMOS', 'PMOS', 'OPAMP', 'V_DC', 'V_AC', 'V_PULSE', 'I_DC', 'I_AC', 'I_PULSE', 'NOT', 'AND', 'OR', 'XOR', 'COMPARATOR', 'RS_FF', 'D_FF', 'JK_FF'];
     for (const crossingMode of ['explicit', 'connect']) for (const type of types) {
       console.log(`Properties round-trip: ${type}, ${crossingMode}`);
@@ -25,7 +30,7 @@ const fs = require('node:fs/promises');
           ...(['R', 'C', 'L'].includes(type) ? { passiveModel: 'nonlinear', modelParams: { cubicCoefficient: .01 } } : {}),
         }], [], SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', crossingMode);
       }, { type, crossingMode });
-      await page.locator('input[type="file"]').setInputFiles({ name: `${type}.scm`, mimeType: 'text/plain', buffer: Buffer.from(fixture) });
+      await load(fixture, `${type}-${crossingMode}`);
       await open();
       const fields = {};
       for (const input of await page.locator('input[id^="model-"]').all()) {
@@ -41,7 +46,7 @@ const fs = require('node:fs/promises');
       await page.getByRole('button', { name: 'OK', exact: true }).click();
       await page.locator('#element-name').waitFor({ state: 'hidden' });
       let text = await save();
-      await page.locator('input[type="file"]').setInputFiles({ name: 'roundtrip.scm', mimeType: 'text/plain', buffer: Buffer.from(text) });
+      await load(text, `roundtrip-${type}-${crossingMode}`);
       await open();
       for (const [key, value] of Object.entries(fields)) assert.equal(Number(await page.locator(`#model-${key}`).inputValue()), value, `${type}: ${key}`);
       await page.getByRole('button', { name: 'Отмена', exact: true }).click();
@@ -84,7 +89,7 @@ const fs = require('node:fs/promises');
       const { SAMPLE_CIRCUITS } = await import('/src/data/sampleCircuits.ts');
       return exportToYamlScm([{ id: 'R', name: 'R', type: 'R', value: 1, valueStr: '1', unit: '', x: 300, y: 200, rotation: 0, passiveModel: 'nonlinear', passiveLawDefinition: { kind: 'expression', expression: 'n*x+y0*tanh(x/x0)', argumentScale: 2, outputScale: .1 } }], [], SAMPLE_CIRCUITS[0].transient);
     });
-    await page.locator('input[type="file"]').setInputFiles({ name: 'law.scm', mimeType: 'text/plain', buffer: Buffer.from(nonlinear) });
+    await load(nonlinear, 'law');
     await open(); await page.locator('#passive-model').selectOption('linear');
     await page.getByRole('button', { name: 'OK', exact: true }).click();
     await page.locator('#element-name').waitFor({ state: 'hidden' });

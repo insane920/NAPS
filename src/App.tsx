@@ -61,6 +61,10 @@ export default function App() {
     setAcSettingsOpen(mode === 'ac');
   }, []);
   const [yamlOpen, setYamlOpen] = useState(false);
+  const [wireEditorOpen, setWireEditorOpen] = useState(false);
+  const [wireEditorReady, setWireEditorReady] = useState(false);
+  const wireEditorFrame = useRef<HTMLIFrameElement>(null);
+  const wireEditorRevision = useRef(0);
   const [helpOpen, setHelpOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const [descriptionDraft, setDescriptionDraft] = useState<CircuitDescription>(EMPTY_CIRCUIT_DESCRIPTION);
@@ -259,7 +263,8 @@ export default function App() {
 
   const replaceProject = (data: { elements: CircuitElement[]; wires: CircuitWire[]; transient: TransientSettings; ac?: ACSettings; printLayout?: PrintLayout; description?: CircuitDescription; crossingMode?: WireCrossingMode }, title: string, edited = false) => {
     if (data.crossingMode === 'connect') {
-      const routes = routeCircuitWires(data.elements, data.wires, (data.printLayout ?? DEFAULT_PRINT_LAYOUT).gridMm * SCHEMATIC_UNITS_PER_MM);
+      const routes = routeCircuitWires(data.elements, data.wires, (data.printLayout ?? DEFAULT_PRINT_LAYOUT).gridMm * SCHEMATIC_UNITS_PER_MM,
+        new Map(), data.crossingMode);
       if (routes.every(route => !route.unrouted) && hasUnmaterializedCrossings(data.elements, data.wires, routes)) {
         data = { ...data, ...normalizeCrossingTopology(data.elements, data.wires, routes, 'connect') };
         edited = true;
@@ -330,6 +335,35 @@ export default function App() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Не удалось сохранить файл.'); }
   };
   useEffect(() => {
+    if (!wireEditorOpen) return;
+    const receive = (event: MessageEvent) => {
+      if (event.source !== wireEditorFrame.current?.contentWindow || !event.data || typeof event.data !== 'object') return;
+      if (event.data.type === 'naps:wiring-loaded') setWireEditorReady(true);
+      else if (event.data.type === 'naps:wiring-error') setError(String(event.data.message));
+      else if (event.data.type === 'naps:wiring-result') {
+        try {
+          if (revision.current !== wireEditorRevision.current) throw new Error('Схема изменилась после открытия редактора проводки. Закройте окно и откройте его снова.');
+          const geometry = event.data.geometry as { elements: CircuitElement[]; wires: CircuitWire[] };
+          const content = event.data.content as string;
+          const parsed = parseYamlScm(content);
+          if (parsed.elements.length !== geometry.elements.length || parsed.wires.length !== geometry.wires.length ||
+              parsed.crossingMode !== crossingMode) throw new Error('Проверка сохранения SCM не прошла. Изменения не применены.');
+          const routes = event.data.routes as Parameters<typeof normalizeCrossingTopology>[2];
+          const normalized = normalizeCrossingTopology(geometry.elements, geometry.wires, routes, crossingMode);
+          validateCircuitGeometry(normalized.elements, normalized.wires, printLayout.gridMm * SCHEMATIC_UNITS_PER_MM, crossingMode);
+          beginContinuousHistory();
+          changeElements(normalized.elements);
+          changeWires(normalized.wires);
+          endContinuousHistory();
+          setWireEditorOpen(false);
+          setStatus('Изменения проводки применены к схеме');
+        } catch (cause) { setError(cause instanceof Error ? cause.message : 'Не удалось применить проводку.'); }
+      }
+    };
+    window.addEventListener('message', receive);
+    return () => window.removeEventListener('message', receive);
+  }, [wireEditorOpen, crossingMode, printLayout.gridMm, beginContinuousHistory, endContinuousHistory, changeElements, changeWires]);
+  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const editingText = target?.isContentEditable || target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.tagName === 'SELECT';
@@ -344,7 +378,7 @@ export default function App() {
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
   }, [openCircuit, redo, saveCircuit, undo]);
-  const modalOpen = graphOpen || settingsOpen || acSettingsOpen || yamlOpen || helpOpen || descriptionOpen || !!selected;
+  const modalOpen = graphOpen || settingsOpen || acSettingsOpen || yamlOpen || wireEditorOpen || helpOpen || descriptionOpen || !!selected;
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -359,6 +393,8 @@ export default function App() {
           <button onClick={runAC} title="Рассчитать АЧХ и ФЧХ"><Activity size={16} /><span>Частотные характеристики</span></button>
           <button onClick={() => openAnalysisPanel('ac')} title="Параметры частотного анализа" aria-label="Параметры частотного анализа"><SlidersHorizontal size={16} /></button>
           <button onClick={() => setYamlOpen(true)} title="Редактор файла схемы" aria-label="Редактор файла схемы"><FileCode2 size={17} /></button>
+          <button onClick={() => { wireEditorRevision.current = revision.current; setWireEditorReady(false); setWireEditorOpen(true); }}
+            title="Новая проводка: проверяемый редактор с возможностью отмены изменений">Новая проводка</button>
           <button onClick={() => { setDescriptionDraft({ ...description }); setDescriptionOpen(true); }} title="Название, назначение и комментарий схемы"><FileText size={16} /><span>Описание</span></button>
           <button onClick={() => setHelpOpen(true)} title="Помощь" aria-label="Помощь"><CircleHelp size={17} /></button>
         </nav>
@@ -398,6 +434,21 @@ export default function App() {
         <span className="status-hint">Двойной щелчок — свойства · F9 — расчёт</span>
       </footer>
       {graphOpen && <div ref={graphDialogRef} className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Результаты расчёта"><div className="graph-dialog"><Suspense fallback={<div className="loading-panel">Загрузка графиков…</div>}><GraphWindow results={results} settings={settings} acSettings={ac} elements={elements} wires={wires} onOpenTransientSettings={() => openAnalysisPanel(results?.isAC ? 'ac' : 'transient')} onClose={() => setGraphOpen(false)} /></Suspense></div></div>}
+      {wireEditorOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70" role="dialog" aria-modal="true" aria-label="Новая проводка">
+        <section className="flex h-[92vh] w-[96vw] flex-col overflow-hidden rounded-lg bg-white shadow-2xl">
+          <div className="flex items-center justify-between gap-3 border-b px-4 py-2 text-sm">
+            <div><strong>Новая проводка</strong><span className="ml-3 text-slate-600">Проверьте схему перед применением. Изменения можно отменить в NAPS.</span></div>
+            <div className="flex gap-2"><button disabled={!wireEditorReady} className="rounded bg-blue-600 px-3 py-1 text-white disabled:opacity-40" onClick={() => wireEditorFrame.current?.contentWindow?.postMessage({ type: 'naps:apply-wiring' }, '*')}>Применить</button>
+              <button className="rounded border px-3 py-1" onClick={() => setWireEditorOpen(false)}>Закрыть без изменений</button></div>
+          </div>
+          <iframe ref={wireEditorFrame} title="Редактор проводки" className="min-h-0 flex-1 border-0" src="./maxgraph-wiring-spike.html?wires=0" onLoad={() => {
+            try {
+              const content = exportToYamlScm(elements, wires, settings, ac, printLayout, 'current', crossingMode, description);
+              wireEditorFrame.current?.contentWindow?.postMessage({ type: 'naps:load-wiring', content }, '*');
+            } catch (cause) { setError(cause instanceof Error ? cause.message : 'Не удалось открыть редактор проводки.'); setWireEditorOpen(false); }
+          }} />
+        </section>
+      </div>}
       <ElementPropertiesModal circuitElements={elements} circuitWires={wires} element={selected} existingNames={elements.filter(element => element.id !== selected?.id).map(element => element.name)} controlSources={elements.filter(element => ['V_DC', 'V_AC', 'V_PULSE'].includes(element.type) && !element.isolation)} isOpen={!!selected} onClose={() => setSelected(null)} onSave={value => {
         beginContinuousHistory();
         changeElements(replaceElementPreservingControls(elements, value));
@@ -424,12 +475,12 @@ export default function App() {
           <label className="grid gap-1">Комментарий<textarea className="min-h-28 rounded border border-slate-300 px-3 py-2" value={descriptionDraft.comment} onChange={event => setDescriptionDraft({ ...descriptionDraft, comment: event.target.value })} maxLength={5000} /></label>
           <strong className="border-t pt-3">Основная надпись для экспорта</strong>
           {([
-            ['designation', 'Обозначение документа'], ['organization', 'Организация'], ['author', 'Разработал'],
-            ['checker', 'Проверил'], ['normController', 'Нормоконтроль'], ['approver', 'Утвердил'],
+            ['designation', 'Обозначение документа'], ['letter', 'Литера'], ['mass', 'Масса'], ['copier', 'Копировал'], ['organization', 'Организация'], ['author', 'Разработал'],
+            ['checker', 'Проверил'], ['technicalController', 'Технический контроль'], ['normController', 'Нормоконтроль'], ['approver', 'Утвердил'],
             ['issueDate', 'Дата'], ['sheetNumber', 'Лист'], ['sheetCount', 'Листов'],
           ] as const).map(([field, label]) => <label key={field} className="grid gap-1">{label}
             <input className="rounded border border-slate-300 px-3 py-2" value={descriptionDraft[field] ?? ''}
-              onChange={event => setDescriptionDraft({ ...descriptionDraft, [field]: event.target.value })} maxLength={120} />
+              onChange={event => setDescriptionDraft({ ...descriptionDraft, [field]: event.target.value })} maxLength={field === 'letter' ? 3 : 120} />
           </label>)}
           <div className="flex justify-end gap-2"><button onClick={() => setDescriptionOpen(false)}>Отмена</button><button className="primary-action" onClick={() => { beginHistoryChange(); const next = { ...descriptionDraft }; currentSnapshot.current = { ...currentSnapshot.current, description: next, dirty: true }; setDescription(next); markChanged(); setDescriptionOpen(false); }}>Сохранить описание</button></div>
         </div>

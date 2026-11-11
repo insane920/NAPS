@@ -46,13 +46,13 @@ export function renderComponentSymbol(el: CircuitElement, selected = false, show
       );
 
     case 'C':
-      // Конденсатор (две параллельные пластины)
+      // ГОСТ 2.728-74, табл. 6: plate length 8 mm, separation 1.5 mm.
       return (
         <g>
-          <line x1={-30} y1={0} x2={-4} y2={0} stroke={stroke} strokeWidth={strokeW} />
-          <line x1={-4} y1={-12} x2={-4} y2={12} stroke={stroke} strokeWidth={strokeW + 0.5} />
-          <line x1={4} y1={-12} x2={4} y2={12} stroke={stroke} strokeWidth={strokeW + 0.5} />
-          <line x1={4} y1={0} x2={30} y2={0} stroke={stroke} strokeWidth={strokeW} />
+          <line x1={-30} y1={0} x2={-SYMBOL_METRICS.capacitorPlateHalfGap} y2={0} stroke={stroke} strokeWidth={strokeW} />
+          <line x1={-SYMBOL_METRICS.capacitorPlateHalfGap} y1={-SYMBOL_METRICS.capacitorPlateHalfLength} x2={-SYMBOL_METRICS.capacitorPlateHalfGap} y2={SYMBOL_METRICS.capacitorPlateHalfLength} stroke={stroke} strokeWidth={strokeW} />
+          <line x1={SYMBOL_METRICS.capacitorPlateHalfGap} y1={-SYMBOL_METRICS.capacitorPlateHalfLength} x2={SYMBOL_METRICS.capacitorPlateHalfGap} y2={SYMBOL_METRICS.capacitorPlateHalfLength} stroke={stroke} strokeWidth={strokeW} />
+          <line x1={SYMBOL_METRICS.capacitorPlateHalfGap} y1={0} x2={30} y2={0} stroke={stroke} strokeWidth={strokeW} />
         </g>
       );
 

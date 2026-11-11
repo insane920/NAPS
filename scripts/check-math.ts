@@ -8,6 +8,7 @@ import { assembleLinearSystem, electricalElements, pulseIsHigh } from '../src/ma
 import { buildCircuitGraph } from '../src/math/circuitSolver';
 import { parseEngValue, normalizeEngNotation } from '../src/math/circuitSolver';
 import { nearestSample, plotSampleIndices, timeAtPlotFraction } from '../src/math/plotGeometry';
+import { exportToYamlScm, parseYamlScm } from '../src/utils/yamlScm';
 
 const element = (id: string, type: CircuitElement['type'], value: number): CircuitElement => ({ id, name: id, type, value, x: 0, y: 0, rotation: 0, valueStr: String(value), unit: '' });
 const wire = (a: string, ap: string, b: string, bp: string): CircuitWire => ({ id: `${a}${ap}-${b}${bp}`, fromCompId: a, fromPinId: ap, toCompId: b, toPinId: bp });
@@ -50,6 +51,36 @@ const ws = [wire('V1', '1', 'R1', '1'), wire('R1', '2', 'R2', '1'), wire('R2', '
 const s = settings(['U(R2)', 'I(V1)', 'P(R1)']);
 const divider = solveCircuitTransient(es, ws, s);
 near(divider.signals['U(R2)'][0], 8); near(divider.signals['I(V1)'][0], -0.004); near(divider.signals['P(R1)'][0], 0.016);
+const noGroundElements = [element('VG', 'V_DC', 12), element('RG', 'R', 1000)];
+const noGroundWires = [wire('VG', '1', 'RG', '1'), wire('RG', '2', 'VG', '2')];
+const noGroundSettings = { ...settings(['U(RG)', 'I(RG)']), tMaxStr: '0.001', stepStr: '0.00001' };
+const noGroundResult = solveCircuitTransient(noGroundElements, noGroundWires, noGroundSettings);
+near(noGroundResult.signals['U(RG)'][0], 12);
+near(noGroundResult.signals['I(RG)'][0], 0.012);
+const explicitReferenceElements = [...noGroundElements, element('GREF', 'GND', 0)];
+const explicitReferenceWires = [...noGroundWires, wire('VG', '2', 'GREF', '1')];
+const explicitReferenceResult = solveCircuitTransient(explicitReferenceElements, explicitReferenceWires, noGroundSettings);
+for (const signal of ['U(RG)', 'I(RG)']) near(noGroundResult.signals[signal][0], explicitReferenceResult.signals[signal][0]);
+const savedNoGround = parseYamlScm(exportToYamlScm(noGroundElements, noGroundWires, noGroundSettings,
+  undefined, undefined, 'current', 'connect'));
+assert.equal(savedNoGround.elements.some(item => item.type === 'GND'), false);
+near(solveCircuitTransient(savedNoGround.elements, savedNoGround.wires, savedNoGround.transient).signals['U(RG)'][0], 12);
+assert.equal(buildCircuitGraph(noGroundElements, noGroundWires).pinToNode.get('VG_2'), 0,
+  'a circuit without GND uses the source negative terminal only as the reference potential');
+assert.equal(buildCircuitGraph([...noGroundElements].reverse(), noGroundWires).pinToNode.get('VG_2'), 0,
+  'reordering components must not change the implicit reference terminal');
+const noGroundRC = [element('VRC', 'V_DC', 1), element('RRC', 'R', 1000), element('CRC', 'C', 1e-6)];
+const noGroundRCWires = [wire('VRC', '1', 'RRC', '1'), wire('RRC', '2', 'CRC', '1'), wire('CRC', '2', 'VRC', '2')];
+const noGroundRCSettings = settings(['U(CRC)'], 1e-6, 0.002);
+const noGroundRCResult = solveCircuitTransient(noGroundRC, noGroundRCWires, noGroundRCSettings);
+noGroundRCResult.time.forEach((t, index) => near(noGroundRCResult.signals['U(CRC)'][index],
+  1 - Math.exp(-t / 0.001), 0.0002));
+const noGroundRL = [element('VRL', 'V_DC', 1), element('RRL', 'R', 1000), element('LRL', 'L', 0.1)];
+const noGroundRLWires = [wire('VRL', '1', 'RRL', '1'), wire('RRL', '2', 'LRL', '1'), wire('LRL', '2', 'VRL', '2')];
+const noGroundRLResult = solveCircuitTransient(noGroundRL, noGroundRLWires,
+  settings(['I(LRL)'], 1e-6, 0.001));
+noGroundRLResult.time.forEach((t, index) => near(noGroundRLResult.signals['I(LRL)'][index],
+  (1 - Math.exp(-t / 0.0001)) / 1000, 6e-6));
 assert.equal(validateSimulation(es, ws, s, divider).status, 'passed');
 // Same components, changed wiring: parallel resistors must both receive 12 V.
 const parallel = [wire('V1', '1', 'R1', '1'), wire('V1', '1', 'R2', '1'), wire('R1', '2', 'G', '1'), wire('R2', '2', 'G', '1'), wire('V1', '2', 'G', '1')];
@@ -97,7 +128,7 @@ assert.throws(() => solveCircuitTransient(es, ws, { ...s, step: Infinity }), /п
 assert.throws(() => solveCircuitTransient(es, ws, { ...s, tMax: 0 }), /положительные/);
 assert.throws(() => solveCircuitTransient(es, ws, { ...s, tMax: 1, step: 1e-6 }), /20 000 шагов/);
 assert.throws(() => solveCircuitTransient(es.map(e => e.id === 'R1' ? { ...e, value: 0 } : e), ws, s), /номинал/);
-assert.throws(() => solveCircuitTransient(es.filter(e => e.type !== 'GND'), ws, s), /землю/);
+assert.throws(() => solveCircuitTransient(es.filter(e => e.type !== 'GND'), ws, s), /отсутствующий/);
 assert.throws(() => solveCircuitTransient(es, [...ws, wire('missing', '1', 'R1', '1')], s), /отсутствующий/);
 const floating = [...es, element('R3', 'R', 100)];
 assert.throws(() => solveCircuitTransient(floating, ws, s), /вырождена/);

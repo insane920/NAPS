@@ -44,6 +44,28 @@ const assert = require('node:assert/strict');
         await page.getByTitle('По ширине листа').click();
         assert.equal(await component.getAttribute('transform'), worldPosition);
       }
+      await page.getByRole('slider', { name: 'Масштаб просмотра в процентах' }).fill('100');
+      const target = { x: canvas.x + canvas.width * 0.43, y: canvas.y + canvas.height * 0.39 };
+      const worldAtCursor = () => page.evaluate(({ x, y }) => {
+        const matrix = document.querySelector('#schematic-world').getScreenCTM().inverse();
+        const point = new DOMPoint(x, y).matrixTransform(matrix);
+        return { x: point.x, y: point.y };
+      }, target);
+      const anchoredBefore = await worldAtCursor();
+      await page.mouse.move(target.x, target.y);
+      await page.keyboard.down('Control');
+      await page.mouse.wheel(0, -180);
+      await page.keyboard.up('Control');
+      await page.waitForFunction(() => Number(document.querySelector('[aria-label="Масштаб просмотра"] output')?.textContent?.replace('%', '')) > 100);
+      const anchoredAfter = await worldAtCursor();
+      assert.ok(Math.abs(anchoredAfter.x - anchoredBefore.x) < 0.2 && Math.abs(anchoredAfter.y - anchoredBefore.y) < 0.2,
+        'Ctrl+wheel zoom keeps the document point under the cursor');
+      for (const percent of [1, 25, 50, 100, 150, 200, 250]) {
+        await page.getByRole('slider', { name: 'Масштаб просмотра в процентах' }).fill(String(percent));
+        assert.equal(Number((await page.locator('[aria-label="Масштаб просмотра"] output').innerText()).replace('%', '')), percent);
+        assert.equal(await component.getAttribute('transform'), worldPosition,
+          `${percent}% zoom preserves stored millimetre coordinates`);
+      }
       await page.close();
     }
     console.log('PASS: A0–A4 sheet navigation and physical coordinates at 800×600, 1440×900 and 1920×1080.');

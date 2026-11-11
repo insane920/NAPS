@@ -1,5 +1,6 @@
 import type { CircuitDescription } from './yamlScm';
 import { paperSize, SCHEMATIC_UNITS_PER_MM, type PrintLayout } from './printLayout';
+import { draftingFontSize } from './draftingFont';
 
 export const TITLE_BLOCK_WIDTH_MM = 185;
 export const TITLE_BLOCK_HEIGHT_MM = 55;
@@ -36,9 +37,9 @@ export function createTitleBlock(document: Document, layout: PrintLayout, descri
     const node = document.createElementNS(SVG_NS, 'text');
     node.setAttribute('data-eskd-field', field);
     node.setAttribute('x', String(x * units)); node.setAttribute('y', String(y * units));
-    node.setAttribute('font-size', String(size * units)); node.setAttribute('fill', '#111111');
+    node.setAttribute('font-size', String(draftingFontSize(size))); node.setAttribute('fill', '#111111');
     node.setAttribute('font-family', 'NAPS Drafting, Arial Narrow, sans-serif');
-    if (value.length * size * 0.55 > width) {
+    if (value.length * size * 0.55 / 0.64 > width) {
       node.setAttribute('textLength', String(width * units)); node.setAttribute('lengthAdjust', 'spacingAndGlyphs');
     }
     node.textContent = value; group.appendChild(node);
@@ -53,9 +54,10 @@ export function createTitleBlock(document: Document, layout: PrintLayout, descri
   for (const x of [7, 17, 40, 55, 65]) line(x, 0, x, 55);
   for (const y of [15, 20, 25, 30, 35, 40, 45, 50]) line(0, y, 65, y);
   line(65, 15, 185, 15); line(65, 40, 135, 40); line(135, 15, 135, 55);
-  line(155, 15, 155, 35); line(170, 15, 170, 35);
+  // Form 1: three 5 mm letter cells, 17 mm mass cell, 18 mm scale cell.
+  for (const x of [140, 145, 150, 167]) line(x, 15, x, 35);
   line(135, 20, 185, 20); line(135, 35, 185, 35);
-  line(155, 35, 155, 45); line(135, 40, 185, 40); line(135, 45, 185, 45);
+  line(155, 35, 155, 55); line(135, 40, 185, 40);
   label('revision', 'Изм.', 0.5, 18.5, 6);
   label('revision-sheet', 'Лист', 7.3, 18.5, 9);
   label('revision-document', '№ докум.', 17.5, 18.5, 22);
@@ -64,7 +66,7 @@ export function createTitleBlock(document: Document, layout: PrintLayout, descri
   const persons = [
     ['author', 'Разраб.', description.author ?? ''],
     ['checker', 'Пров.', description.checker ?? ''],
-    ['technical-controller', 'Т. контр.', ''],
+    ['technical-controller', 'Т. контр.', description.technicalController ?? ''],
     ['norm-controller', 'Н. контр.', description.normController ?? ''],
     ['approver', 'Утв.', description.approver ?? ''],
   ] as const;
@@ -77,14 +79,23 @@ export function createTitleBlock(document: Document, layout: PrintLayout, descri
   label('designation', description.designation ?? '', 67, 10, 116, 3.5);
   label('title', description.title || 'Электрическая схема', 67, 27, 66, 3.5);
   label('purpose', description.purpose ?? '', 67, 35, 66);
-  label('letter-label', 'Лит.', 136, 18.5, 18);
-  label('mass-label', 'Масса', 156, 18.5, 13);
-  label('scale-label', 'Масштаб', 170.5, 18.5, 14);
+  label('letter-label', 'Лит.', 136, 18.5, 13);
+  Array.from(description.letter ?? '').slice(0, 3).forEach((character, index) =>
+    label(`letter-${index + 1}`, character, 136 + index * 5, 29, 4, 2.5));
+  label('mass-label', 'Масса', 151, 18.5, 16);
+  label('mass', description.mass ?? '', 152, 29, 14);
+  label('scale-label', 'Масштаб', 168, 18.5, 17);
   label('scale', scaleLabel, 172, 29, 12, 3.5);
   label('sheet-label', 'Лист', 136, 38.5, 18);
   label('sheet-count-label', 'Листов', 156, 38.5, 28);
-  label('sheet-number', description.sheetNumber ?? '', 140, 43.5, 14);
-  label('sheet-count', description.sheetCount ?? '', 160, 43.5, 23);
-  label('organization', description.organization ?? '', 137, 52, 46, 2.5);
+  label('sheet-number', description.sheetNumber ?? '', 140, 49, 14);
+  label('sheet-count', description.sheetCount ?? '', 160, 49, 23);
+  label('organization', description.organization ?? '', 67, 49, 66, 2.5);
+  // Form 1 fields 31 and 32 occupy the 5 mm strip below the main inscription.
+  // The user-facing A4 landscape variant rotates Form 1 and has no normative bottom strip.
+  if (!bounds.rotated) {
+    label('copier', `Копировал${description.copier ? `: ${description.copier}` : ''}`, 83, 58.5, 48, 2.5);
+    label('paper-format', `Формат ${layout.format}`, 151, 58.5, 32, 2.5);
+  }
   return group;
 }

@@ -67,6 +67,14 @@ const series = [e('V1', 'V_DC', 5), e('D1', 'DIODE'), e('R1', 'R', 100), e('G', 
 const seriesWires = [w('V1', '1', 'D1', '1'), w('D1', '2', 'R1', '1'), w('R1', '1', 'OUT', '1'), w('R1', '2', 'G', '1'), w('V1', '2', 'G', '1')];
 const selected = settings(['I(D1)', 'U(OUT)', 'P(R1)']);
 const diode = solveCircuitTransient(series, seriesWires, selected);
+const seriesWithoutGround = series.filter(item => item.type !== 'GND');
+const wiresWithoutGround = [
+  ...seriesWires.filter(item => item.fromCompId !== 'G' && item.toCompId !== 'G'),
+  w('R1', '2', 'V1', '2'),
+];
+const ungroundedDiode = solveCircuitTransient(seriesWithoutGround, wiresWithoutGround, selected);
+near(ungroundedDiode.signals['I(D1)'][0], diode.signals['I(D1)'][0]);
+near(ungroundedDiode.signals['U(OUT)'][0], diode.signals['U(OUT)'][0]);
 assert.equal(diode.model, 'topology-mna');
 near(diode.signals['I(D1)'][0], (5 - 0.7) / 100.01);
 near(diode.signals['U(OUT)'][0], 100 * (5 - 0.7) / 100.01);
@@ -136,7 +144,7 @@ near(solveCircuitTransient(highInput, ampWires, settings(['U(OUT)'])).signals['U
 
 const unsupported = [...amp, e('N1', 'NOT')];
 assert.throws(() => solveCircuitTransient(unsupported, ampWires, settings(['U(OUT)'])), /вырождена/);
-assert.throws(() => solveCircuitTransient(series.filter(el => el.type !== 'GND'), seriesWires, selected), /землю/);
+assert.throws(() => solveCircuitTransient(series.filter(el => el.type !== 'GND'), seriesWires, selected), /отсутствующий/);
 assert.throws(() => solveCircuitTransient(series, [...seriesWires, w('D1', 'bad', 'R1', '1')], selected), /отсутствующий элемент или вывод/);
 const badModel = series.map(el => el.id === 'D1' ? { ...el, modelParams: { onResistance: -1 } } : el);
 assert.throws(() => solveCircuitTransient(badModel, seriesWires, selected), /сопротивление открытого состояния/);

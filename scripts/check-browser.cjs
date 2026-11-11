@@ -41,6 +41,7 @@ cases.push('browser-nonlinear-analysis.cjs');
 cases.push('browser-multipage-print.cjs');
 cases.push('browser-print-formats.cjs');
 cases.push('browser-grid-rotated-pins.cjs');
+cases.push('browser-maxgraph-bridge.cjs');
 if (process.env.NAPS_BROWSER_CASE) {
   const selected = process.env.NAPS_BROWSER_CASE;
   if (!cases.includes(selected)) throw new Error(`Unknown browser case: ${selected}`);
@@ -59,15 +60,20 @@ for (const stream of [server.stdout, server.stderr]) {
 
 async function waitForServer() {
   const deadline = Date.now() + 20000;
+  let lastConnectionError = '';
   while (Date.now() < deadline) {
     if (server.exitCode !== null) throw new Error(`Vite exited early:\n${serverOutput}`);
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(1000) });
       if (response.ok) return;
-    } catch { /* Vite is starting. */ }
+    } catch (error) {
+      lastConnectionError = error instanceof Error
+        ? `${error.message}${error.cause && typeof error.cause === 'object' && 'code' in error.cause ? ` (${error.cause.code})` : ''}`
+        : String(error);
+    }
     await new Promise(resolve => setTimeout(resolve, 200));
   }
-  throw new Error(`Vite did not start at ${url}:\n${serverOutput}`);
+  throw new Error(`Vite did not respond at ${url}: ${lastConnectionError}\n${serverOutput}`);
 }
 
 function runCase(file) {

@@ -296,7 +296,7 @@ for (const sample of SAMPLE_CIRCUITS) {
     }
   }
 }
-assert.throws(() => solveCircuitAC([], [], { fMin: 10, fMax: 1000, points: 20, scaleType: 'log', signals: [] }), /землю/);
+assert.throws(() => solveCircuitAC([], [], { fMin: 10, fMax: 1000, points: 20, scaleType: 'log', signals: [] }), /источник V_AC/);
 const connectedSample = SAMPLE_CIRCUITS[0];
 const beforeGraph = buildCircuitGraph(connectedSample.elements, connectedSample.wires);
 const movedElements = connectedSample.elements.map((element, index) => ({ ...element, x: element.x + index * 20, y: element.y - index * 40, rotation: (element.rotation + 90) % 360 }));
@@ -423,6 +423,11 @@ for (const type of auditedTypes) {
   assert.ok(markup.length > 0, `${type}: symbol`);
   assert.ok(!markup.includes('r="10"'), `${type}: fallback symbol must not be used`);
 }
+const capacitorSymbol = renderToStaticMarkup(renderComponentSymbol({ id: 'C', type: 'C', name: 'C1',
+  x: 0, y: 0, rotation: 0, value: 1e-6, valueStr: '1мк', unit: 'Ф' }));
+assert(capacitorSymbol.includes('x1="-3" y1="-16" x2="-3" y2="16"') &&
+  capacitorSymbol.includes('x1="3" y1="-16" x2="3" y2="16"'),
+  'ГОСТ 2.728-74, table 6: capacitor plates are 8 mm long and 1.5 mm apart');
 for (const component of COMPONENT_CATALOG) {
   const group = terminalGroupForType(component.type);
   if (!group) continue;

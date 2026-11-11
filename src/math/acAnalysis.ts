@@ -26,7 +26,6 @@ export function solveACAnalysis(elements: CircuitElement[], wires: CircuitWire[]
   const started = performance.now();
   if (!Number.isFinite(settings.fMin) || !Number.isFinite(settings.fMax) || settings.fMin <= 0 || settings.fMax <= settings.fMin) throw new Error('AC: задайте 0 < начальная частота < конечная частота.');
   if (!Number.isSafeInteger(settings.points) || settings.points < 2 || settings.points > 2000) throw new Error('AC: число точек должно быть от 2 до 2000.');
-  if (!elements.some(e => e.type === 'GND')) throw new Error('Добавьте землю GND для задания нулевого потенциала.');
   const unsupported = [...new Set(elements.filter(e => !supported.has(e.type) && !e.isolation).map(e => e.type))];
   if (unsupported.length) throw new Error(`AC: малосигнальная модель отсутствует для ${unsupported.join(', ')}. График не построен.`);
   const byId = new Map(elements.map(e => [e.id, e]));

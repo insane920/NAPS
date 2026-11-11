@@ -108,7 +108,6 @@ export function solveLinearTransient(elements: CircuitElement[], wires: CircuitW
   if (!Number.isFinite(settings.tMax) || !Number.isFinite(settings.step) || !(settings.tMax > 0) || !(settings.step > 0) || !Number.isFinite(settings.tMax / settings.step)) throw new Error('Укажите положительные конечное время и шаг.');
   const count = Math.ceil(settings.tMax / settings.step);
   if (count > 20000) throw new Error('Более 20 000 шагов. Увеличьте шаг или уменьшите интервал расчёта.');
-  if (!elements.some(e => e.type === 'GND')) throw new Error('Добавьте землю GND для задания нулевого потенциала.');
   const branches = electricalElements(elements);
   const isolated = elements.filter(e => e.isolation && !passive.has(e.type));
   if (!branches.length) throw new Error('В схеме нет электрических компонентов.');

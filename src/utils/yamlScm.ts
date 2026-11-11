@@ -79,9 +79,13 @@ export interface CircuitDescription {
   purpose: string;
   comment: string;
   designation?: string;
+  letter?: string;
+  mass?: string;
+  copier?: string;
   organization?: string;
   author?: string;
   checker?: string;
+  technicalController?: string;
   normController?: string;
   approver?: string;
   issueDate?: string;
@@ -226,8 +230,8 @@ export function exportToYamlScm(
   if (printLayout.presentation) yaml += `  Presentation: ${printLayout.presentation}\n`;
   if (format === 'current' && Object.values(description).some(value => value?.trim())) {
     yaml += `\nDocument:\n  Title: ${JSON.stringify(description.title)}\n  Purpose: ${JSON.stringify(description.purpose)}\n  Comment: ${JSON.stringify(description.comment)}\n`;
-    for (const [key, field] of [['Designation', 'designation'], ['Organization', 'organization'], ['Author', 'author'],
-      ['Checker', 'checker'], ['NormController', 'normController'], ['Approver', 'approver'],
+    for (const [key, field] of [['Designation', 'designation'], ['Letter', 'letter'], ['Mass', 'mass'], ['Copier', 'copier'], ['Organization', 'organization'], ['Author', 'author'],
+      ['Checker', 'checker'], ['TechnicalController', 'technicalController'], ['NormController', 'normController'], ['Approver', 'approver'],
       ['IssueDate', 'issueDate'], ['SheetNumber', 'sheetNumber'], ['SheetCount', 'sheetCount']] as const) {
       if (description[field]) yaml += `  ${key}: ${JSON.stringify(description[field])}\n`;
     }
@@ -459,8 +463,8 @@ export function parseYamlScm(yamlText: string): {
       else if (trimmed.startsWith('GridMm:')) gridMm = finiteScmNumber(trimmed.slice(7), 'GridMm');
     } else if (currentSection === 'document') {
       for (const [key, field] of [['Title', 'title'], ['Purpose', 'purpose'], ['Comment', 'comment'],
-        ['Designation', 'designation'], ['Organization', 'organization'], ['Author', 'author'],
-        ['Checker', 'checker'], ['NormController', 'normController'], ['Approver', 'approver'],
+        ['Designation', 'designation'], ['Letter', 'letter'], ['Mass', 'mass'], ['Copier', 'copier'], ['Organization', 'organization'], ['Author', 'author'],
+        ['Checker', 'checker'], ['TechnicalController', 'technicalController'], ['NormController', 'normController'], ['Approver', 'approver'],
         ['IssueDate', 'issueDate'], ['SheetNumber', 'sheetNumber'], ['SheetCount', 'sheetCount']] as const) {
         if (trimmed.startsWith(`${key}:`)) description[field] = readScalar(trimmed.slice(key.length + 1));
       }

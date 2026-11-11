@@ -72,15 +72,31 @@ const zlib = require('node:zlib');
     assert.ok(pageCommands.every(stream => (stream.match(/\bTj\b/g) || []).length >= 4));
     assert.ok(pageCommands.every(stream => !/\b2 Tr\b/.test(stream)),
       'component designations must not be painted with a thick white text stroke');
+    await dialog.getByRole('checkbox', { name: 'Рамка и основная надпись' }).check();
+    await page.waitForFunction(() => document.querySelector('iframe[title="Предварительный просмотр листа"]')
+      ?.getAttribute('srcdoc')?.match(/data-eskd-title-block="true"/g)?.length >= 2);
+    const sheetFields = await page.getByTitle('Предварительный просмотр листа').evaluate(frame => {
+      const doc = new DOMParser().parseFromString(frame.getAttribute('srcdoc'), 'text/html');
+      return [...doc.querySelectorAll('[data-eskd-title-block]')].map(block => ({
+        number: block.querySelector('[data-eskd-field="sheet-number"]')?.textContent,
+        count: block.querySelector('[data-eskd-field="sheet-count"]')?.textContent,
+      }));
+    });
+    assert.deepEqual(sheetFields, sheetFields.map((_, index) => ({ number: String(index + 1), count: String(sheetFields.length) })),
+      'each printed tile has its own sheet number and the common sheet count');
+    const [framedDownload] = await Promise.all([page.waitForEvent('download'), dialog.getByRole('button', { name: 'Скачать PDF' }).click()]);
+    const framedPdf = (await fs.readFile(await framedDownload.path())).toString('latin1');
+    assert.equal((framedPdf.match(/\/Type\s*\/Page\b/g) || []).length, sheetFields.length,
+      'the numbered vector PDF contains one physical page per title block');
     await dialog.getByRole('button', { name: 'Закрыть' }).click();
     await page.getByRole('button', { name: 'Экспорт ▾' }).click();
     await page.getByRole('menuitem', { name: 'Печать' }).click();
     const printDialog = page.getByRole('dialog', { name: 'Настройки печати и экспорта' });
-    await page.waitForFunction(() => document.querySelector('iframe[title="Предварительный просмотр листа"]')
-      ?.getAttribute('srcdoc')?.match(/data-page-column=/g)?.length === 2);
+    await page.waitForFunction(expected => document.querySelector('iframe[title="Предварительный просмотр листа"]')
+      ?.getAttribute('srcdoc')?.match(/data-page-column=/g)?.length === expected, sheetFields.length);
     assert.equal(await printDialog.getByRole('button', { name: 'Печать…' }).isDisabled(), false,
       'the same multi-page preview is printable');
     assert.deepEqual(errors, []);
-    console.log('PASS: oversized drawing tiles across two 1:1 A4 vector PDF pages and print preview.');
+    console.log('PASS: oversized drawing tiles across 1:1 A4 vector PDF pages with numbered title blocks and print preview.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

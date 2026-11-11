@@ -67,12 +67,20 @@ const fs = require('node:fs/promises');
         await settings.waitFor({ state: 'hidden' });
         assert.equal(await page.locator('[data-node-number-ring]').count(), mode === 'teacher' ? 9 : 0);
         assert.equal(await page.locator('[data-pin-marker="positive"]').count(), mode === 'teacher' ? 5 : 0);
+        const draftingLabel = page.locator('[data-label-kind="name"]').first();
+        assert.equal(await draftingLabel.getAttribute('font-weight'), mode === 'teacher' ? 'bold' : 'normal');
+        const labelFont = Number(await draftingLabel.getAttribute('font-size'));
+        assert.ok(Math.abs(labelFont * (mode === 'teacher' ? 0.66 : 0.64) / 4 - 2.5) < 0.05,
+          'both presentation modes preserve a 2.5 mm capital height');
         const text = await save();
         assert.match(text, new RegExp(`Presentation: ${mode}`));
         await load(text);
         assert.deepEqual(await state(text), before, 'presentation round-trip leaves circuit unchanged');
         await page.getByRole('button', { name: 'Экспорт ▾', exact: true }).click();
         await page.getByRole('menuitem', { name: 'SVG', exact: true }).click();
+        assert.equal(await page.getByRole('dialog', { name: 'Настройки печати и экспорта' })
+          .getByText(/Черновой экспорт: для оформления по ЕСКД/).count(), mode === 'eskd' ? 1 : 0,
+          'an incomplete ESKD title block is identified as a draft');
         const ringCount = await page.getByTitle('Предварительный просмотр листа').evaluate(frame => {
           const doc = new DOMParser().parseFromString(frame.getAttribute('srcdoc'), 'text/html');
           return doc.querySelectorAll('[data-node-number-ring]').length;
@@ -138,7 +146,7 @@ const fs = require('node:fs/promises');
         return exportToYamlScm([{ ...r, name: 'Длинное_обозначение_'.repeat(12), isolation: 'open' }], [], data.transient);
       }, fixture);
       await load(long, 'long.scm');
-      await page.locator('[data-component-id]').first().dispatchEvent('mouseover');
+      await page.locator('[data-component-id]').first().hover();
       await page.waitForFunction(() => document.querySelector('.status-text')?.textContent?.includes('разрыв'));
       assert.match(await page.locator('.status-text').getAttribute('title'), /разрыв/);
       const status = await page.locator('.status-bar').boundingBox();

@@ -14,8 +14,8 @@ const { version } = require('../package.json');
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(process.env.NAPS_TEST_URL || 'http://127.0.0.1:3000/', { waitUntil: 'networkidle' });
-  const groundButton = await page.getByTitle('Поставить опорный потенциал 0 В').boundingBox();
-  assert.ok(groundButton.width >= 40 && groundButton.height <= 36, '900px toolbar keeps the ground action readable on one line');
+  assert.equal(await page.getByTitle('Поставить опорный потенциал 0 В').count(), 0,
+    'new documents no longer require a GND placement action');
   assert.ok(await page.locator('.brand').getByText(`Версия ${version}`).isVisible(), 'pre-release version remains visible on a narrow screen');
   await page.getByRole('button', { name: 'Переходный процесс' }).click();
   assert.match(await page.getByRole('alert').innerText(), /Добавьте элементы/);
@@ -23,8 +23,12 @@ const { version } = require('../package.json');
   await page.getByRole('button', { name: 'Резистор' }).first().click();
   await page.mouse.click(canvas.x + 250, canvas.y + 180);
   await page.getByRole('button', { name: 'Переходный процесс' }).click();
-  await page.getByRole('alert').waitFor();
-  assert.match(await page.getByRole('alert').innerText(), /землю GND/, 'incomplete circuit must report the missing reference');
+  await page.waitForFunction(() => document.querySelector('[role="alert"]') ||
+    document.querySelector('[role="dialog"][aria-label="Результаты расчёта"]'));
+  if (await page.getByRole('alert').count()) {
+    assert.doesNotMatch(await page.getByRole('alert').innerText(), /землю GND/,
+      'an incomplete circuit must never ask for a GND symbol');
+  } else await page.getByRole('button', { name: 'Закрыть график' }).click();
   await page.getByRole('button', { name: 'Библиотека' }).click();
   assert.match(await page.locator('body').innerText(), /Двухполюсники/);
   await page.screenshot({ path: '.work/browser-library-900.png' });

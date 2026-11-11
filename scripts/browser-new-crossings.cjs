@@ -18,7 +18,9 @@ const center = locator => locator.evaluate(circle => {
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, acceptDownloads: true });
     const errors = [];
+    const dialogs = [];
     page.on('pageerror', error => errors.push(error.message));
+    page.on('dialog', async dialog => { dialogs.push(dialog.message()); await dialog.accept(); });
     await page.goto(process.env.NAPS_TEST_URL || 'http://127.0.0.1:3000/', { waitUntil: 'networkidle' });
     const fixture = await page.evaluate(async () => {
       const { exportToYamlScm } = await import('/src/utils/yamlScm.ts');
@@ -57,7 +59,7 @@ const center = locator => locator.evaluate(circle => {
     const grab = { x: top.x, y: top.y + (bottom.y - top.y) * 0.25 };
     await page.mouse.move(grab.x, grab.y);
     await page.mouse.down();
-    await page.mouse.move(grab.x + 350, grab.y, { steps: 4 });
+    await page.mouse.move(grab.x - 250, grab.y, { steps: 4 });
     await page.mouse.up();
     const [movedDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
     const movedScm = await fs.readFile(await movedDownload.path(), 'utf8');
@@ -67,14 +69,21 @@ const center = locator => locator.evaluate(circle => {
       const parsed = parseYamlScm(scm);
       const ids = Object.fromEntries(parsed.elements.map(item => [item.name, item.id]));
       const nodes = buildCircuitGraph(parsed.elements, parsed.wires).pinToNode;
-      return { junctions: parsed.elements.filter(item => item.autoCrossing).length,
+      return { junctions: parsed.elements.filter(item => item.type === 'JUNCTION').length,
+        anchored: parsed.elements.some(item => item.type === 'JUNCTION' && item.branchAnchor),
         joined: nodes.get(`${ids.R1}_2`) === nodes.get(`${ids.R3}_2`) };
     }, movedScm);
-    assert.deepEqual(moved, { junctions: 0, joined: false }, 'moving the crossing segment away disconnects the electrical nets');
+    assert.deepEqual(moved, { junctions: 1, anchored: true, joined: true },
+      'dragging a connected branch promotes its movable junction and keeps the electrical net together');
+    const movedJunctionX = await page.evaluate(async scm => {
+      const { parseYamlScm } = await import('/src/utils/yamlScm.ts');
+      return parseYamlScm(scm).elements.find(item => item.type === 'JUNCTION')?.x;
+    }, movedScm);
+    assert.notEqual(movedJunctionX, 300, 'dragging the branch actually moves its junction');
     await page.keyboard.press('Control+z');
-    assert.equal(await page.locator('[data-component-id]').count(), 5, 'undo restores the crossing after segment edit');
+    assert.equal(await page.locator('[data-component-id]').count(), 5, 'undo restores the original crossing position');
     await page.keyboard.press('Control+y');
-    assert.equal(await page.locator('[data-component-id]').count(), 4, 'redo removes the crossing again');
+    assert.equal(await page.locator('[data-component-id]').count(), 5, 'redo moves the connected crossing again');
     await page.keyboard.press('Control+z');
     const rotated = await pin(2, 1).locator('..').evaluate(group => {
       const point = group.ownerSVGElement.createSVGPoint(); point.x = 0; point.y = 0;

@@ -7,6 +7,10 @@ const element = (id: string, type: CircuitElement['type'], value: number): Circu
 const wire = (a: string, ap: string, b: string, bp: string): CircuitWire => ({ id: `${a}${ap}-${b}${bp}`, fromCompId: a, fromPinId: ap, toCompId: b, toPinId: bp });
 const settings = (exprs: string[], frequency: number): ACSettings => ({ fMin: frequency, fMax: frequency * 1.000001, points: 2, scaleType: 'linear', signals: exprs.map((exprY, i) => ({ id: String(i), plotIndex: /^phs/i.test(exprY) ? 2 : 1, exprX: 'f', exprY, color: '#000', enabled: true })) });
 const near = (actual: number, expected: number, tolerance = 1e-7) => assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} != ${expected} ± ${tolerance}`);
+const ungroundedAc = [element('VFREE', 'V_AC', 2), element('RFREE', 'R', 100)];
+const ungroundedWires = [wire('VFREE', '1', 'RFREE', '1'), wire('RFREE', '2', 'VFREE', '2')];
+near(solveCircuitAC(ungroundedAc, ungroundedWires, settings(['mag(U(RFREE))'], 100))
+  .signals['mag(U(RFREE))'][0], 2);
 
 const currentSourceCircuit = [element('IA', 'I_AC', 0.01), element('RL', 'R', 100), element('G0', 'GND', 0), { ...element('OUTI', 'PORT', 0), portName: 'OUTI' }];
 const currentSourceWires = [wire('IA', '1', 'RL', '1'), wire('IA', '2', 'RL', '2'), wire('RL', '2', 'G0', '1'), wire('RL', '1', 'OUTI', '1')];

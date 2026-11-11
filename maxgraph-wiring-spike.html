@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="ru">
+  <head><meta charset="UTF-8"><title>NAPS: проверка готового редактора</title></head>
+  <body style="margin:0;font-family:sans-serif">
+    <div style="height:36px;padding:4px;box-sizing:border-box"><button id="tool-select" type="button">Выбор</button><button id="tool-wire" type="button">Проводка</button><button id="undo" type="button">↶</button><button id="redo" type="button">↷</button><button id="open-scm" type="button">Открыть SCM</button><input id="open-scm-input" type="file" accept=".scm,.yaml,.yml" hidden><span id="stats"></span></div>
+    <div id="canvas" style="position:relative;width:100vw;height:calc(100vh - 36px);overflow:hidden;background:#fff"></div>
+    <script type="module" src="/src/spikes/maxGraphWiring.ts"></script>
+  </body>
+</html>

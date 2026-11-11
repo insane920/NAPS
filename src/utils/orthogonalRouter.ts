@@ -16,7 +16,8 @@ export function componentObstacle(element: CircuitElement, clearance = 4): Route
       : SYMBOL_METRICS.bodyHalfWidth;
   const halfHeight = ['CHIP', 'RS_FF', 'D_FF', 'JK_FF'].includes(element.type) ? 28
     : ['OPAMP', 'COMPARATOR', 'NPN', 'PNP', 'NMOS', 'PMOS', 'TR3'].includes(element.type) ? 23
-      : element.type === 'R' ? SYMBOL_METRICS.passiveHalfHeight : SYMBOL_METRICS.sourceRadius;
+      : element.type === 'R' ? SYMBOL_METRICS.passiveHalfHeight
+        : element.type === 'C' ? SYMBOL_METRICS.capacitorPlateHalfLength : SYMBOL_METRICS.sourceRadius;
   const angle = (element.rotation || 0) * Math.PI / 180;
   const paddedWidth = halfWidth + clearance, paddedHeight = halfHeight + clearance;
   const x = Math.abs(Math.cos(angle)) * paddedWidth + Math.abs(Math.sin(angle)) * paddedHeight;
@@ -140,10 +141,16 @@ export function routeIsClear(points: RoutePoint[], obstacles: RouteBox[], foreig
   allowedContacts: RoutePoint[] = []): boolean {
   for (let index = 1; index < points.length; index++) {
     const a = points[index - 1], b = points[index];
-    if (obstacles.some(box => hitsBox(a, b, box))) return false;
+    const left = Math.min(a.x, b.x), right = Math.max(a.x, b.x);
+    const top = Math.min(a.y, b.y), bottom = Math.max(a.y, b.y);
+    if (obstacles.some(box => box.left <= right + EPS && box.right >= left - EPS &&
+      box.top <= bottom + EPS && box.bottom >= top - EPS && hitsBox(a, b, box))) return false;
     for (const route of foreign) for (let other = 1; other < route.length; other++) {
-      if (segmentsMeet(a, b, route[other - 1], route[other]) &&
-          !onlyTouchesAllowedContact(a, b, route[other - 1], route[other], allowedContacts)) return false;
+      const c = route[other - 1], d = route[other];
+      if (Math.min(c.x, d.x) > right + EPS || Math.max(c.x, d.x) < left - EPS ||
+          Math.min(c.y, d.y) > bottom + EPS || Math.max(c.y, d.y) < top - EPS) continue;
+      if (segmentsMeet(a, b, c, d) &&
+          !onlyTouchesAllowedContact(a, b, c, d, allowedContacts)) return false;
     }
   }
   return true;

@@ -59,6 +59,66 @@ const fs = require('node:fs/promises');
       await page.keyboard.press('Control+z');
       assert.equal(await main.getAttribute('d'), initial, 'undo preserves the route');
     }
+    for (const mode of ['connect', 'explicit']) {
+      const movedNetworkScm = await page.evaluate(async crossingMode => {
+        const { exportToYamlScm } = await import('/src/utils/yamlScm.ts');
+        const { SAMPLE_CIRCUITS } = await import('/src/data/sampleCircuits.ts');
+        const resistor = (id, x, y) => ({ id, name: id, type: 'R', x, y, rotation: 0, value: 1000, valueStr: '1к', unit: 'Ом' });
+        const junction = (id, x, y) => ({ id, name: id, type: 'JUNCTION', x, y, rotation: 0, value: 0, valueStr: '', unit: '' });
+        const elements = [resistor('A', 100, 550), resistor('B', 500, 550), junction('C', 300, 600), junction('D', 300, 700)];
+        const wires = [
+          { id: 'main', fromCompId: 'A', fromPinId: '2', toCompId: 'B', toPinId: '1' },
+          { id: 'moving', fromCompId: 'C', fromPinId: '1', toCompId: 'D', toPinId: '1' },
+        ];
+        return exportToYamlScm(elements, wires, SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', crossingMode);
+      }, mode);
+      await page.locator('input[type="file"]').setInputFiles({ name: `moving-network-${mode}.scm`, mimeType: 'text/plain', buffer: Buffer.from(movedNetworkScm) });
+      await page.keyboard.press('Escape');
+      const movingJunction = page.locator('[data-component-id]').nth(2);
+      const beforeRoutes = await page.locator('[data-wire-id] path[stroke="transparent"]').evaluateAll(paths => paths.map(path => path.getAttribute('d')));
+      const center = await movingJunction.evaluate(group => ({ x: group.getScreenCTM().e, y: group.getScreenCTM().f, scale: group.getScreenCTM().d }));
+      await page.mouse.move(center.x, center.y); await page.mouse.down();
+      await page.mouse.move(center.x, center.y - 100 * center.scale, { steps: 8 }); await page.mouse.up();
+      const afterRoutes = await page.locator('[data-wire-id] path[stroke="transparent"]').evaluateAll(paths => paths.map(path => path.getAttribute('d')));
+      const result = await page.evaluate(async () => {
+        const { routeIsClear } = await import('/src/utils/orthogonalRouter.ts');
+        const routes = [...document.querySelectorAll('[data-wire-id] path[stroke="transparent"]')].map(path => {
+          const numbers = [...path.getAttribute('d').matchAll(/-?\d+(?:\.\d+)?/g)].map(match => Number(match[0]));
+          return Array.from({ length: numbers.length / 2 }, (_, i) => ({ x: numbers[i * 2], y: numbers[i * 2 + 1] }));
+        });
+        return { clear: routeIsClear(routes[0], [], [routes[1]]), routes };
+      });
+      assert.equal(result.clear, true, `${mode}: moving another net must reroute without creating a short`);
+      assert.equal(afterRoutes[0], beforeRoutes[0], `${mode}: unaffected network stays still`);
+      for (let repeat = 0; repeat < 10; repeat++) {
+        const current = await movingJunction.evaluate(group => ({ x: group.getScreenCTM().e, y: group.getScreenCTM().f, scale: group.getScreenCTM().d }));
+        await page.mouse.move(current.x, current.y); await page.mouse.down();
+        await page.mouse.move(current.x, current.y + 100 * current.scale, { steps: 3 }); await page.mouse.up();
+        assert.deepEqual(await page.locator('[data-wire-id] path[stroke="transparent"]').evaluateAll(paths => paths.map(path => path.getAttribute('d'))),
+          beforeRoutes, `${mode}: return ${repeat + 1} restores the original geometry`);
+        const back = await movingJunction.evaluate(group => ({ x: group.getScreenCTM().e, y: group.getScreenCTM().f, scale: group.getScreenCTM().d }));
+        await page.mouse.move(back.x, back.y); await page.mouse.down();
+        await page.mouse.move(back.x, back.y - 100 * back.scale, { steps: 3 }); await page.mouse.up();
+        assert.deepEqual(await page.locator('[data-wire-id] path[stroke="transparent"]').evaluateAll(paths => paths.map(path => path.getAttribute('d'))),
+          afterRoutes, `${mode}: repeated crossing ${repeat + 1} adds no bends`);
+      }
+      const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Сохранить', exact: true }).click()]);
+      const saved = await fs.readFile(await download.path(), 'utf8');
+      const distinct = await page.evaluate(async scm => {
+        const { parseYamlScm } = await import('/src/utils/yamlScm.ts');
+        const { buildCircuitGraph } = await import('/src/math/circuitSolver.ts');
+        const data = parseYamlScm(scm), graph = buildCircuitGraph(data.elements, data.wires).pinToNode;
+        const ids = Object.fromEntries(data.elements.map(element => [element.name, element.id]));
+        return graph.get(`${ids.A}_2`) !== graph.get(`${ids.C}_1`);
+      }, saved);
+      assert.equal(distinct, true, `${mode}: movement preserves electrical separation`);
+      await page.keyboard.press('Control+z');
+      assert.deepEqual(await page.locator('[data-wire-id] path[stroke="transparent"]').evaluateAll(paths => paths.map(path => path.getAttribute('d'))), beforeRoutes);
+      await page.keyboard.press('Control+y');
+      assert.deepEqual(await page.locator('[data-wire-id] path[stroke="transparent"]').evaluateAll(paths => paths.map(path => path.getAttribute('d'))), afterRoutes);
+      await page.locator('input[type="file"]').setInputFiles({ name: `moving-network-reopen-${mode}.scm`, mimeType: 'text/plain', buffer: Buffer.from(saved) });
+      assert.deepEqual(await page.locator('[data-wire-id] path[stroke="transparent"]').evaluateAll(paths => paths.map(path => path.getAttribute('d'))), afterRoutes);
+    }
     const damagedScm = await page.evaluate(async () => {
       const { exportToYamlScm } = await import('/src/utils/yamlScm.ts');
       const { SAMPLE_CIRCUITS } = await import('/src/data/sampleCircuits.ts');
@@ -79,6 +139,28 @@ const fs = require('node:fs/promises');
       const data = parseYamlScm(scm);
       return data.crossingMode === 'connect' && data.wires.length === 1 && data.wires[0].routeMode === 'direct';
     }, damagedSaved), true, 'saving the damaged document retains SCM 8 semantics and wire data');
+    const damagedFingerprint = await page.evaluate(async ({ original, saved }) => {
+      const { parseYamlScm } = await import('/src/utils/yamlScm.ts');
+      const { buildCircuitGraph } = await import('/src/math/circuitSolver.ts');
+      const fingerprint = scm => {
+        const data = parseYamlScm(scm), names = new Map(data.elements.map(e => [e.id, e.name]));
+        const graph = buildCircuitGraph(data.elements, data.wires).pinToNode;
+        const pins = data.elements.flatMap(e => ['1', '2'].map(pin => ({ key: `${e.id}_${pin}`, name: `${e.name}:${pin}` })));
+        return { mode: data.crossingMode,
+          elements: data.elements.map(({ name, type, x, y }) => ({ name, type, x, y })),
+          wires: data.wires.map(w => ({ from: `${names.get(w.fromCompId)}:${w.fromPinId}`,
+            to: `${names.get(w.toCompId)}:${w.toPinId}`, routeMode: w.routeMode, waypoints: w.waypoints })),
+          connectedPairs: pins.flatMap((a, i) => pins.slice(i + 1).filter(b => graph.get(a.key) === graph.get(b.key))
+            .map(b => `${a.name}|${b.name}`)) };
+      };
+      return { before: fingerprint(original), after: fingerprint(saved) };
+    }, { original: damagedScm, saved: damagedSaved });
+    assert.deepEqual(damagedFingerprint.after, damagedFingerprint.before,
+      'damaged SCM 8 save preserves components, route and exact electrical partition');
+    await page.locator('input[type="file"]').setInputFiles({ name: 'damaged-reopened.scm',
+      mimeType: 'text/plain', buffer: Buffer.from(damagedSaved) });
+    assert.match(await page.getByRole('alert').innerText(), /провод A\.2 → B\.1/,
+      'reopening the unchanged damaged route reports the same defect');
     const blockedScm = await page.evaluate(async () => {
       const { exportToYamlScm } = await import('/src/utils/yamlScm.ts');
       const { SAMPLE_CIRCUITS } = await import('/src/data/sampleCircuits.ts');

@@ -56,6 +56,16 @@ const fs = require('node:fs/promises');
       else assert.match(await page.locator('#control-source option:checked').innerText(), /I\(CONTROL\)/);
       await page.getByRole('button', { name: 'Отмена', exact: true }).click();
       text = await save();
+      if (crossingMode === 'connect') assert.deepEqual(await page.evaluate(async text => {
+        const { parseYamlScm } = await import('/src/utils/yamlScm.ts');
+        const { buildCircuitGraph } = await import('/src/math/circuitSolver.ts');
+        const data = parseYamlScm(text), graph = buildCircuitGraph(data.elements, data.wires);
+        const control = data.elements.find(e => e.name === 'CONTROL');
+        const ground = data.elements.find(e => e.name === 'G0');
+        return { automaticJunctions: data.elements.filter(e => e.autoCrossing).length,
+          independentControl: graph.pinToNode.get(`${control.id}_1`) !== graph.pinToNode.get(`${ground.id}_1`) };
+      }, text), { automaticJunctions: 0, independentControl: true },
+      `${type}: automatic routing must not short the control and reference nets`);
       const actual = await page.evaluate(async text => {
         const { parseYamlScm } = await import('/src/utils/yamlScm.ts');
         const { solveCircuitTransient } = await import('/src/math/circuitSolver.ts');

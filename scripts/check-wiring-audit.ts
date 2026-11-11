@@ -7,6 +7,9 @@ import {
   getComponentPins,
   isAllowedWireSegment,
   moveFreeWireSegment,
+  moveWireSegment,
+  dragConnectedWireSegment,
+  finishWireGeometry,
   moveSelectedElements,
   materializeWireCrossings,
   collapseAutomaticCrossings,
@@ -29,6 +32,118 @@ import { componentObstacle, routeAroundObstacles, routeIsClear, automaticRouteCo
 import { mergeCoincidentAutomaticCrossings, mergeCoincidentJunctions, promoteAnchoredCrossings } from '../src/utils/junctionTopology';
 import { derivedBranchMarkers, uniqueWireInk } from '../src/utils/wireInk';
 import type { CircuitElement, CircuitWire } from '../src/types';
+
+const crossingPins: CircuitElement[] = [
+  ['left', 100, 200], ['right', 500, 200], ['top', 300, 100], ['bottom', 300, 300],
+].map(([id, x, y]) => ({ id: String(id), name: String(id), type: 'JUNCTION', x: Number(x), y: Number(y),
+  rotation: 0, value: 0, valueStr: '0', unit: '' }));
+const capacitorObstacle = componentObstacle({ id: 'C-test', name: 'C-test', type: 'C', x: 0, y: 0,
+  rotation: 0, value: 1e-6, valueStr: '1мк', unit: 'Ф' })!;
+assert.equal(capacitorObstacle.bottom, 20,
+  'capacitor routing clearance includes the full 8 mm plate after the ESKD symbol correction');
+const crossingSegments: CircuitWire[] = [
+  { id: 'horizontal', fromCompId: 'left', fromPinId: '1', toCompId: 'right', toPinId: '1', routeMode: 'direct', manual: true },
+  { id: 'vertical', fromCompId: 'top', fromPinId: '1', toCompId: 'bottom', toPinId: '1', routeMode: 'direct', manual: true },
+];
+const automaticCrossingCandidates = crossingSegments.map(({ routeMode, manual, ...wire }) => wire);
+const automaticCrossingRoutes = routeCircuitWires(crossingPins, automaticCrossingCandidates, 20, new Map(), 'connect');
+const independentAutomatic = normalizeCrossingTopology(crossingPins, automaticCrossingCandidates,
+  automaticCrossingRoutes, 'connect');
+assert.equal(independentAutomatic.elements.length, crossingPins.length,
+  'automatic routes must not introduce a junction between independent networks');
+assert.notEqual(buildCircuitGraph(independentAutomatic.elements, independentAutomatic.wires).pinToNode.get('left_1'),
+  buildCircuitGraph(independentAutomatic.elements, independentAutomatic.wires).pinToNode.get('top_1'),
+  'automatic routing must not silently short separate electrical networks');
+const crossingRoutes = routeCircuitWires(crossingPins, crossingSegments, 20, new Map(), 'connect');
+assert.deepEqual(crossingRoutes.map(route => route.points.map(({ x, y }) => ({ x, y }))), [
+  [{ x: 100, y: 200 }, { x: 500, y: 200 }],
+  [{ x: 300, y: 100 }, { x: 300, y: 300 }],
+], 'SCM 8 retains an intentionally drawn straight crossing without detouring');
+const joinedCrossing = normalizeCrossingTopology(crossingPins, crossingSegments, crossingRoutes, 'connect');
+assert.equal(buildCircuitGraph(joinedCrossing.elements, joinedCrossing.wires).pinToNode.get('left_1'),
+  buildCircuitGraph(joinedCrossing.elements, joinedCrossing.wires).pinToNode.get('top_1'),
+  'the visible crossing is also an electrical junction');
+assert.deepEqual(moveWireSegment([
+  { x: 0, y: 0 }, { x: 0, y: 40 }, { x: 100, y: 40 }, { x: 100, y: 0 },
+], 1, 60), [
+  { x: 0, y: 0 }, { x: 0, y: 60 }, { x: 100, y: 60 }, { x: 100, y: 0 },
+], 'dragging an internal segment extends connected arms without new bends');
+const junctionWire = joinedCrossing.wires.find(wire => wire.fromCompId === 'left' || wire.toCompId === 'left')!;
+const junctionRoute = routeCircuitWires(joinedCrossing.elements, joinedCrossing.wires, 20,
+  new Map(), 'connect').find(route => route.wire.id === junctionWire.id)!;
+const shiftedCrossing = dragConnectedWireSegment(joinedCrossing.elements, joinedCrossing.wires,
+  junctionWire.id, junctionRoute.points, 0, 220);
+const shiftedJunction = shiftedCrossing.elements.find(element => element.type === 'JUNCTION' &&
+  element.x === 300 && element.y === 220);
+assert(shiftedJunction?.branchAnchor && !shiftedJunction.autoCrossing,
+  'dragging a segment promotes its crossing endpoint into a durable movable junction');
+assert.equal(buildCircuitGraph(shiftedCrossing.elements, shiftedCrossing.wires).pinToNode.get('left_1'),
+  buildCircuitGraph(shiftedCrossing.elements, shiftedCrossing.wires).pinToNode.get('top_1'),
+  'all crossing branches remain electrically connected while the shared junction moves');
+const shiftedRoute = routeCircuitWires(shiftedCrossing.elements, shiftedCrossing.wires, 20,
+  new Map(), 'connect').find(route => route.wire.id === junctionWire.id)!;
+assert.deepEqual(shiftedRoute.points.map(({ x, y }) => ({ x, y })),
+  [{ x: 100, y: 200 }, { x: 100, y: 220 }, { x: 300, y: 220 }],
+  'the dragged segment and its connected junction form a simple orthogonal route');
+const shiftedRoutes = routeCircuitWires(shiftedCrossing.elements, shiftedCrossing.wires, 20,
+  new Map(), 'connect');
+const normalizedShifted = finishWireGeometry(shiftedCrossing.elements, shiftedCrossing.wires,
+  shiftedRoutes, 'connect');
+assert(normalizedShifted.elements.some(element => element.id === shiftedJunction.id &&
+  element.x === 300 && element.y === 220),
+  'releasing the drag retains the same junction identity and position');
+const reloadedShifted = parseYamlScm(exportToYamlScm(normalizedShifted.elements,
+  normalizedShifted.wires, SAMPLE_CIRCUITS[0].transient, undefined, undefined, 'current', 'connect'));
+assert.equal(buildCircuitGraph(reloadedShifted.elements, reloadedShifted.wires).pinToNode.get('left_1'),
+  buildCircuitGraph(reloadedShifted.elements, reloadedShifted.wires).pinToNode.get('top_1'),
+  'the branch topology survives SCM 8 save and reopen after segment drag');
+const topBranch = joinedCrossing.wires.find(wire => wire.fromCompId === 'top' || wire.toCompId === 'top')!;
+const manualCrossingWires = joinedCrossing.wires.map(wire => wire.id === topBranch.id
+  ? { ...wire, manual: true, waypoints: [{ x: 260, y: 160 }] } : wire);
+const movedManualBranch = dragConnectedWireSegment(joinedCrossing.elements, manualCrossingWires,
+  junctionWire.id, junctionRoute.points, 0, 220);
+assert.deepEqual(movedManualBranch.wires.find(wire => wire.id === topBranch.id)?.waypoints,
+  [{ x: 260, y: 180 }], 'a manually placed bend attached to the moved branch follows once');
+for (let index = 0; index < 50; index++) {
+  const coordinate = 200 + ((index % 4) + 1) * 20;
+  const moved = dragConnectedWireSegment(joinedCrossing.elements, joinedCrossing.wires,
+    junctionWire.id, junctionRoute.points, 0, coordinate);
+  const rerouted = routeCircuitWires(moved.elements, moved.wires, 20, new Map(), 'connect')
+    .find(route => route.wire.id === junctionWire.id)!;
+  assert(automaticRouteCost(rerouted.points).bends <= 2,
+    'repeated segment drags from the original snapshot do not accumulate doglegs');
+  assert.equal(buildCircuitGraph(moved.elements, moved.wires).pinToNode.get('left_1'),
+    buildCircuitGraph(moved.elements, moved.wires).pinToNode.get('top_1'));
+}
+const tBranchWires = joinedCrossing.wires.filter(wire =>
+  wire.fromCompId !== 'bottom' && wire.toCompId !== 'bottom');
+const movedTBranch = dragConnectedWireSegment(joinedCrossing.elements, tBranchWires,
+  junctionWire.id, junctionRoute.points, 0, 240);
+assert.equal(buildCircuitGraph(movedTBranch.elements, movedTBranch.wires).pinToNode.get('left_1'),
+  buildCircuitGraph(movedTBranch.elements, movedTBranch.wires).pinToNode.get('top_1'),
+  'dragging a T branch keeps all three incident conductors in one network');
+const legacyBranch = parseYamlScm(exportToYamlScm(
+  joinedCrossing.elements.map(element => element.autoCrossing
+    ? { ...element, autoCrossing: undefined, branchAnchor: true } : element),
+  joinedCrossing.wires, SAMPLE_CIRCUITS[0].transient,
+  undefined, undefined, 'current', 'explicit'));
+const legacyLeft = legacyBranch.elements.find(element => element.name === 'left')!;
+const legacyWire = legacyBranch.wires.find(wire =>
+  wire.fromCompId === legacyLeft.id || wire.toCompId === legacyLeft.id)!;
+const legacyRoute = routeCircuitWires(legacyBranch.elements, legacyBranch.wires, 20,
+  new Map(), 'explicit').find(route => route.wire.id === legacyWire.id)!;
+const movedLegacy = dragConnectedWireSegment(legacyBranch.elements, legacyBranch.wires,
+  legacyWire.id, legacyRoute.points, 0, 220);
+const legacyAfterRelease = finishWireGeometry(movedLegacy.elements, movedLegacy.wires,
+  routeCircuitWires(movedLegacy.elements, movedLegacy.wires, 20, new Map(), 'explicit'), 'explicit');
+const reloadedLegacy = parseYamlScm(exportToYamlScm(legacyAfterRelease.elements,
+  legacyAfterRelease.wires, SAMPLE_CIRCUITS[0].transient,
+  undefined, undefined, 'current', 'explicit'));
+assert.equal(reloadedLegacy.crossingMode, 'explicit');
+const legacyNames = new Map(reloadedLegacy.elements.map(element => [element.name, element.id]));
+assert.equal(buildCircuitGraph(reloadedLegacy.elements, reloadedLegacy.wires).pinToNode.get(`${legacyNames.get('left')}_1`),
+  buildCircuitGraph(reloadedLegacy.elements, reloadedLegacy.wires).pinToNode.get(`${legacyNames.get('top')}_1`),
+  'explicit SCM 7 junction keeps its original network after segment drag and reopen');
 
 const freeCorner = routeAroundObstacles({ x: 0, y: 0 }, { x: 120, y: 80 }, { x: 0, y: 0 }, { x: 0, y: 0 }, 20, [], [], [])!;
 assert.deepEqual(freeCorner, [{ x: 0, y: 0 }, { x: 120, y: 0 }, { x: 120, y: 80 }], 'free contacts use one deterministic L, not a midpoint Z');

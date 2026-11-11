@@ -7,6 +7,12 @@ export default defineConfig(({ command }) => {
   return {
     base: command === 'build' ? './' : '/',
     plugins: [react(), tailwindcss()],
+    build: {
+      rollupOptions: { input: {
+        main: path.resolve(__dirname, 'index.html'),
+        wiring: path.resolve(__dirname, 'maxgraph-wiring-spike.html'),
+      } },
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

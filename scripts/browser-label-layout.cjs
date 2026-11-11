@@ -23,6 +23,23 @@ const assert = require('node:assert/strict');
    return found;
   });
   assert.deepEqual(collisions, [], 'buck labels do not overlap each other');
+  const symbolCollisions = await page.locator('[data-element-labels] text').evaluateAll(nodes => {
+   const symbols = [...document.querySelectorAll('[data-component-symbol]')].map(symbol => ({
+    owner: symbol.closest('[data-component-id]')?.getAttribute('data-component-id'), box: symbol.getBoundingClientRect(),
+   }));
+   const hits = [];
+   for (const node of nodes) {
+    const box = node.getBoundingClientRect(), owner = node.closest('[data-component-id]')?.getAttribute('data-component-id');
+    for (const symbol of symbols) {
+     if (symbol.owner === owner) continue;
+     const other = symbol.box;
+     if (box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top)
+      hits.push([node.textContent, symbol.owner]);
+    }
+   }
+   return hits;
+  });
+  assert.deepEqual(symbolCollisions, [], 'buck labels do not cover another component symbol');
   const wireCollisions = await page.evaluate(() => {
    const labels = [...document.querySelectorAll('[data-element-labels] text')].map(node => ({ text: node.textContent, box: node.getBoundingClientRect() }));
    const found = [];

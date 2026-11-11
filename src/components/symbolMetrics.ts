@@ -4,6 +4,8 @@ export const SYMBOL_METRICS = {
   analogPinReach: 35,
   bodyHalfWidth: 20,
   passiveHalfHeight: 8,
+  capacitorPlateHalfLength: 16,
+  capacitorPlateHalfGap: 3,
   sourceRadius: 14,
   gateDrop: 25,
   logicInputOffset: 10,

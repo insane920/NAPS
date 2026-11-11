@@ -38,6 +38,7 @@ import { useModalFocus } from '../hooks/useModalFocus';
 import { ComponentPalette, COMPONENT_CATALOG, PLACEMENT_CATALOG, TERMINAL_GROUPS, terminalGroupForType, sourceVariantsForType, placementFamilyForType, TerminalGroup } from './ComponentPalette';
 import { SYMBOL_METRICS } from './symbolMetrics';
 import { SCHEMATIC_UNITS_PER_MM, computePrintPlacement, computePrintTiles, paperSize, printScaleLabel, saveDefaultPrintLayout, type PrintLayout, type PrintPlacement } from '../utils/printLayout';
+import { draftingFontSize } from '../utils/draftingFont';
 import { componentObstacle, routeAroundObstacles, routeIsClear, reanchorAutomaticRoute, isOrthogonalAutomaticRoute } from '../utils/orthogonalRouter';
 import type { CircuitDescription } from '../utils/yamlScm';
 import { createTitleBlock } from '../utils/eskdTitleBlock';
@@ -79,7 +80,7 @@ interface SchematicEditorProps {
 const GRID_SIZE = 20;
 type EditorAppearance = { element: string; wire: string; designation: string; node: string; grid: string; lineWidthMm: number; labelSizeMm: number };
 const DEFAULT_APPEARANCE: EditorAppearance = {
-  element: '#1d4ed8', wire: '#15803d', designation: '#15803d', node: '#db2777', grid: '#cbd5e1', lineWidthMm: 0.5, labelSizeMm: 2.75,
+  element: '#1d4ed8', wire: '#15803d', designation: '#15803d', node: '#db2777', grid: '#cbd5e1', lineWidthMm: 0.5, labelSizeMm: 2.5,
 };
 function cycleSourceWaveform(type: ComponentType, deltaY: number): ComponentType | null {
   const variants = sourceVariantsForType(type);
@@ -95,7 +96,7 @@ function loadAppearance(): EditorAppearance {
         [key, typeof saved[key] === 'string' && /^#[0-9a-f]{6}$/i.test(saved[key]) ? saved[key] : fallback])),
       lineWidthMm: typeof saved.lineWidthMm === 'number' && Number.isFinite(saved.lineWidthMm) && saved.lineWidthMm >= 0.2 && saved.lineWidthMm <= 1
         ? saved.lineWidthMm : DEFAULT_APPEARANCE.lineWidthMm,
-      labelSizeMm: typeof saved.labelSizeMm === 'number' && Number.isFinite(saved.labelSizeMm) && saved.labelSizeMm >= 2 && saved.labelSizeMm <= 4
+      labelSizeMm: typeof saved.labelSizeMm === 'number' && Number.isFinite(saved.labelSizeMm) && saved.labelSizeMm >= 2 && saved.labelSizeMm <= 5
         ? saved.labelSizeMm : DEFAULT_APPEARANCE.labelSizeMm,
     } as EditorAppearance;
   } catch { return { ...DEFAULT_APPEARANCE }; }
@@ -114,7 +115,7 @@ const COMPONENT_SHORTCUT_CODES: Partial<Record<ComponentType, string>> = {
 const SHORTCUT_ACTIONS: EditorShortcut[] = [
   'rotate', 'add',
   ...COMPONENT_CATALOG.filter(item => placementFamilyForType(item.type)).map(item => `component:${item.type}`),
-  'component:GND', 'component:TEXT',
+  'component:TEXT',
 ];
 export const DEFAULT_SHORTCUTS: Record<EditorShortcut, string> = Object.fromEntries([
   ['rotate', 'KeyR'], ['add', 'KeyA'],
@@ -390,7 +391,7 @@ export function hasUnmaterializedCrossings(elements: CircuitElement[], wires: Ci
 }
 
 export function validateCircuitGeometry(elements: CircuitElement[], wires: CircuitWire[], grid: number, mode: WireCrossingMode) {
-  const routes = routeCircuitWires(elements, wires, grid);
+  const routes = routeCircuitWires(elements, wires, grid, new Map(), mode);
   const invalid = routes.find(route => !route.wire.disabled && route.unrouted)?.wire
     ?? wires.find(wire => !wire.disabled && !routes.some(route => route.wire.id === wire.id));
   if (invalid) {
@@ -874,7 +875,7 @@ function automaticWireRoute(start: Point, end: Point, startRel: Point, endRel: P
 
 /** Refuse a reconnection whose visible route cannot reach the new electrical terminal. */
 export function canRouteReconnectedEnd(elements: CircuitElement[], wires: CircuitWire[],
-  existingRoutes: RoutedWire[], wireId: string, crossingMode: WireCrossingMode, grid: number): boolean {
+  _existingRoutes: RoutedWire[], wireId: string, _crossingMode: WireCrossingMode, grid: number): boolean {
   const wire = wires.find(item => item.id === wireId);
   if (!wire || wire.disabled) return true;
   const from = elements.find(item => item.id === wire.fromCompId);
@@ -891,12 +892,9 @@ export function canRouteReconnectedEnd(elements: CircuitElement[], wires: Circui
       : buildStoredWireRoute(start, end, wire.waypoints ?? [], fromPin, toPin, from.type, to.type, grid);
     return routeIsClear(route, obstacles, []);
   }
-  const graph = buildCircuitGraph(elements, wires);
-  const ownNode = graph.pinToNode.get(`${wire.fromCompId}_${wire.fromPinId}`);
-  const foreign = crossingMode === 'connect' ? existingRoutes.filter(route =>
-    route.wire.id !== wireId && !route.wire.disabled &&
-    graph.pinToNode.get(`${route.wire.fromCompId}_${route.wire.fromPinId}`) !== ownNode).map(route => route.points) : [];
-  return automaticWireRoute(start, end, fromPin, toPin, from.type, to.type, grid, elements, foreign) !== null;
+  // Preflight checks component bodies only. SCM 8 materializes conductor
+  // crossings; SCM 7 applies its historical routing policy afterward.
+  return automaticWireRoute(start, end, fromPin, toPin, from.type, to.type, grid, elements, []) !== null;
 }
 
 export function pointsToSvgPath(pts: Point[]): string {
@@ -947,10 +945,20 @@ export function moveWireSegment(points: Point[], segmentIndex: number, coordinat
   const a = points[segmentIndex], b = points[segmentIndex + 1];
   const before = points.slice(0, segmentIndex);
   const after = points.slice(segmentIndex + 2);
-  const moved = Math.abs(a.y - b.y) < ROUTE_EPSILON
-    ? [{ x: a.x, y: a.y }, { x: a.x, y: coordinate }, { x: b.x, y: coordinate }, { x: b.x, y: b.y }]
-    : Math.abs(a.x - b.x) < ROUTE_EPSILON
-      ? [{ x: a.x, y: a.y }, { x: coordinate, y: a.y }, { x: coordinate, y: b.y }, { x: b.x, y: b.y }]
+  const horizontal = Math.abs(a.y - b.y) < ROUTE_EPSILON;
+  const vertical = Math.abs(a.x - b.x) < ROUTE_EPSILON;
+  // Internal corners belong to the dragged segment. Extend its adjacent
+  // perpendicular arms instead of inserting a pair of unnecessary doglegs.
+  const previousIsArm = segmentIndex > 0 && (horizontal
+    ? Math.abs(points[segmentIndex - 1].x - a.x) < ROUTE_EPSILON
+    : Math.abs(points[segmentIndex - 1].y - a.y) < ROUTE_EPSILON);
+  const nextIsArm = segmentIndex + 2 < points.length && (horizontal
+    ? Math.abs(points[segmentIndex + 2].x - b.x) < ROUTE_EPSILON
+    : Math.abs(points[segmentIndex + 2].y - b.y) < ROUTE_EPSILON);
+  const moved = horizontal
+    ? [...(previousIsArm ? [] : [a]), { x: a.x, y: coordinate }, { x: b.x, y: coordinate }, ...(nextIsArm ? [] : [b])]
+    : vertical
+      ? [...(previousIsArm ? [] : [a]), { x: coordinate, y: a.y }, { x: coordinate, y: b.y }, ...(nextIsArm ? [] : [b])]
       : (() => {
         const slope = Math.sign((b.y - a.y) / (b.x - a.x));
         return [
@@ -961,6 +969,50 @@ export function moveWireSegment(points: Point[], segmentIndex: number, coordinat
         ];
       })();
   return simplifyPoints([...before, ...moved, ...after]);
+}
+
+/** Drag a conductor and its junction endpoints as one electrical edit. */
+export function dragConnectedWireSegment(
+  elements: CircuitElement[], wires: CircuitWire[], wireId: string, points: Point[],
+  segmentIndex: number, coordinate: number,
+): { elements: CircuitElement[]; wires: CircuitWire[] } {
+  const wire = wires.find(item => item.id === wireId);
+  const a = points[segmentIndex], b = points[segmentIndex + 1];
+  if (!wire || !a || !b) return { elements, wires };
+  const horizontal = Math.abs(a.y - b.y) < ROUTE_EPSILON;
+  const vertical = Math.abs(a.x - b.x) < ROUTE_EPSILON;
+  if (!horizontal && !vertical) return { elements, wires };
+  const delta = horizontal ? coordinate - a.y : coordinate - a.x;
+  if (Math.abs(delta) < ROUTE_EPSILON) return { elements, wires };
+  const movedJunctions = new Map<string, Point>();
+  for (const [end, id, point] of [
+    [0, wire.fromCompId, a], [points.length - 2, wire.toCompId, b],
+  ] as const) {
+    if (segmentIndex !== end) continue;
+    const junction = elements.find(item => item.id === id && item.type === 'JUNCTION');
+    if (!junction || !samePoint(junction, point)) continue;
+    const branchCount = wires.filter(item => !item.disabled &&
+      (item.fromCompId === id || item.toCompId === id)).length;
+    if (branchCount < 2 && !junction.branchAnchor && !junction.autoCrossing) continue;
+    movedJunctions.set(id, horizontal
+      ? { x: junction.x, y: junction.y + delta }
+      : { x: junction.x + delta, y: junction.y });
+  }
+  const movedElements = movedJunctions.size ? elements.map(element => {
+    const point = movedJunctions.get(element.id);
+    return point ? { ...element, ...point, branchAnchor: true, autoCrossing: undefined } : element;
+  }) : elements;
+  const changes = movedElements.flatMap(after => {
+    const before = elements.find(element => element.id === after.id);
+    return before && before !== after ? [{ before, after }] : [];
+  });
+  let route = moveWireSegment(points, segmentIndex, coordinate);
+  if (route.length && movedJunctions.has(wire.fromCompId)) route = [{ ...movedJunctions.get(wire.fromCompId)! }, ...route.slice(1)];
+  if (route.length && movedJunctions.has(wire.toCompId)) route = [...route.slice(0, -1), { ...movedJunctions.get(wire.toCompId)! }];
+  route = simplifyPoints(route);
+  const adjustedWires = changes.length ? reanchorManualWiresForChanges(wires, changes) : wires;
+  return { elements: movedElements, wires: adjustedWires.map(item => item.id === wireId
+    ? { ...item, waypoints: route.slice(1, -1), manual: true } : item) };
 }
 
 /** Shift an arbitrary-angle segment parallel to itself without changing its terminal endpoints. */
@@ -1111,7 +1163,8 @@ export function getComponentPins(el: CircuitElement): CircuitPin[] {
 }
 
 /** One routing pipeline for import, previews, editing and crossing normalization. */
-export function routeCircuitWires(elements: CircuitElement[], wires: CircuitWire[], gridUnits: number, cache = new Map<string, Point[]>()) {
+export function routeCircuitWires(elements: CircuitElement[], wires: CircuitWire[], gridUnits: number,
+  cache = new Map<string, Point[]>(), crossingMode: WireCrossingMode = 'explicit') {
   const circuitGraph = buildCircuitGraph(elements, wires);
   const pinPositions = new Map<string, { compId: string; pinId: string; componentName: string; x: number; y: number; name: string; label?: string; relX: number; relY: number; elType: string }>();
   for (const element of elements) for (const pin of getComponentPins(element)) pinPositions.set(`${element.id}_${pin.id}`, {
@@ -1236,6 +1289,9 @@ export function routeCircuitWires(elements: CircuitElement[], wires: CircuitWire
       // clear route; shared ink is still painted once by uniqueWireInk.
       const closesCycle = routedParent.has(fromEndpoint) && routedParent.has(toEndpoint) &&
         routedRoot(fromEndpoint) === routedRoot(toEndpoint);
+      // Automatic routing must not silently short independent networks.
+      // Intentional SCM 8 crossings are allowed while the user draws or edits
+      // a wire; that route is then normalized into an explicit junction.
       const foreignRoutes = Array.from(occupiedByNode.entries())
         .filter(([occupiedNode]) => occupiedNode !== node)
         .flatMap(([, routes]) => routes);
@@ -1520,7 +1576,8 @@ export function SchematicEditor({
   const junctionDragIntent = useRef<{ id: string; clientX: number; clientY: number } | null>(null);
   const groupDragIds = useRef<Set<string> | null>(null);
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const wireSegmentDrag = useRef<{ wireId: string; segmentIndex: number; points: Point[]; started: boolean; prepared?: boolean } | null>(null);
+  const wireSegmentDrag = useRef<{ wireId: string; segmentIndex: number; points: Point[]; started: boolean;
+    prepared?: boolean; baseElements?: CircuitElement[]; baseWires?: CircuitWire[] } | null>(null);
   const waypointDrag = useRef<{ wireId: string; index: number; started: boolean } | null>(null);
   const [endpointDrag, setEndpointDrag] = useState<{ wireId: string; end: 'from' | 'to'; points: Point[]; cursor: Point } | null>(null);
   const geometryDragChanged = useRef(false);
@@ -2210,8 +2267,8 @@ export function SchematicEditor({
       automaticRouteCache.current.clear();
       automaticRouteRevision.current = viewRevision;
     }
-    return routeCircuitWires(elements, wires, gridUnits, automaticRouteCache.current);
-  }, [wires, pinPositions, circuitGraph, gridUnits, elements, viewRevision]);
+    return routeCircuitWires(elements, wires, gridUnits, automaticRouteCache.current, crossingMode);
+  }, [wires, pinPositions, circuitGraph, gridUnits, elements, viewRevision, crossingMode]);
   const electricalInkRoutes = useMemo(() => wireGeometries.filter(item => !item.wire.disabled && !item.unrouted)
     .map(item => ({ id: item.wire.id, points: item.points,
       net: String(circuitGraph.pinToNode.get(`${item.wire.fromCompId}_${item.wire.fromPinId}`) ?? item.wire.id) })),
@@ -2282,7 +2339,7 @@ export function SchematicEditor({
     const radius = (element.rotation || 0) % 90 === 0 ? 24 : 32;
     return [{ x: element.x - radius, y: element.y - radius, width: radius * 2, height: radius * 2 },
       ...pins.map(pin => ({ x: element.x + pin.x - 9, y: element.y + pin.y - 12, width: 26, height: 22 }))];
-  }), showElementNames, showElementValues, appearance.labelSizeMm * SCHEMATIC_UNITS_PER_MM), [elements, wireGeometries, showElementNames, showElementValues, appearance.labelSizeMm]);
+  }), showElementNames, showElementValues, draftingFontSize(appearance.labelSizeMm)), [elements, wireGeometries, showElementNames, showElementValues, appearance.labelSizeMm]);
   const nodeAnnotations = useMemo(() => {
     if (!showNodeNumbers) return [];
     const anchors = new Map<number, Point[]>();
@@ -2296,8 +2353,8 @@ export function SchematicEditor({
       }
       const layout = sceneLabels.get(element.id);
       if (layout && element.type !== 'JUNCTION' && element.type !== 'TEXT') {
-        if (showElementNames) obstacles.push(labelBounds(layout.name, element.name, element.x, element.y, appearance.labelSizeMm * SCHEMATIC_UNITS_PER_MM));
-        if (showElementValues) obstacles.push(labelBounds(layout.value, getComponentValueLabel(element), element.x, element.y, appearance.labelSizeMm * SCHEMATIC_UNITS_PER_MM));
+        if (showElementNames) obstacles.push(labelBounds(layout.name, element.name, element.x, element.y, draftingFontSize(appearance.labelSizeMm, true)));
+        if (showElementValues) obstacles.push(labelBounds(layout.value, getComponentValueLabel(element), element.x, element.y, draftingFontSize(appearance.labelSizeMm)));
       }
       for (const pin of getComponentPins(element)) {
         const node = circuitGraph.pinToNode.get(`${element.id}_${pin.id}`);
@@ -2346,7 +2403,7 @@ export function SchematicEditor({
           showElementValues ? [layout.value, getComponentValueLabel(element)] as const : null];
         for (const label of labels) {
           if (!label || !label[1]) continue;
-          const bounds = labelBounds(label[0], label[1], element.x, element.y, appearance.labelSizeMm * SCHEMATIC_UNITS_PER_MM);
+          const bounds = labelBounds(label[0], label[1], element.x, element.y, draftingFontSize(appearance.labelSizeMm));
           shapes.push({ kind: 'label', id: element.id,
             left: bounds.x, top: bounds.y, right: bounds.x + bounds.width, bottom: bounds.y + bounds.height });
         }
@@ -2680,7 +2737,11 @@ export function SchematicEditor({
       let collapsedElements: CircuitElement[] | null = null;
       if (!drag.prepared) {
         drag.prepared = true;
-        if (crossingMode === 'connect' && elements.some(element => element.autoCrossing)) {
+        const selected = wires.find(wire => wire.id === drag.wireId);
+        const touchesJunction = selected && (
+          drag.segmentIndex === 0 && elements.some(element => element.id === selected.fromCompId && element.type === 'JUNCTION') ||
+          drag.segmentIndex === drag.points.length - 2 && elements.some(element => element.id === selected.toCompId && element.type === 'JUNCTION'));
+        if (crossingMode === 'connect' && !touchesJunction && elements.some(element => element.autoCrossing)) {
           const base = collapseAutomaticCrossings(elements, wires, wireGeometries);
           if (base.elements !== elements) {
             const old = wires.find(wire => wire.id === drag.wireId);
@@ -2697,28 +2758,39 @@ export function SchematicEditor({
             collapsedElements = base.elements;
           }
         }
+        drag.baseElements = collapsedElements ?? elements;
+        drag.baseWires = editingWires;
       }
+      editingWires = drag.baseWires ?? editingWires;
+      const editingElements = drag.baseElements ?? elements;
       const a = drag.points[drag.segmentIndex], b = drag.points[drag.segmentIndex + 1];
       const horizontal = Math.abs(a.y - b.y) < ROUTE_EPSILON;
       const vertical = Math.abs(a.x - b.x) < ROUTE_EPSILON;
       const isDirect = editingWires.find(wire => wire.id === drag.wireId)?.routeMode === 'direct';
+      const freeDirect = isDirect && !horizontal && !vertical;
       const coordinate = horizontal ? snapToGrid(pos.rawY) : vertical ? snapToGrid(pos.rawX)
         : snapToGrid(((pos.rawX - a.x) - Math.sign((b.y - a.y) / (b.x - a.x)) * (pos.rawY - a.y)) / 2);
       const length = Math.hypot(b.x - a.x, b.y - a.y);
       const freeOffset = length > ROUTE_EPSILON
         ? snapToGrid(((pos.rawX - a.x) * -(b.y - a.y) + (pos.rawY - a.y) * (b.x - a.x)) / length)
         : 0;
-      if ((isDirect ? freeOffset === 0 : coordinate === (horizontal ? a.y : vertical ? a.x : 0)) && !drag.started) {
+      if ((freeDirect ? freeOffset === 0 : coordinate === (horizontal ? a.y : vertical ? a.x : 0)) && !drag.started) {
         Object.assign(drag, initialDrag);
         return;
       }
       if (!drag.started) { onBeginContinuousEdit?.(); drag.started = true; }
-      if (collapsedElements) onElementsChange(collapsedElements);
-      const route = isDirect
-        ? moveFreeWireSegment(drag.points, drag.segmentIndex, freeOffset)
-        : moveWireSegment(drag.points, drag.segmentIndex, coordinate);
       geometryDragChanged.current = true;
-      onWiresChange(editingWires.map(wire => wire.id === drag.wireId ? { ...wire, waypoints: route.slice(1, -1), manual: true } : wire));
+      if (freeDirect) {
+        if (collapsedElements) onElementsChange(collapsedElements);
+        const route = moveFreeWireSegment(drag.points, drag.segmentIndex, freeOffset);
+        onWiresChange(editingWires.map(wire => wire.id === drag.wireId
+          ? { ...wire, waypoints: route.slice(1, -1), manual: true } : wire));
+      } else {
+        const moved = dragConnectedWireSegment(editingElements, editingWires,
+          drag.wireId, drag.points, drag.segmentIndex, coordinate);
+        if (moved.elements !== elements) onElementsChange(moved.elements);
+        onWiresChange(moved.wires);
+      }
       return;
     }
 
@@ -2909,30 +2981,20 @@ export function SchematicEditor({
           const sourcePin = pinPositions.get(`${wiringSource.compId}_${wiringSource.pinId}`);
           const targetPin = pinPositions.get(`${compId}_${pinId}`);
           if (sourcePin && targetPin) {
-            const connectedGraph = buildCircuitGraph(elements, [...wires, newWire]);
-            const newNode = connectedGraph.pinToNode.get(`${newWire.fromCompId}_${newWire.fromPinId}`);
-            const foreignRoutes = wireGeometries.filter(geometry =>
-              connectedGraph.pinToNode.get(`${geometry.wire.fromCompId}_${geometry.wire.fromPinId}`) !== newNode)
-              .map(geometry => geometry.points);
-            const initialRoute = computeOrthogonalWirePoints(sourcePin, targetPin,
-              { x: sourcePin.relX, y: sourcePin.relY }, { x: targetPin.relX, y: targetPin.relY },
-              sourcePin.elType, targetPin.elType, 0, gridUnits);
             const bodies = elements.map(element => componentObstacle(element)).filter((box): box is NonNullable<typeof box> => box !== null);
-            // A new gesture that directly crosses another conductor is an explicit
-            // connection in SCM 8. Later automatic rerouting must avoid new contacts.
-            const intentionalCrossing = routeIsClear(initialRoute, bodies, []) &&
-              !routeIsClear(initialRoute, [], foreignRoutes);
+            // SCM 8 treats every visible conductor crossing as a junction.
+            // Route around component bodies only; crossing normalization joins
+            // the electrical nets after the final geometry has been chosen.
             const route = newWire.routeMode === 'direct'
               ? simplifyPoints([sourcePin, ...(newWire.waypoints ?? []), targetPin])
               : newWire.manual
               ? buildStoredWireRoute(sourcePin, targetPin, newWire.waypoints ?? [],
                 { x: sourcePin.relX, y: sourcePin.relY }, { x: targetPin.relX, y: targetPin.relY },
                 sourcePin.elType, targetPin.elType, gridUnits)
-              : intentionalCrossing ? initialRoute
               : automaticWireRoute(sourcePin, targetPin, { x: sourcePin.relX, y: sourcePin.relY },
-                { x: targetPin.relX, y: targetPin.relY }, sourcePin.elType, targetPin.elType, gridUnits, elements, foreignRoutes);
+                { x: targetPin.relX, y: targetPin.relY }, sourcePin.elType, targetPin.elType, gridUnits, elements, []);
             if (!route || !routeIsClear(route, bodies, [])) {
-              window.alert('Не удалось проложить провод без пересечения элемента или другой сети. Освободите место или задайте точки изгиба вручную.');
+              window.alert('Не удалось проложить провод без пересечения элемента. Освободите место или задайте точки изгиба вручную.');
             } else try {
               const connected = finishWireGeometry(elements, [...wires, newWire],
                 [...wireGeometries, { wire: newWire, points: route }], crossingMode);
@@ -3204,7 +3266,9 @@ export function SchematicEditor({
         frame.setAttribute('fill', 'none'); frame.setAttribute('stroke', '#111111'); frame.setAttribute('stroke-width', '2');
         frame.setAttribute('data-eskd-frame', 'true');
         clone.insertBefore(frame, world);
-        clone.appendChild(createTitleBlock(document, printLayout, description ?? { title: '', purpose: '', comment: '' }, printScaleLabel(placement.scale)));
+        clone.appendChild(createTitleBlock(document, printLayout,
+          { ...(description ?? { title: '', purpose: '', comment: '' }), sheetCount: description?.sheetCount?.trim() || '1' },
+          printScaleLabel(placement.scale)));
       }
       if (printMonochrome) world.querySelectorAll<SVGElement>('[stroke], [fill]').forEach(node => {
         for (const attribute of ['stroke', 'fill'] as const) {
@@ -3219,10 +3283,16 @@ export function SchematicEditor({
       if (tiles.length && clone.outerHTML.length * tiles.length > 24_000_000) {
         throw new Error('Многостраничный документ слишком велик для безопасного экспорта. Выберите больший формат или меньший масштаб.');
       }
-      const pages = tiles.length ? tiles.map(tile => {
+      const pages = tiles.length ? tiles.map((tile, pageIndex) => {
         const page = clone.cloneNode(true) as SVGSVGElement;
         const pageWorld = page.querySelector('#schematic-world') as SVGGElement;
         pageWorld.setAttribute('transform', `translate(${tile.translateX} ${tile.translateY}) scale(${placement.scale})`);
+        if (printFrame) {
+          page.querySelector('[data-eskd-title-block]')?.remove();
+          page.appendChild(createTitleBlock(document, printLayout,
+            { ...(description ?? { title: '', purpose: '', comment: '' }), sheetNumber: String(pageIndex + 1), sheetCount: String(tiles.length) },
+            printScaleLabel(placement.scale)));
+        }
         // Opaque page masks keep the same printable rectangle in SVG and PDF
         // without relying on the renderers' handling of nested clip paths.
         // The frame and title block remain above these masks.
@@ -3355,7 +3425,6 @@ export function SchematicEditor({
                 </span>
               </div>;
             })}
-            <button type="button" onClick={() => { wiringFromRef.current = null; setWiringFrom(null); setWiringCursor(null); setWiringWaypoints([]); setPendingComponentType('GND'); }} className="shrink-0 whitespace-nowrap rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100" title="Поставить опорный потенциал 0 В">⏚ 0 В</button>
             <button type="button" onClick={() => { wiringFromRef.current = null; setWiringFrom(null); setWiringCursor(null); setWiringWaypoints([]); setPendingComponentType('TEXT'); }} className="shrink-0 whitespace-nowrap rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100" title="Разместить независимую текстовую надпись на схеме">Текст</button>
             {pendingComponentType && ['R', 'C', 'L'].includes(pendingComponentType) && <select
               aria-label="Вариант размещаемого элемента"
@@ -3640,7 +3709,9 @@ export function SchematicEditor({
             </label>
             <label className="mb-2 grid gap-1 text-sm">Размер подписей
               <select aria-label="Размер подписей" value={appearance.labelSizeMm} onChange={event => setAppearance(current => ({ ...current, labelSizeMm: Number(event.target.value) }))} className="rounded border p-1">
-                {[2.25, 2.75, 3.25].map(size => <option key={size} value={size}>{size} мм</option>)}
+                {![2.5, 3.5, 5].includes(appearance.labelSizeMm) &&
+                  <option value={appearance.labelSizeMm}>{appearance.labelSizeMm} мм (прежняя настройка)</option>}
+                {[2.5, 3.5, 5].map(size => <option key={size} value={size}>{size} мм</option>)}
               </select>
             </label>
             <button type="button" onClick={() => setAppearance({ ...DEFAULT_APPEARANCE })} className="mt-3 text-sm text-blue-700">Цвета по умолчанию</button>
@@ -3920,20 +3991,23 @@ export function SchematicEditor({
               const previewEnd = samePoint(tailStart, snappedEnd)
                 ? { x: tailStart.x + pinDirection.x * 14, y: tailStart.y + pinDirection.y * 14 }
                 : snappedEnd;
+              const targetPin = hoveredPin ? pinPositions.get(`${hoveredPin.compId}_${hoveredPin.pinId}`) : undefined;
+              const automaticPreview = wireMode === 'orthogonal' && !wiringWaypoints.length && targetIsPinOrWire
+                ? automaticWireRoute(wiringFrom, previewEnd,
+                  fromPin ? { x: fromPin.relX, y: fromPin.relY } : { x: 0, y: 0 },
+                  targetPin ? { x: targetPin.relX, y: targetPin.relY } : { x: 0, y: 0 },
+                  fromPin?.elType ?? 'JUNCTION', targetPin?.elType ?? 'JUNCTION', gridUnits, elements, [])
+                : undefined;
               const pts = wireMode === 'direct' ? [wiringFrom, previewEnd] : wiringWaypoints.length
                 ? buildStoredWireRoute(wiringFrom, previewEnd, wiringWaypoints, undefined, undefined, undefined, undefined, gridUnits)
                 : targetIsPinOrWire
-                  ? computeOrthogonalWirePoints(
-                    wiringFrom, previewEnd,
-                    fromPin ? { x: fromPin.relX, y: fromPin.relY } : undefined,
-                    undefined, fromPin?.elType, undefined, 0, gridUnits
-                  )
+                  ? automaticPreview ?? [wiringFrom, previewEnd]
                   : [wiringFrom, previewEnd];
               return (
                 <path
                   d={pointsToSvgPath(pts)}
                   fill="none"
-                  stroke="#2563eb"
+                  stroke={automaticPreview === null ? '#dc2626' : '#2563eb'}
                   strokeWidth={2}
                   strokeDasharray="4 3"
                   strokeLinecap="round"
@@ -4051,8 +4125,8 @@ export function SchematicEditor({
 
                   {/* Подписи следуют ориентации элемента, но остаются горизонтальными и читаемыми. */}
                   {el.type !== 'TEXT' && el.type !== 'JUNCTION' && (showElementNames || showElementValues || el.isolation === 'short') && <g data-element-labels={el.id} className="select-none" pointerEvents={wiringFrom ? 'none' : 'visiblePainted'} style={{ fontFamily: 'NAPS Drafting, Arial Narrow, sans-serif', paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 3.5, strokeLinejoin: 'round' }}>
-                    {showElementNames && <text data-label-kind="name" x={labelLayout.name.x} y={labelLayout.name.y} textAnchor={labelLayout.name.anchor} fontSize={appearance.labelSizeMm * SCHEMATIC_UNITS_PER_MM} fontWeight="bold" textDecoration={teacherPresentation && (el.type === 'VCCS' || el.type === 'CCCS') ? 'underline' : undefined} fill={el.isolation === 'open' ? '#94a3b8' : appearance.designation}>{el.name}</text>}
-                    {showElementValues && valueLabel && <text data-label-kind="value" x={labelLayout.value.x} y={labelLayout.value.y} textAnchor={labelLayout.value.anchor} fontSize={appearance.labelSizeMm * SCHEMATIC_UNITS_PER_MM} fill={el.isolation === 'open' ? '#94a3b8' : '#3730a3'}>{valueLabel}</text>}
+                    {showElementNames && <text data-label-kind="name" x={labelLayout.name.x} y={labelLayout.name.y} textAnchor={labelLayout.name.anchor} fontSize={draftingFontSize(appearance.labelSizeMm, teacherPresentation)} fontWeight={teacherPresentation ? 'bold' : 'normal'} textDecoration={teacherPresentation && (el.type === 'VCCS' || el.type === 'CCCS') ? 'underline' : undefined} fill={el.isolation === 'open' ? '#94a3b8' : appearance.designation}>{el.name}</text>}
+                    {showElementValues && valueLabel && <text data-label-kind="value" x={labelLayout.value.x} y={labelLayout.value.y} textAnchor={labelLayout.value.anchor} fontSize={draftingFontSize(appearance.labelSizeMm)} fill={el.isolation === 'open' ? '#94a3b8' : '#3730a3'}>{valueLabel}</text>}
                     {el.isolation === 'short' && <text data-label-kind="isolation" x={labelLayout.isolation.x} y={labelLayout.isolation.y} textAnchor={labelLayout.isolation.anchor} fontSize={9} fill="#b91c1c" fontWeight="bold">КЗ</text>}
                   </g>}
 
@@ -4314,7 +4388,7 @@ export function SchematicEditor({
           {exportTarget === 'png' && <label>PNG <select aria-label="Разрешение PNG" value={pngDpi} onChange={event => setPngDpi(Number(event.target.value) as 96 | 150 | 300)} className="rounded border border-slate-300 p-1"><option value={96}>96 DPI</option><option value={150}>150 DPI</option><option value={300}>300 DPI</option></select></label>}
           <div className="ml-auto flex gap-2"><button type="button" disabled={!exportPlan || (!exportPlan.placement.fits && exportPlan.pages.length < 2) || pngTooLarge} onClick={() => downloadSchematic(exportTarget)} className="rounded bg-blue-600 px-3 py-1.5 text-white disabled:opacity-40">{exportTarget === 'print' ? 'Печать…' : `Скачать ${exportTarget.toUpperCase()}`}</button><button type="button" onClick={() => setExportTarget(null)} className="rounded border border-slate-300 px-3 py-1.5">Закрыть</button></div>
         </div>
-        <div className="mx-auto w-full max-w-6xl bg-white px-4 py-1 text-xs text-slate-600">{exportPlan && <>Схема: {exportPlan.placement.contentWidthMm.toFixed(1)} × {exportPlan.placement.contentHeightMm.toFixed(1)} мм · фактический масштаб {printScaleLabel(exportPlan.placement.scale)} · лист {exportPlan.placement.widthMm} × {exportPlan.placement.heightMm} мм{exportPlan.pages.length > 1 && <> · {exportPlan.pages.length} листов</>}</>}{exportTarget === 'png' && exportPlan && <span className="ml-2">PNG: {Math.ceil(exportPlan.placement.widthMm * pngDpi / 25.4)} × {Math.ceil(exportPlan.placement.heightMm * pngDpi / 25.4)} px</span>}{pngTooLarge && <span className="ml-2 text-red-700">Разрешение превышает предел 36 млн пикселей. Выберите меньший DPI или SVG/PDF.</span>}{exportError && <span className="text-red-700">{exportError}</span>}{exportPlan && !exportPlan.placement.fits && exportPlan.pages.length < 2 && <span className="ml-2 text-red-700">Схема не помещается: выберите больший формат, уменьшите масштаб, включите «Вписать в страницу» или разложите на несколько листов. Автоматическое обрезание отключено.</span>}{printFrame && printLayout.format === 'A4' && printLayout.orientation === 'landscape' && <span className="ml-2 text-amber-800">Для графического документа A4 ГОСТ Р 2.104-2023 требует книжную ориентацию. Альбомный экспорт доступен как пользовательский вариант.</span>}</div>
+        <div className="mx-auto w-full max-w-6xl bg-white px-4 py-1 text-xs text-slate-600">{exportPlan && <>Схема: {exportPlan.placement.contentWidthMm.toFixed(1)} × {exportPlan.placement.contentHeightMm.toFixed(1)} мм · фактический масштаб {printScaleLabel(exportPlan.placement.scale)} · лист {exportPlan.placement.widthMm} × {exportPlan.placement.heightMm} мм{exportPlan.pages.length > 1 && <> · {exportPlan.pages.length} листов</>}</>}{exportTarget === 'png' && exportPlan && <span className="ml-2">PNG: {Math.ceil(exportPlan.placement.widthMm * pngDpi / 25.4)} × {Math.ceil(exportPlan.placement.heightMm * pngDpi / 25.4)} px</span>}{pngTooLarge && <span className="ml-2 text-red-700">Разрешение превышает предел 36 млн пикселей. Выберите меньший DPI или SVG/PDF.</span>}{exportError && <span className="text-red-700">{exportError}</span>}{exportPlan && !exportPlan.placement.fits && exportPlan.pages.length < 2 && <span className="ml-2 text-red-700">Схема не помещается: выберите больший формат, уменьшите масштаб, включите «Вписать в страницу» или разложите на несколько листов. Автоматическое обрезание отключено.</span>}{printFrame && printLayout.format === 'A4' && printLayout.orientation === 'landscape' && <span className="ml-2 text-amber-800">Для графического документа A4 ГОСТ Р 2.104-2023 требует книжную ориентацию. Альбомный экспорт доступен как пользовательский вариант.</span>}{printFrame && printLayout.presentation === 'eskd' && (!description?.designation?.trim() || !description?.organization?.trim()) && <span className="ml-2 text-amber-800">Черновой экспорт: для оформления по ЕСКД заполните обозначение документа и организацию в разделе «Описание».</span>}</div>
         <iframe ref={printPreviewRef} title="Предварительный просмотр листа" srcDoc={exportPlan?.html ?? ''} className="mx-auto min-h-0 w-full max-w-6xl flex-1 rounded-b bg-white" />
       </div>}
     </div>

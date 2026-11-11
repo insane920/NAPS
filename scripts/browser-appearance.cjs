@@ -48,7 +48,7 @@ const fs = require('node:fs/promises');
     await settings.getByRole('tab', { name: 'Оформление' }).click();
     await settings.getByLabel('Цвет: Элементы').fill('#123abc');
     await settings.getByLabel('Толщина линий схемы').selectOption('0.7');
-    await settings.getByLabel('Размер подписей').selectOption('3.25');
+    await settings.getByLabel('Размер подписей').selectOption('3.5');
     await page.getByRole('button', { name: 'Готово' }).click();
     await page.getByRole('button', { name: 'Резистор', exact: true }).first().click();
     const canvas = await page.locator('.schematic-editor div.relative.overflow-hidden.bg-white').last().boundingBox();
@@ -57,8 +57,9 @@ const fs = require('node:fs/promises');
     assert.equal(await page.locator('[data-component-id] line').first().getAttribute('stroke'), '#123abc');
     assert.equal(await page.locator('[data-component-id] line').first().getAttribute('stroke-width'), '2.8',
       '0.7 mm line setting changes the actual SVG stroke in document coordinates');
-    assert.equal(await page.locator('[data-label-kind="name"]').first().getAttribute('font-size'), '13',
-      '3.25 mm label setting changes the actual SVG text size');
+    const designationFontSize = Number(await page.locator('[data-label-kind="name"]').first().getAttribute('font-size'));
+    assert.ok(Math.abs(designationFontSize * 0.66 / 4 - 3.5) < 0.05,
+      '3.5 mm label setting gives the drafting font a 3.5 mm capital height');
     await page.getByRole('slider', { name: 'Масштаб просмотра в процентах' }).fill('75');
     assert.equal(await page.getByText('3.00 px/мм').count(), 1);
     await page.getByRole('combobox', { name: 'Формат документа' }).selectOption('A3');
@@ -148,7 +149,10 @@ const fs = require('node:fs/promises');
       await page.getByRole('combobox', { name: 'Формат документа' }).selectOption(format);
       await page.getByRole('button', { name: 'Экспорт ▾' }).click();
       await page.getByRole('menuitem', { name: 'PNG' }).click();
-      await page.waitForFunction(expected => document.querySelector('iframe[title="Предварительный просмотр листа"]')?.getAttribute('srcdoc')?.includes(`width="${expected}mm"`), width);
+      await page.waitForFunction(expected => {
+        const preview = document.querySelector('iframe[title="Предварительный просмотр листа"]')?.getAttribute('srcdoc') || '';
+        return preview.includes(`width="${expected}mm"`) && preview.includes('data-component-symbol="R"');
+      }, width);
       assert.equal(await page.getByLabel('Разрешение PNG').inputValue(), '96');
       const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать PNG' }).click()]);
       const image = await fs.readFile(await download.path());
@@ -162,7 +166,10 @@ const fs = require('node:fs/promises');
       await page.getByRole('combobox', { name: 'Формат документа' }).selectOption(format);
       await page.getByRole('button', { name: 'Экспорт ▾' }).click();
       await page.getByRole('menuitem', { name: 'SVG' }).click();
-      await page.waitForFunction(expected => document.querySelector('iframe[title="Предварительный просмотр листа"]')?.getAttribute('srcdoc')?.includes(`width="${expected}mm"`), width);
+      await page.waitForFunction(expected => {
+        const preview = document.querySelector('iframe[title="Предварительный просмотр листа"]')?.getAttribute('srcdoc') || '';
+        return preview.includes(`width="${expected}mm"`) && preview.includes('data-component-symbol="R"');
+      }, width);
       const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Скачать SVG' }).click()]);
       const document = await fs.readFile(await download.path(), 'utf8');
       assert.match(document, new RegExp(`width="${width}mm"`), `${format} SVG physical width`);
@@ -214,7 +221,7 @@ const fs = require('node:fs/promises');
     await page.getByRole('button', { name: 'Общие настройки' }).click();
     assert.equal(await page.getByRole('dialog', { name: 'Общие настройки редактора' }).getByLabel('Цвет: Элементы').inputValue(), '#123abc');
     assert.equal(await page.getByRole('dialog', { name: 'Общие настройки редактора' }).getByLabel('Толщина линий схемы').inputValue(), '0.7');
-    assert.equal(await page.getByRole('dialog', { name: 'Общие настройки редактора' }).getByLabel('Размер подписей').inputValue(), '3.25');
+    assert.equal(await page.getByRole('dialog', { name: 'Общие настройки редактора' }).getByLabel('Размер подписей').inputValue(), '3.5');
     assert.equal(await page.getByRole('button', { name: 'Прямой', exact: true }).getAttribute('aria-pressed'), 'true',
       'preferred routing mode survives restart');
     await page.getByRole('dialog', { name: 'Общие настройки редактора' }).getByRole('tab', { name: 'Редактор' }).click();

@@ -181,9 +181,18 @@ export function buildCircuitGraph(
     union(k1, k2);
   }
 
-  // Нумерация узлов. Земля всегда узел 0
+  // A schematic without a ground symbol still has a reference potential.
+  // Prefer the negative terminal of the first independent voltage source;
+  // choose by stable ID so reordering the SVG does not renumber the reference.
+  // This only fixes the voltage gauge and does not add an electrical wire.
   const rootToNode = new Map<string, number>();
-  const groundRoot = find('__GROUND__');
+  const hasGround = elements.some(el => el.type === 'GND');
+  const ordered = [...elements].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const source = ordered.find(el => ['V_DC', 'V_AC', 'V_PULSE'].includes(el.type));
+  const fallback = ordered.find(el => getCircuitPinIds(el.type, el).length > 0);
+  const referencePin = source ? `${source.id}_2` : fallback
+    ? `${fallback.id}_${getCircuitPinIds(fallback.type, fallback)[0]}` : '__GROUND__';
+  const groundRoot = find(hasGround ? '__GROUND__' : referencePin);
   rootToNode.set(groundRoot, 0);
 
   let nextNodeIndex = 1;
